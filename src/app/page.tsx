@@ -1,10 +1,12 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { StatsCards } from '@/components/dashboard/stats-cards';
 import { LeadsTable } from '@/components/dashboard/leads-table';
 import { LeadDetail } from '@/components/dashboard/lead-detail';
-import { Phone, RefreshCw } from 'lucide-react';
+import { createClient } from '@/lib/supabase-browser';
+import { Phone, RefreshCw, LogOut } from 'lucide-react';
 
 // Demo business ID - replace with auth in production
 const DEMO_BUSINESS_ID = 'demo-business-id';
@@ -150,6 +152,21 @@ export default function Dashboard() {
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [period, setPeriod] = useState<'day' | 'week' | 'month'>('week');
+  const [userEmail, setUserEmail] = useState<string | null>(null);
+  const router = useRouter();
+  const supabase = createClient();
+
+  useEffect(() => {
+    supabase.auth.getUser().then((result: { data: { user: { email?: string } | null } }) => {
+      setUserEmail(result.data?.user?.email || null);
+    });
+  }, []);
+
+  const handleLogout = async () => {
+    await supabase.auth.signOut();
+    router.push('/login');
+    router.refresh();
+  };
 
   const fetchData = async () => {
     setIsLoading(true);
@@ -257,6 +274,20 @@ export default function Dashboard() {
               >
                 <RefreshCw className={`w-5 h-5 ${isLoading ? 'animate-spin' : ''}`} />
               </button>
+
+              {/* User menu */}
+              <div className="flex items-center gap-3 pl-4 border-l">
+                {userEmail && (
+                  <span className="text-sm text-gray-600 hidden sm:block">{userEmail}</span>
+                )}
+                <button
+                  onClick={handleLogout}
+                  className="p-2 hover:bg-gray-100 rounded-lg transition-colors text-gray-600 hover:text-gray-900"
+                  title="Sign out"
+                >
+                  <LogOut className="w-5 h-5" />
+                </button>
+              </div>
             </div>
           </div>
         </div>

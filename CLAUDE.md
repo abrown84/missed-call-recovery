@@ -1,12 +1,14 @@
 # Missed Call Recovery Platform
 
 ## Overview
-Automated inbound recovery system for service businesses. Detects missed calls via Twilio webhooks, sends instant SMS outreach, classifies urgency, and escalates high-priority leads.
+Automated inbound recovery system for service businesses. Detects missed calls via Twilio webhooks, sends instant SMS outreach, classifies urgency with AI (Gemini Flash), and escalates high-priority leads.
 
 ## Tech Stack
 - **Framework**: Next.js 14 (App Router)
-- **Database**: Supabase (PostgreSQL)
+- **Database**: Supabase (PostgreSQL + Auth)
 - **Telephony**: Twilio (Voice + SMS)
+- **AI**: Google Gemini Flash (urgency classification)
+- **Deployment**: Vercel
 - **Language**: TypeScript
 
 ## Project Structure
@@ -15,36 +17,53 @@ src/
 ├── app/
 │   ├── api/
 │   │   ├── webhooks/twilio/     # Twilio webhook handlers
-│   │   │   ├── call-status/     # Missed call detection
-│   │   │   └── sms-reply/       # SMS response handler
-│   │   └── leads/               # Lead management API
-│   └── page.tsx                 # Dashboard (TODO)
+│   │   ├── leads/               # Lead management API
+│   │   └── stats/               # Dashboard stats API
+│   ├── login/                   # Auth pages
+│   ├── signup/
+│   └── page.tsx                 # Main dashboard
+├── components/
+│   ├── dashboard/               # StatsCards, LeadsTable, LeadDetail
+│   └── ui/                      # Card, Badge
 ├── lib/
-│   ├── supabase.ts              # Supabase client
-│   └── twilio.ts                # Twilio client
+│   ├── supabase.ts              # Supabase client (API routes)
+│   ├── supabase-browser.ts      # Supabase client (browser)
+│   ├── supabase-server.ts       # Supabase client (server components)
+│   ├── twilio.ts                # Twilio client
+│   └── gemini.ts                # Gemini AI client
 ├── services/
-│   ├── classification.ts       # Urgency classification
+│   ├── classification.ts        # AI urgency classification
 │   ├── sms.ts                   # SMS outreach
-│   └── escalation.ts           # Lead escalation
-└── types/
-    ├── index.ts                # Domain types
-    └── database.ts             # Supabase types
+│   └── escalation.ts            # Lead escalation
+└── middleware.ts                # Auth protection
 ```
 
 ## Setup
 
-### 1. Environment Variables
-Copy `.env.example` to `.env.local` and fill in:
-- Supabase URL and keys
-- Twilio credentials
+### 1. Supabase Setup
+1. Create project at https://supabase.com
+2. Run `supabase/schema.sql` in SQL Editor
+3. Enable Email auth in Authentication settings
+4. Set Site URL to your Vercel domain
 
-### 2. Database
-Run `supabase/schema.sql` in Supabase SQL Editor.
+### 2. Environment Variables
+
+**Local** (`.env.local`):
+```
+NEXT_PUBLIC_SUPABASE_URL=https://xxx.supabase.co
+NEXT_PUBLIC_SUPABASE_ANON_KEY=xxx
+SUPABASE_SERVICE_ROLE_KEY=xxx
+TWILIO_ACCOUNT_SID=ACxxx
+TWILIO_AUTH_TOKEN=xxx
+GOOGLE_GEMINI_API_KEY=xxx
+```
+
+**Vercel**: Add same vars in Project Settings → Environment Variables
 
 ### 3. Twilio Configuration
-Configure webhooks in Twilio console:
-- **Voice Status Callback**: `https://your-domain.com/api/webhooks/twilio/call-status`
-- **SMS Webhook**: `https://your-domain.com/api/webhooks/twilio/sms-reply`
+In Twilio Console, configure your phone number:
+- **Voice → Status Callback URL**: `https://YOUR-DOMAIN.vercel.app/api/webhooks/twilio/call-status`
+- **Messaging → Webhook URL**: `https://YOUR-DOMAIN.vercel.app/api/webhooks/twilio/sms-reply`
 
 ### 4. Development
 ```bash
@@ -53,33 +72,47 @@ npm run dev
 ```
 
 ## Flow
-1. Inbound call → Twilio → missed (no-answer/busy)
-2. Webhook triggers `/api/webhooks/twilio/call-status`
-3. System records missed call, creates lead, sends recovery SMS
-4. Customer replies → `/api/webhooks/twilio/sms-reply`
-5. System classifies urgency using keyword matching
-6. Emergency/high-urgency → immediate escalation to owner/dispatcher
+```
+Customer calls → Missed → Twilio webhook
+                              ↓
+              /api/webhooks/twilio/call-status
+                              ↓
+              Record missed call + Create lead
+                              ↓
+              Send recovery SMS (within 10 seconds)
+                              ↓
+              Customer replies → /api/webhooks/twilio/sms-reply
+                              ↓
+              AI classifies urgency (Gemini Flash)
+                              ↓
+              Emergency? → Escalate immediately
+              Otherwise  → Queue for follow-up
+```
 
-## Key Concepts
+## Urgency Classification
+Uses Gemini Flash with vertical-aware prompts:
+- **emergency**: Active danger/damage (flood, gas leak, fire)
+- **high**: Urgent service need (no heat, no AC, no power)
+- **normal**: Standard service request
+- **low**: Quote requests, future scheduling
 
-### Urgency Levels
-- `emergency`: Immediate danger or critical failure (flood, gas leak, fire)
-- `high`: Urgent but not dangerous (no heat in winter, no AC in summer)
-- `normal`: Standard service request
-- `low`: Quote requests, scheduling for future
+Falls back to keyword matching if AI unavailable.
 
-### Lead Statuses
-- `pending`: SMS sent, awaiting response
-- `responded`: Customer replied
-- `qualified`: Urgency classified
-- `escalated`: Sent to dispatcher
-- `converted`: Job booked
-- `lost`: No response
-- `spam`: Opt-out or junk
+## Auth
+- Supabase Auth with email/password
+- Protected routes via middleware
+- Login at `/login`, signup at `/signup`
+
+## Done
+- [x] Twilio webhooks (call status, SMS reply)
+- [x] AI urgency classification (Gemini Flash)
+- [x] SMS outreach + escalation
+- [x] Dashboard UI (stats, leads, detail panel)
+- [x] Authentication (Supabase Auth)
+- [x] Vercel deployment
 
 ## TODO
-- [ ] Dashboard UI
 - [ ] Business onboarding flow
 - [ ] Multi-touch follow-up logic
-- [ ] Analytics dashboard
+- [ ] Real-time updates (Supabase Realtime)
 - [ ] Voice AI fallback (roadmap)
