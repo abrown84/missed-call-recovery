@@ -4,6 +4,9 @@ import { classifyUrgency } from '@/services/classification';
 import { escalateLead } from '@/services/escalation';
 import type { TwilioSMSPayload } from '@/types';
 
+// Force dynamic rendering (no static generation)
+export const dynamic = 'force-dynamic';
+
 /**
  * Twilio SMS Reply Webhook
  * Triggered when a customer replies to our recovery SMS

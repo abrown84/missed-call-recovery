@@ -3,6 +3,9 @@ import { createServerClient } from '@/lib/supabase';
 import { sendRecoverySMS } from '@/services/sms';
 import type { TwilioCallStatusPayload } from '@/types';
 
+// Force dynamic rendering (no static generation)
+export const dynamic = 'force-dynamic';
+
 /**
  * Twilio Call Status Webhook
  * Triggered when a call status changes (ringing, completed, no-answer, etc.)

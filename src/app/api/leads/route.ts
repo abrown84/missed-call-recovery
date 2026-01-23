@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from '@/lib/supabase';
 
+// Force dynamic rendering (no static generation)
+export const dynamic = 'force-dynamic';
+
 /**
  * GET /api/leads
  * Fetch leads with optional filtering
