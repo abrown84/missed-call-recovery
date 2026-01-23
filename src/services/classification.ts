@@ -1,41 +1,27 @@
 import { createServerClient } from '@/lib/supabase';
-import type { ClassificationResult, UrgencyLevel, Vertical } from '@/types';
+import { geminiFlash } from '@/lib/gemini';
+import type { ClassificationResult, UrgencyLevel } from '@/types';
 
 /**
  * Urgency Classification Service
- * Analyzes SMS responses to determine urgency level using keyword matching
- * with optional NLP enrichment (future enhancement)
+ * Uses Gemini Flash for AI-powered classification with keyword fallback
  */
 
-// Base emergency indicators (used across all verticals)
-const BASE_EMERGENCY_PATTERNS = [
-  /\b(emergency|urgent|asap|immediately|right now|help)\b/i,
-  /\b(danger|dangerous|unsafe|hazard)\b/i,
-  /\b(can'?t wait|need.*now|please hurry)\b/i,
-];
-
-// Patterns that indicate low urgency / can wait
-const LOW_URGENCY_PATTERNS = [
-  /\b(quote|estimate|pricing|cost)\b/i,
-  /\b(next week|whenever|no rush|when.*available)\b/i,
-  /\b(just asking|information|wondering)\b/i,
-];
-
-// Stop/spam patterns
+// Stop/spam patterns (check first, skip AI)
 const SPAM_PATTERNS = [
   /\b(stop|unsubscribe|remove me|wrong number)\b/i,
 ];
 
+/**
+ * Main classification function - uses AI with keyword fallback
+ */
 export async function classifyUrgency(
   messageText: string,
   vertical: string
 ): Promise<ClassificationResult> {
-  const supabase = createServerClient();
   const text = messageText.toLowerCase();
-  const matchedKeywords: string[] = [];
-  let score = 0;
 
-  // Check for spam/stop first
+  // Check for spam/stop first (no need for AI)
   for (const pattern of SPAM_PATTERNS) {
     if (pattern.test(text)) {
       return {
@@ -47,8 +33,122 @@ export async function classifyUrgency(
     }
   }
 
-  // Check base emergency patterns
-  for (const pattern of BASE_EMERGENCY_PATTERNS) {
+  // Try AI classification first
+  try {
+    const result = await classifyWithAI(messageText, vertical);
+    return result;
+  } catch (error) {
+    console.error('AI classification failed, falling back to keywords:', error);
+    return classifyWithKeywords(messageText, vertical);
+  }
+}
+
+/**
+ * AI-powered classification using Gemini Flash
+ */
+async function classifyWithAI(
+  messageText: string,
+  vertical: string
+): Promise<ClassificationResult> {
+  const prompt = buildClassificationPrompt(messageText, vertical);
+
+  const result = await geminiFlash.generateContent({
+    contents: [{ role: 'user', parts: [{ text: prompt }] }],
+    generationConfig: {
+      temperature: 0,
+      maxOutputTokens: 256,
+      responseMimeType: 'application/json',
+    },
+  });
+
+  const response = result.response.text();
+  const parsed = JSON.parse(response) as {
+    urgency: string;
+    confidence: number;
+    issue: string;
+    reasoning: string;
+  };
+
+  // Validate urgency level
+  const validUrgencies: UrgencyLevel[] = ['emergency', 'high', 'normal', 'low'];
+  const urgency = validUrgencies.includes(parsed.urgency as UrgencyLevel)
+    ? (parsed.urgency as UrgencyLevel)
+    : 'normal';
+
+  return {
+    urgency,
+    confidence: Math.min(Math.max(parsed.confidence, 0), 1),
+    keywords: [], // AI doesn't return keywords
+    issue: parsed.issue || extractIssue(messageText),
+  };
+}
+
+function buildClassificationPrompt(messageText: string, vertical: string): string {
+  const verticalContext: Record<string, string> = {
+    plumbing: 'water leaks, pipe bursts, flooding, sewage backups, no water, clogged drains',
+    hvac: 'no heat, no AC, furnace failure, gas smell, carbon monoxide, freezing conditions',
+    electrical: 'no power, sparks, burning smell, electrical fire risk, shock hazard',
+    locksmith: 'locked out, broken lock, security breach, car lockout',
+    restoration: 'water damage, fire damage, mold, storm damage',
+    roofing: 'active leak, storm damage, structural damage',
+    pest_control: 'infestation, bites, dangerous pests',
+    general: 'general service issues',
+  };
+
+  const context = verticalContext[vertical] || verticalContext.general;
+
+  return `You are classifying the urgency of a customer message for a ${vertical} service business.
+
+VERTICAL CONTEXT: ${context}
+
+URGENCY LEVELS:
+- "emergency": Immediate danger, active damage, or critical failure requiring same-day response
+  Examples: flooding, gas leak, no heat in freezing weather, electrical fire risk, locked out of home
+- "high": Urgent but not immediately dangerous, should be addressed within 24 hours
+  Examples: water heater not working, AC out in summer, partial power loss
+- "normal": Standard service request, can be scheduled normally
+  Examples: routine maintenance, minor repair, inspection request
+- "low": Not urgent, informational, or just requesting a quote
+  Examples: pricing inquiry, future scheduling, general questions
+
+CUSTOMER MESSAGE:
+"${messageText}"
+
+Respond with JSON only:
+{
+  "urgency": "emergency" | "high" | "normal" | "low",
+  "confidence": 0.0-1.0,
+  "issue": "brief description of the problem",
+  "reasoning": "why this urgency level"
+}`;
+}
+
+/**
+ * Keyword-based fallback classification
+ */
+async function classifyWithKeywords(
+  messageText: string,
+  vertical: string
+): Promise<ClassificationResult> {
+  const supabase = createServerClient();
+  const text = messageText.toLowerCase();
+  const matchedKeywords: string[] = [];
+  let score = 0;
+
+  // Base emergency patterns
+  const emergencyPatterns = [
+    /\b(emergency|urgent|asap|immediately|right now|help)\b/i,
+    /\b(danger|dangerous|unsafe|hazard)\b/i,
+    /\b(can'?t wait|need.*now|please hurry)\b/i,
+  ];
+
+  const lowUrgencyPatterns = [
+    /\b(quote|estimate|pricing|cost)\b/i,
+    /\b(next week|whenever|no rush|when.*available)\b/i,
+    /\b(just asking|information|wondering)\b/i,
+  ];
+
+  for (const pattern of emergencyPatterns) {
     const match = text.match(pattern);
     if (match) {
       score += 8;
@@ -56,14 +156,13 @@ export async function classifyUrgency(
     }
   }
 
-  // Check low urgency patterns
-  for (const pattern of LOW_URGENCY_PATTERNS) {
+  for (const pattern of lowUrgencyPatterns) {
     if (pattern.test(text)) {
       score -= 5;
     }
   }
 
-  // Fetch vertical-specific keywords from database
+  // Fetch vertical-specific keywords
   const { data: keywords } = await supabase
     .from('emergency_keywords')
     .select('keyword, weight')
@@ -79,7 +178,6 @@ export async function classifyUrgency(
     }
   }
 
-  // Determine urgency level based on score
   let urgency: UrgencyLevel;
   let confidence: number;
 
@@ -97,19 +195,15 @@ export async function classifyUrgency(
     confidence = 0.6;
   }
 
-  // Extract potential issue description (first sentence or full message if short)
-  const issue = extractIssue(messageText);
-
   return {
     urgency,
     confidence,
     keywords: matchedKeywords,
-    issue,
+    issue: extractIssue(messageText),
   };
 }
 
 function extractIssue(text: string): string {
-  // Get first sentence or first 100 chars
   const firstSentence = text.split(/[.!?]/)[0];
   if (firstSentence.length <= 100) {
     return firstSentence.trim();
