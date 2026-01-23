@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from '@/lib/supabase';
 import { sendRecoverySMS } from '@/services/sms';
+import { enrollLeadInCampaign } from '@/services/campaigns';
 import type { TwilioCallStatusPayload } from '@/types';
 
 // Force dynamic rendering (no static generation)
@@ -76,6 +77,11 @@ export async function POST(request: NextRequest) {
     // Send recovery SMS (async, don't wait)
     sendRecoverySMS(lead.id, business, From).catch((err) => {
       console.error('SMS send failed:', err);
+    });
+
+    // Enroll lead in multi-touch campaign (async, don't wait)
+    enrollLeadInCampaign(lead.id).catch((err) => {
+      console.error('Campaign enrollment failed:', err);
     });
 
     return NextResponse.json({

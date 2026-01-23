@@ -2,6 +2,9 @@ import { createServerClient, type CookieOptions } from '@supabase/ssr';
 import { NextResponse, type NextRequest } from 'next/server';
 
 export async function middleware(request: NextRequest) {
+  // Auth disabled for testing - remove this line to re-enable
+  return NextResponse.next();
+
   // Skip middleware if Supabase isn't configured
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;

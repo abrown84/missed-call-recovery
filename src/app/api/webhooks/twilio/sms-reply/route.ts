@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from '@/lib/supabase';
 import { classifyUrgency } from '@/services/classification';
 import { escalateLead } from '@/services/escalation';
+import { pauseCampaignForLead } from '@/services/campaigns';
 import type { TwilioSMSPayload } from '@/types';
 
 // Force dynamic rendering (no static generation)
@@ -78,6 +79,11 @@ export async function POST(request: NextRequest) {
     if (updateError) {
       console.error('Failed to update lead:', updateError);
     }
+
+    // Pause any active campaigns since lead has responded
+    pauseCampaignForLead(lead.id).catch((err) => {
+      console.error('Failed to pause campaign:', err);
+    });
 
     // Emergency leads get immediate escalation
     if (classification.urgency === 'emergency' || classification.urgency === 'high') {

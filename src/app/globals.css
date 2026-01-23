@@ -1,3 +1,250 @@
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@400;500;600;700;800&family=Manrope:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600&display=swap');
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+@layer base {
+  :root {
+    /* Custom Color Palette - Coolors */
+    /* #02040F - Near Black | #002642 - Dark Navy | #840032 - Burgundy | #E59500 - Golden Amber | #E5DADA - Rose Gray */
+
+    --background-start: 2 4 15;      /* #02040F - Near black */
+    --background-end: 0 38 66;       /* #002642 - Dark navy */
+    --surface: 0 38 66;              /* #002642 - Dark navy */
+    --surface-glass: 229 218 218;    /* #E5DADA - Rose gray */
+
+    --primary: 229 149 0;            /* #E59500 - Golden amber */
+    --primary-light: 245 179 51;     /* Lighter amber */
+    --primary-dark: 204 133 0;       /* Darker amber */
+
+    --accent-amber: 229 149 0;       /* #E59500 - Golden amber */
+    --accent-burgundy: 132 0 50;     /* #840032 - Burgundy */
+    --accent-emerald: 16 185 129;    /* Keep emerald for success */
+    --accent-rose: 229 218 218;      /* #E5DADA - Rose gray */
+
+    --text-primary: 229 218 218;     /* #E5DADA - Rose gray */
+    --text-secondary: 178 166 166;   /* Muted rose */
+    --text-tertiary: 128 118 118;    /* Darker muted */
+
+    /* Shadows & Effects */
+    --glow-primary: 0 0 25px rgba(229, 149, 0, 0.4);
+    --glow-amber: 0 0 20px rgba(229, 149, 0, 0.35);
+    --glow-burgundy: 0 0 20px rgba(132, 0, 50, 0.4);
+    --glow-emerald: 0 0 20px rgba(16, 185, 129, 0.3);
+  }
+}
+
+@layer base {
+  * {
+    border-color: rgba(229, 218, 218, 0.1);
+  }
+
+  body {
+    @apply bg-gradient-to-br from-[rgb(var(--background-start))] to-[rgb(var(--background-end))];
+    @apply text-[rgb(var(--text-primary))];
+    font-family: 'Manrope', -apple-system, BlinkMacSystemFont, sans-serif;
+    min-height: 100vh;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: 'Outfit', sans-serif;
+    @apply font-bold tracking-tight;
+  }
+
+  /* Dot grid background pattern */
+  body::before {
+    content: '';
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    z-index: 0;
+    background-image: radial-gradient(circle, rgba(229, 218, 218, 0.03) 1px, transparent 1px);
+    background-size: 24px 24px;
+    pointer-events: none;
+  }
+}
+
+@layer components {
+  /* Glass morphism card - Custom Palette */
+  .glass-card {
+    background: rgba(0, 38, 66, 0.4);
+    backdrop-filter: blur(12px);
+    -webkit-backdrop-filter: blur(12px);
+    border: 1px solid rgba(229, 218, 218, 0.1);
+    box-shadow: 0 25px 50px -12px rgba(2, 4, 15, 0.5);
+  }
+
+  /* Stat card with animated gradient border */
+  .stat-card {
+    position: relative;
+    @apply glass-card rounded-2xl p-6;
+    @apply transition-all duration-300;
+  }
+
+  .stat-card::before {
+    content: '';
+    position: absolute;
+    inset: -1px;
+    border-radius: inherit;
+    padding: 1px;
+    background: linear-gradient(135deg, rgba(229, 149, 0, 0.5), rgba(132, 0, 50, 0.4));
+    -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+    -webkit-mask-composite: xor;
+    mask-composite: exclude;
+    opacity: 0;
+    transition: opacity 0.3s;
+  }
+
+  .stat-card:hover::before {
+    opacity: 1;
+  }
+
+  .stat-card:hover {
+    @apply transform -translate-y-1;
+    box-shadow: var(--glow-primary);
+  }
+
+  /* Number styling */
+  .stat-number {
+    font-family: 'JetBrains Mono', monospace;
+    @apply text-4xl font-bold;
+    background: linear-gradient(135deg, #E59500, #E5DADA);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  /* Urgency indicators - Custom Palette */
+  .urgency-emergency {
+    background: rgba(132, 0, 50, 0.25);
+    color: #e07090;
+    border-color: rgba(132, 0, 50, 0.5);
+  }
+
+  .urgency-high {
+    background: rgba(229, 149, 0, 0.2);
+    color: #f5b333;
+    border-color: rgba(229, 149, 0, 0.4);
+  }
+
+  .urgency-normal {
+    background: rgba(0, 38, 66, 0.4);
+    color: #E5DADA;
+    border-color: rgba(229, 218, 218, 0.2);
+  }
+
+  .urgency-low {
+    background: rgba(229, 218, 218, 0.1);
+    color: rgba(229, 218, 218, 0.6);
+    border-color: rgba(229, 218, 218, 0.15);
+  }
+
+  /* Status badges - Custom Palette */
+  .status-pending {
+    background: rgba(229, 218, 218, 0.1);
+    color: rgba(229, 218, 218, 0.7);
+    border-color: rgba(229, 218, 218, 0.2);
+  }
+
+  .status-converted {
+    @apply bg-emerald-500/20 text-emerald-300 border-emerald-500/30;
+  }
+
+  .status-escalated {
+    background: rgba(229, 149, 0, 0.2);
+    color: #f5b333;
+    border-color: rgba(229, 149, 0, 0.4);
+  }
+
+  /* Table row hover - Custom Palette */
+  .table-row {
+    @apply transition-all duration-200;
+    border-left: 4px solid transparent;
+  }
+
+  .table-row:hover {
+    background: rgba(229, 149, 0, 0.08);
+    border-left-color: #E59500;
+  }
+
+  .table-row-emergency {
+    background: rgba(132, 0, 50, 0.15);
+    border-left-color: #840032;
+  }
+
+  .table-row-emergency:hover {
+    background: rgba(132, 0, 50, 0.25);
+  }
+
+  /* Smooth animations */
+  .animate-fade-in {
+    animation: fadeIn 0.5s ease-out;
+  }
+
+  .animate-slide-up {
+    animation: slideUp 0.5s ease-out;
+  }
+
+  .animate-slide-in-right {
+    animation: slideInRight 0.3s ease-out;
+  }
+
+  @keyframes fadeIn {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+
+  @keyframes slideUp {
+    from {
+      opacity: 0;
+      transform: translateY(20px);
+    }
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+
+  @keyframes slideInRight {
+    from {
+      opacity: 0;
+      transform: translateX(100%);
+    }
+    to {
+      opacity: 1;
+      transform: translateX(0);
+    }
+  }
+
+  /* Scrollbar styling - Custom Palette */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: rgba(0, 38, 66, 0.5);
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: rgba(229, 218, 218, 0.2);
+    border-radius: 9999px;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(229, 149, 0, 0.4);
+  }
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+}

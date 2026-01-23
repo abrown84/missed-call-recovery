@@ -5,8 +5,11 @@ import { useRouter } from 'next/navigation';
 import { StatsCards } from '@/components/dashboard/stats-cards';
 import { LeadsTable } from '@/components/dashboard/leads-table';
 import { LeadDetail } from '@/components/dashboard/lead-detail';
+import { ChatWidget } from '@/components/chat/chat-widget';
 import { createClient } from '@/lib/supabase-browser';
-import { Phone, RefreshCw, LogOut } from 'lucide-react';
+import { RefreshCw, LogOut, Activity } from 'lucide-react';
+import Image from 'next/image';
+import { cn } from '@/lib/utils';
 
 // Demo business ID - replace with auth in production
 const DEMO_BUSINESS_ID = 'demo-business-id';
@@ -206,7 +209,7 @@ export default function Dashboard() {
   }, [period]);
 
   const handleMarkConverted = async (leadId: string) => {
-    // Update locally first
+    // Update locally first (optimistic update)
     setLeads((prev) =>
       prev.map((l) =>
         l.id === leadId
@@ -216,11 +219,28 @@ export default function Dashboard() {
     );
     setSelectedLead(null);
 
-    // TODO: API call to update lead status
+    // API call to update lead status
+    try {
+      const response = await fetch(`/api/leads/${leadId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'converted' }),
+      });
+
+      if (!response.ok) {
+        console.error('Failed to update lead status');
+        // Revert optimistic update on error
+        fetchData();
+      }
+    } catch (error) {
+      console.error('Error updating lead:', error);
+      // Revert optimistic update on error
+      fetchData();
+    }
   };
 
   const handleEscalate = async (leadId: string) => {
-    // Update locally first
+    // Update locally first (optimistic update)
     setLeads((prev) =>
       prev.map((l) =>
         l.id === leadId
@@ -230,84 +250,124 @@ export default function Dashboard() {
     );
     setSelectedLead(null);
 
-    // TODO: API call to escalate lead
+    // API call to escalate lead
+    try {
+      const response = await fetch(`/api/leads/${leadId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'escalated' }),
+      });
+
+      if (!response.ok) {
+        console.error('Failed to escalate lead');
+        // Revert optimistic update on error
+        fetchData();
+      }
+    } catch (error) {
+      console.error('Error escalating lead:', error);
+      // Revert optimistic update on error
+      fetchData();
+    }
   };
 
   return (
-    <div className="min-h-screen bg-gray-50">
-      {/* Header */}
-      <header className="bg-white border-b">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex items-center justify-between h-16">
-            <div className="flex items-center gap-3">
-              <div className="p-2 bg-blue-600 rounded-lg">
-                <Phone className="w-5 h-5 text-white" />
-              </div>
-              <div>
-                <h1 className="text-lg font-semibold">Missed Call Recovery</h1>
-                <p className="text-xs text-gray-500">ABC Plumbing</p>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-4">
-              {/* Period selector */}
-              <div className="flex bg-gray-100 rounded-lg p-1">
-                {(['day', 'week', 'month'] as const).map((p) => (
-                  <button
-                    key={p}
-                    onClick={() => setPeriod(p)}
-                    className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
-                      period === p
-                        ? 'bg-white shadow text-gray-900'
-                        : 'text-gray-600 hover:text-gray-900'
-                    }`}
-                  >
-                    {p.charAt(0).toUpperCase() + p.slice(1)}
-                  </button>
-                ))}
+    <div className="min-h-screen relative">
+      {/* Background is handled by globals.css */}
+      <div className="relative z-10">
+        {/* Header */}
+        <header className="glass-card border-b border-[#E5DADA]/10">
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+            <div className="flex items-center justify-between h-20">
+              {/* Logo & Title */}
+              <div className="flex items-center gap-4">
+                <Image
+                  src="/logo.png"
+                  alt="Missed Call Recovery"
+                  width={52}
+                  height={45}
+                  className="drop-shadow-lg"
+                />
+                <div>
+                  <h1 className="text-xl font-bold text-[#E5DADA]">Missed Call Recovery</h1>
+                  <p className="text-sm text-[#E5DADA]/60 flex items-center gap-2">
+                    <Activity className="w-3 h-3" />
+                    ABC Plumbing
+                  </p>
+                </div>
               </div>
 
-              <button
-                onClick={fetchData}
-                disabled={isLoading}
-                className="p-2 hover:bg-gray-100 rounded-lg transition-colors disabled:opacity-50"
-              >
-                <RefreshCw className={`w-5 h-5 ${isLoading ? 'animate-spin' : ''}`} />
-              </button>
+              {/* Controls */}
+              <div className="flex items-center gap-4">
+                {/* Period selector */}
+                <div className="flex bg-[#002642]/50 backdrop-blur-sm rounded-xl p-1 border border-[#E5DADA]/10">
+                  {(['day', 'week', 'month'] as const).map((p) => (
+                    <button
+                      key={p}
+                      onClick={() => setPeriod(p)}
+                      className={cn(
+                        'px-4 py-2 text-sm font-semibold rounded-lg transition-all duration-200',
+                        period === p
+                          ? 'bg-gradient-to-r from-[#E59500] to-[#840032] text-white shadow-lg'
+                          : 'text-[#E5DADA]/60 hover:text-[#E5DADA]'
+                      )}
+                    >
+                      {p.charAt(0).toUpperCase() + p.slice(1)}
+                    </button>
+                  ))}
+                </div>
 
-              {/* User menu */}
-              <div className="flex items-center gap-3 pl-4 border-l">
-                {userEmail && (
-                  <span className="text-sm text-gray-600 hidden sm:block">{userEmail}</span>
-                )}
+                {/* Refresh button */}
                 <button
-                  onClick={handleLogout}
-                  className="p-2 hover:bg-gray-100 rounded-lg transition-colors text-gray-600 hover:text-gray-900"
-                  title="Sign out"
+                  onClick={fetchData}
+                  disabled={isLoading}
+                  className={cn(
+                    'p-3 rounded-xl bg-[#002642]/50 backdrop-blur-sm border border-[#E5DADA]/10',
+                    'hover:bg-[#E59500]/20 hover:border-[#E59500]/30 transition-all duration-200',
+                    'disabled:opacity-50 disabled:cursor-not-allowed'
+                  )}
                 >
-                  <LogOut className="w-5 h-5" />
+                  <RefreshCw className={cn('w-5 h-5 text-[#E5DADA]/70', isLoading && 'animate-spin')} />
                 </button>
+
+                {/* User menu */}
+                <div className="flex items-center gap-3 pl-4 border-l border-[#E5DADA]/10">
+                  {userEmail && (
+                    <span className="text-sm text-[#E5DADA]/80 hidden sm:block font-medium">
+                      {userEmail}
+                    </span>
+                  )}
+                  <button
+                    onClick={handleLogout}
+                    className="p-3 rounded-xl bg-[#002642]/50 backdrop-blur-sm border border-[#E5DADA]/10 hover:bg-[#840032]/20 hover:border-[#840032]/30 transition-all duration-200"
+                    title="Sign out"
+                  >
+                    <LogOut className="w-5 h-5 text-[#E5DADA]/70" />
+                  </button>
+                </div>
               </div>
             </div>
           </div>
-        </div>
-      </header>
+        </header>
 
-      {/* Main content */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6">
-        <StatsCards stats={stats} />
-        <LeadsTable leads={leads} onSelectLead={setSelectedLead} />
-      </main>
+        {/* Main content */}
+        <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
+          <StatsCards stats={stats} />
+          <LeadsTable leads={leads} onSelectLead={setSelectedLead} />
+        </main>
 
-      {/* Lead detail panel */}
-      {selectedLead && (
-        <LeadDetail
-          lead={selectedLead}
-          onClose={() => setSelectedLead(null)}
-          onMarkConverted={handleMarkConverted}
-          onEscalate={handleEscalate}
-        />
-      )}
+        {/* Lead detail panel */}
+        {selectedLead && (
+          <LeadDetail
+            lead={selectedLead}
+            onClose={() => setSelectedLead(null)}
+            onMarkConverted={handleMarkConverted}
+            onEscalate={handleEscalate}
+          />
+        )}
+
+        {/* AI Chat Assistant */}
+        <ChatWidget businessId={DEMO_BUSINESS_ID} />
+      </div>
     </div>
   );
 }

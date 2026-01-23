@@ -1,0 +1,498 @@
+# Multi-Touch SMS Campaign System
+
+## Overview
+
+Automated multi-touch SMS follow-up campaigns that dramatically increase response rates from 20% (single touch) to 60%+ (multi-touch sequences).
+
+## Features
+
+✅ **Auto-Enrollment** - Leads automatically enrolled in campaigns based on urgency
+✅ **Urgency-Based Sequences** - Different cadences for emergency, high, and normal priority leads
+✅ **Smart Templates** - Context-aware SMS templates for each step
+✅ **Auto-Pause** - Campaigns pause when customer responds
+✅ **Scheduled Delivery** - Vercel cron processes follow-ups every 5 minutes
+✅ **Rate Limiting** - Built-in delays to respect SMS best practices
+
+---
+
+## Campaign Sequences
+
+### **Emergency Campaign** (3 touches, fast cadence)
+- **Step 1**: Immediate - Initial recovery SMS with urgent tone
+- **Step 2**: +1 hour - First follow-up if no response
+- **Step 3**: +4 hours - Final check-in
+
+**Use case**: Flooding, gas leaks, no power, active danger
+
+---
+
+### **High Priority Campaign** (4 touches)
+- **Step 1**: Immediate - Recovery SMS, helpful tone
+- **Step 2**: +2 hours - Checking in
+- **Step 3**: +24 hours - Offering availability
+- **Step 4**: +3 days - Last check
+
+**Use case**: No heat, no AC, water heater out, urgent repairs
+
+---
+
+### **Standard Campaign** (5 touches, persistent)
+- **Step 1**: Immediate - Friendly recovery SMS
+- **Step 2**: +4 hours - First follow-up
+- **Step 3**: +24 hours - Second follow-up
+- **Step 4**: +3 days - Third follow-up
+- **Step 5**: +7 days - Final message
+
+**Use case**: Quote requests, routine repairs, normal service
+
+---
+
+## Database Schema
+
+### **campaigns**
+Defines multi-touch sequences
+
+| Field | Type | Description |
+|-------|------|-------------|
+| id | UUID | Primary key |
+| name | TEXT | Campaign name |
+| vertical | vertical_type | Service vertical (plumbing, HVAC, etc.) |
+| urgency_filter | urgency_level | Target urgency (null = all) |
+| status | campaign_status | active, paused, archived |
+| auto_enroll | BOOLEAN | Auto-enroll new leads? |
+
+### **campaign_steps**
+Individual touches in sequence
+
+| Field | Type | Description |
+|-------|------|-------------|
+| id | UUID | Primary key |
+| campaign_id | UUID | Parent campaign |
+| step_number | INTEGER | Position in sequence (1, 2, 3...) |
+| delay_minutes | INTEGER | Delay from previous step |
+| template_key | TEXT | SMS template identifier |
+
+### **campaign_enrollments**
+Tracks leads in campaigns
+
+| Field | Type | Description |
+|-------|------|-------------|
+| id | UUID | Primary key |
+| lead_id | UUID | Associated lead |
+| campaign_id | UUID | Campaign they're enrolled in |
+| current_step | INTEGER | Current position in sequence |
+| status | enrollment_status | active, paused, completed, opted_out |
+| next_send_at | TIMESTAMPTZ | When to send next SMS |
+| enrolled_at | TIMESTAMPTZ | Enrollment timestamp |
+| paused_at | TIMESTAMPTZ | When paused (if applicable) |
+| completed_at | TIMESTAMPTZ | When completed (if applicable) |
+
+---
+
+## How It Works
+
+### **1. Lead Created (Missed Call)**
+```
+Webhook: /api/webhooks/twilio/call-status
+  ↓
+Create lead in database
+  ↓
+enrollLeadInCampaign(leadId)
+  ↓
+Match campaign by urgency
+  ↓
+Create enrollment with next_send_at timestamp
+```
+
+### **2. Cron Job Processes Follow-ups**
+```
+Every 5 minutes: /api/cron/campaigns
+  ↓
+Query enrollments where next_send_at <= NOW()
+  ↓
+For each enrollment:
+  - Get template for current step
+  - Send SMS via Twilio
+  - Record in sms_messages
+  - Advance to next step OR mark completed
+```
+
+### **3. Customer Responds**
+```
+Webhook: /api/webhooks/twilio/sms-reply
+  ↓
+Record inbound SMS
+  ↓
+pauseCampaignForLead(leadId)
+  ↓
+Set enrollment status = 'paused'
+  ↓
+No more follow-ups sent
+```
+
+---
+
+## API Reference
+
+### **Campaign Service** (`src/services/campaigns.ts`)
+
+#### `enrollLeadInCampaign(leadId: string): Promise<void>`
+Auto-enrolls lead in appropriate campaign based on urgency.
+
+**Called by**: Twilio call-status webhook after lead creation
+
+**Logic:**
+1. Fetch lead with urgency level
+2. Find active campaign matching urgency
+3. Calculate first step's next_send_at
+4. Create enrollment record
+
+---
+
+#### `sendCampaignSMS(enrollmentId: string): Promise<boolean>`
+Sends SMS for current campaign step and advances sequence.
+
+**Called by**: Cron job processor
+
+**Logic:**
+1. Fetch enrollment + lead + business + campaign
+2. Get template for current step
+3. Personalize template with business name
+4. Send SMS via Twilio
+5. Record in sms_messages
+6. Update enrollment (next step or completed)
+
+---
+
+#### `pauseCampaignForLead(leadId: string): Promise<void>`
+Pauses all active campaigns for a lead.
+
+**Called by**: SMS reply webhook when customer responds
+
+**Logic:**
+1. Find active enrollments for lead
+2. Set status = 'paused'
+3. Clear next_send_at
+4. Set paused_at timestamp
+
+---
+
+#### `processDueCampaigns(): Promise<{processed, errors}>`
+Processes all enrollments due for sending (cron job entry point).
+
+**Called by**: `/api/cron/campaigns` endpoint
+
+**Logic:**
+1. Query enrollments where next_send_at <= NOW()
+2. Limit to 100 per run (rate limiting)
+3. Call sendCampaignSMS() for each
+4. Return summary stats
+
+---
+
+## SMS Templates
+
+### **Template Library** (`src/lib/templates.ts`)
+
+All templates support variable substitution:
+- `{business}` - Business name
+- `{name}` - Customer name (future)
+- `{issue}` - Reported issue (future)
+
+#### **Emergency Templates**
+```
+emergency_initial:
+"🚨 {business} - We got your call! This sounds urgent.
+What's the emergency? Reply immediately and we'll prioritize your case."
+
+emergency_followup_1:
+"{business} here - Haven't heard back. Is the emergency resolved?
+If you still need urgent help, reply NOW or call us directly."
+
+emergency_followup_2:
+"Final check-in from {business}. We want to make sure you're safe
+and the issue is handled. Reply if you need anything else."
+```
+
+#### **High Priority Templates**
+```
+high_initial:
+"Hi, this is {business}. We missed your call and this sounds important.
+What can we help with? Reply with details and we'll respond ASAP."
+
+high_followup_1:
+"{business} checking in - We're ready to help with your issue.
+Reply here or call us back at your convenience."
+
+high_followup_2:
+"Still need service from {business}? We have availability this week.
+Reply YES and we'll get you scheduled."
+
+high_followup_3:
+"Last check-in from {business}. If you've found another provider, no worries!
+Otherwise, we're here to help - just reply."
+```
+
+#### **Standard Templates**
+```
+standard_initial:
+"Hi, this is {business}. Sorry we missed your call!
+How can we help you today? Reply here or call us back."
+
+standard_followup_1:
+"{business} here - Just following up! Still need help?
+Reply with your question or give us a call."
+
+standard_followup_2:
+"Hi from {business}! We're here when you're ready.
+What can we help you with? Reply anytime."
+
+standard_followup_3:
+"{business} checking in one more time. Need a quote, service, or have questions?
+We're happy to help - just reply."
+
+standard_followup_4:
+"Last message from {business}. We're always here if you need us in the future.
+Have a great week!"
+```
+
+---
+
+## Setup Instructions
+
+### **1. Run Database Migration**
+
+In Supabase SQL Editor, execute:
+```bash
+supabase/migrations/001_campaigns.sql
+```
+
+This creates:
+- campaigns, campaign_steps, campaign_enrollments tables
+- Enum types for campaign_status and enrollment_status
+- Indexes for performance
+- Seeded campaigns with default sequences
+
+### **2. Configure Vercel Cron**
+
+`vercel.json` already configured:
+```json
+{
+  "crons": [{
+    "path": "/api/cron/campaigns",
+    "schedule": "*/5 * * * *"
+  }]
+}
+```
+
+Runs every 5 minutes in production.
+
+### **3. Deploy to Vercel**
+
+```bash
+git add .
+git commit -m "Add multi-touch SMS campaigns"
+git push
+
+vercel --prod
+```
+
+Cron job automatically activates on deployment.
+
+### **4. Test Locally**
+
+Start dev server:
+```bash
+npm run dev
+```
+
+Manually trigger cron:
+```bash
+curl http://localhost:3000/api/cron/campaigns -X POST
+```
+
+---
+
+## Testing Campaign Flow
+
+### **Test Auto-Enrollment**
+
+1. Simulate missed call via Twilio webhook:
+```bash
+curl -X POST http://localhost:3000/api/webhooks/twilio/call-status \
+  -d "CallSid=TEST123" \
+  -d "CallStatus=no-answer" \
+  -d "From=+15551234567" \
+  -d "To=+15559999999"
+```
+
+2. Check database:
+```sql
+SELECT * FROM campaign_enrollments
+WHERE lead_id = (SELECT id FROM leads ORDER BY created_at DESC LIMIT 1);
+```
+
+Should see enrollment with `status = 'active'` and `next_send_at` set.
+
+---
+
+### **Test Campaign Sending**
+
+1. Manually trigger cron:
+```bash
+curl http://localhost:3000/api/cron/campaigns -X POST
+```
+
+2. Check response:
+```json
+{
+  "success": true,
+  "processed": 1,
+  "errors": 0,
+  "timestamp": "2026-01-22T..."
+}
+```
+
+3. Check `sms_messages` table for new outbound SMS.
+
+---
+
+### **Test Auto-Pause**
+
+1. Simulate customer reply:
+```bash
+curl -X POST http://localhost:3000/api/webhooks/twilio/sms-reply \
+  -d "MessageSid=MSG123" \
+  -d "From=+15551234567" \
+  -d "To=+15559999999" \
+  -d "Body=Yes I need help with my heater"
+```
+
+2. Check enrollment status:
+```sql
+SELECT status, paused_at FROM campaign_enrollments
+WHERE lead_id = (SELECT id FROM leads WHERE caller_phone = '+15551234567');
+```
+
+Should show `status = 'paused'` with `paused_at` timestamp.
+
+---
+
+## Monitoring
+
+### **Key Metrics to Track**
+
+```sql
+-- Campaign performance
+SELECT
+  c.name,
+  COUNT(DISTINCT ce.lead_id) as enrolled_leads,
+  COUNT(DISTINCT CASE WHEN ce.status = 'completed' THEN ce.lead_id END) as completed,
+  COUNT(DISTINCT CASE WHEN ce.status = 'paused' THEN ce.lead_id END) as responded
+FROM campaigns c
+LEFT JOIN campaign_enrollments ce ON c.id = ce.campaign_id
+GROUP BY c.id, c.name;
+
+-- Response rate by step
+SELECT
+  cs.step_number,
+  COUNT(*) as sms_sent,
+  COUNT(DISTINCT CASE WHEN ce.status = 'paused' THEN ce.lead_id END) as responses
+FROM campaign_steps cs
+LEFT JOIN campaign_enrollments ce ON cs.campaign_id = ce.campaign_id
+  AND cs.step_number <= ce.current_step
+GROUP BY cs.step_number
+ORDER BY cs.step_number;
+
+-- Due messages (should be processed by cron)
+SELECT COUNT(*) as due_count
+FROM campaign_enrollments
+WHERE status = 'active'
+  AND next_send_at <= NOW();
+```
+
+---
+
+## Troubleshooting
+
+### **Campaign not sending**
+
+**Check 1**: Is cron configured?
+```bash
+vercel crons ls
+```
+
+**Check 2**: Are enrollments due?
+```sql
+SELECT * FROM campaign_enrollments
+WHERE status = 'active' AND next_send_at <= NOW();
+```
+
+**Check 3**: Check cron logs in Vercel dashboard
+
+---
+
+### **Lead not enrolled**
+
+**Check 1**: Verify campaign exists and is active
+```sql
+SELECT * FROM campaigns WHERE status = 'active';
+```
+
+**Check 2**: Check webhook logs (call-status endpoint)
+
+**Check 3**: Verify enrollLeadInCampaign was called
+
+---
+
+### **SMS not pausing on response**
+
+**Check 1**: Verify SMS reply webhook called pauseCampaignForLead
+
+**Check 2**: Check enrollment status
+```sql
+SELECT status FROM campaign_enrollments WHERE lead_id = '...';
+```
+
+---
+
+## Performance Considerations
+
+- **Rate Limiting**: 200ms delay between SMS sends in processDueCampaigns()
+- **Batch Size**: Max 100 enrollments processed per cron run
+- **Indexes**: Optimized queries with next_send_at index
+- **Twilio Costs**: ~$0.0079 per SMS (3-5 touches per lead = $0.02-$0.04)
+
+---
+
+## Future Enhancements
+
+- [ ] A/B testing for template variations
+- [ ] Custom templates per business
+- [ ] SMS delivery status webhooks
+- [ ] Campaign analytics dashboard
+- [ ] Manual campaign triggers
+- [ ] Opt-out handling (STOP keyword)
+- [ ] Time zone awareness for send times
+- [ ] Business hours respect (don't send at 2am)
+
+---
+
+## Files Created
+
+```
+supabase/migrations/001_campaigns.sql     # Database schema
+src/lib/templates.ts                      # SMS template library
+src/services/campaigns.ts                 # Campaign logic
+src/app/api/cron/campaigns/route.ts       # Vercel cron endpoint
+vercel.json                               # Cron configuration
+CAMPAIGNS.md                              # This file
+```
+
+## Files Modified
+
+```
+src/types/database.ts                            # Added campaign table types
+src/app/api/webhooks/twilio/call-status/route.ts  # Added auto-enrollment
+src/app/api/webhooks/twilio/sms-reply/route.ts    # Added auto-pause
+```

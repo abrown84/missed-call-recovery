@@ -167,6 +167,108 @@ export interface Database {
           sent_at?: string;
         };
       };
+      campaigns: {
+        Row: {
+          id: string;
+          name: string;
+          description: string | null;
+          vertical: string;
+          urgency_filter: string | null;
+          status: string;
+          auto_enroll: boolean;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          name: string;
+          description?: string | null;
+          vertical?: string;
+          urgency_filter?: string | null;
+          status?: string;
+          auto_enroll?: boolean;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          name?: string;
+          description?: string | null;
+          vertical?: string;
+          urgency_filter?: string | null;
+          status?: string;
+          auto_enroll?: boolean;
+          created_at?: string;
+          updated_at?: string;
+        };
+      };
+      campaign_steps: {
+        Row: {
+          id: string;
+          campaign_id: string;
+          step_number: number;
+          delay_minutes: number;
+          template_key: string;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          campaign_id: string;
+          step_number: number;
+          delay_minutes: number;
+          template_key: string;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          campaign_id?: string;
+          step_number?: number;
+          delay_minutes?: number;
+          template_key?: string;
+          created_at?: string;
+        };
+      };
+      campaign_enrollments: {
+        Row: {
+          id: string;
+          lead_id: string;
+          campaign_id: string;
+          current_step: number;
+          status: string;
+          next_send_at: string | null;
+          enrolled_at: string;
+          paused_at: string | null;
+          completed_at: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: {
+          id?: string;
+          lead_id: string;
+          campaign_id: string;
+          current_step?: number;
+          status?: string;
+          next_send_at?: string | null;
+          enrolled_at?: string;
+          paused_at?: string | null;
+          completed_at?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+        Update: {
+          id?: string;
+          lead_id?: string;
+          campaign_id?: string;
+          current_step?: number;
+          status?: string;
+          next_send_at?: string | null;
+          enrolled_at?: string;
+          paused_at?: string | null;
+          completed_at?: string | null;
+          created_at?: string;
+          updated_at?: string;
+        };
+      };
     };
     Views: {};
     Functions: {};
