@@ -5,15 +5,10 @@ export const dynamic = 'force-dynamic';
 
 /**
  * Vercel Cron Endpoint - Campaign Processor
- * Runs every 5 minutes to send scheduled campaign messages
+ * Runs daily to send scheduled campaign messages
  *
  * Configure in vercel.json:
- * {
- *   "crons": [{
- *     "path": "/api/cron/campaigns",
- *     "schedule": "*/5 * * * *"
- *   }]
- * }
+ * { "crons": [{ "path": "/api/cron/campaigns", "schedule": "0 9 * * *" }] }
  */
 export async function GET(request: NextRequest) {
   try {
