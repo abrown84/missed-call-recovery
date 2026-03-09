@@ -1,7 +1,8 @@
 'use client';
 
+import { useRouter } from 'next/navigation';
 import { cn, formatPhone, formatRelativeTime } from '@/lib/utils';
-import { Phone, MessageSquare, Clock, ChevronRight, Zap } from 'lucide-react';
+import { Phone, MessageSquare, Clock, ChevronRight, Zap, ExternalLink } from 'lucide-react';
 import type { LeadStatus, UrgencyLevel } from '@/types';
 
 interface Lead {
@@ -39,6 +40,18 @@ const statusConfig: Record<string, { label: string; className: string }> = {
 };
 
 export function LeadsTable({ leads, onSelectLead }: LeadsTableProps) {
+  const router = useRouter();
+
+  const handleLeadClick = (lead: Lead, e: React.MouseEvent) => {
+    // If clicking on the expand button area, open the detail panel
+    // Otherwise navigate to the full page
+    if ((e.target as HTMLElement).closest('[data-action="expand"]')) {
+      onSelectLead?.(lead);
+    } else {
+      router.push(`/leads/${lead.id}`);
+    }
+  };
+
   if (leads.length === 0) {
     return (
       <div className="glass-card rounded-2xl p-12 text-center animate-fade-in">
@@ -72,11 +85,11 @@ export function LeadsTable({ leads, onSelectLead }: LeadsTableProps) {
           const UrgencyIcon = urgency?.icon;
 
           return (
-            <button
+            <div
               key={lead.id}
-              onClick={() => onSelectLead?.(lead)}
+              onClick={(e) => handleLeadClick(lead, e)}
               className={cn(
-                'w-full px-6 py-4 flex items-center gap-4 transition-all duration-200 text-left',
+                'w-full px-6 py-4 flex items-center gap-4 transition-all duration-200 text-left cursor-pointer',
                 'hover:bg-white/5',
                 isEmergency ? 'table-row-emergency' : 'table-row'
               )}
@@ -142,8 +155,14 @@ export function LeadsTable({ leads, onSelectLead }: LeadsTableProps) {
                 {formatRelativeTime(lead.created_at)}
               </div>
 
-              <ChevronRight className="w-5 h-5 text-[#E5DADA]/30 flex-shrink-0 group-hover:text-[#E59500] transition-colors" />
-            </button>
+              <button
+                data-action="expand"
+                className="p-2 rounded-lg hover:bg-[#E59500]/20 transition-colors"
+                title="Quick view"
+              >
+                <ChevronRight className="w-5 h-5 text-[#E5DADA]/30 group-hover:text-[#E59500] transition-colors" />
+              </button>
+            </div>
           );
         })}
       </div>

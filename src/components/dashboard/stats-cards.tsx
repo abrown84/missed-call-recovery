@@ -1,5 +1,6 @@
 'use client';
 
+import { useRouter } from 'next/navigation';
 import { cn } from '@/lib/utils';
 import {
   PhoneOff,
@@ -23,6 +24,8 @@ interface StatsCardsProps {
 }
 
 export function StatsCards({ stats }: StatsCardsProps) {
+  const router = useRouter();
+
   const cards = [
     {
       title: 'Response Rate',
@@ -32,6 +35,7 @@ export function StatsCards({ stats }: StatsCardsProps) {
       color: 'text-emerald-400',
       glowColor: 'hover:shadow-[0_0_30px_rgba(16,185,129,0.3)]',
       size: 'col-span-2 row-span-2', // Hero card
+      href: '/stats?type=response-rate',
     },
     {
       title: 'Missed Calls',
@@ -41,6 +45,7 @@ export function StatsCards({ stats }: StatsCardsProps) {
       color: 'text-[#E5DADA]',
       glowColor: 'hover:shadow-[0_0_20px_rgba(229,218,218,0.2)]',
       size: 'col-span-1',
+      href: '/stats?type=missed-calls',
     },
     {
       title: 'SMS Sent',
@@ -50,6 +55,7 @@ export function StatsCards({ stats }: StatsCardsProps) {
       color: 'text-[#E59500]',
       glowColor: 'hover:shadow-[0_0_20px_rgba(229,149,0,0.35)]',
       size: 'col-span-1',
+      href: '/stats?type=sms-sent',
     },
     {
       title: 'Emergencies',
@@ -59,6 +65,7 @@ export function StatsCards({ stats }: StatsCardsProps) {
       color: 'text-[#e07090]',
       glowColor: 'hover:shadow-[0_0_20px_rgba(132,0,50,0.4)]',
       size: 'col-span-1',
+      href: '/stats?type=emergencies',
     },
     {
       title: 'Recovered',
@@ -68,6 +75,7 @@ export function StatsCards({ stats }: StatsCardsProps) {
       color: 'text-emerald-400',
       glowColor: 'hover:shadow-[0_0_20px_rgba(16,185,129,0.3)]',
       size: 'col-span-1',
+      href: '/stats?type=recovered',
     },
     {
       title: 'Est. Revenue',
@@ -77,6 +85,7 @@ export function StatsCards({ stats }: StatsCardsProps) {
       color: 'text-[#E59500]',
       glowColor: 'hover:shadow-[0_0_25px_rgba(229,149,0,0.4)]',
       size: 'col-span-2',
+      href: '/stats?type=revenue',
     },
   ];
 
@@ -85,6 +94,7 @@ export function StatsCards({ stats }: StatsCardsProps) {
       {cards.map((card, index) => (
         <div
           key={card.title}
+          onClick={() => router.push(card.href)}
           className={cn(
             'stat-card group cursor-pointer',
             card.glowColor,

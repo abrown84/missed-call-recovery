@@ -1,13 +1,14 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback, useMemo } from 'react';
 import { useRouter } from 'next/navigation';
 import { StatsCards } from '@/components/dashboard/stats-cards';
 import { LeadsTable } from '@/components/dashboard/leads-table';
 import { LeadDetail } from '@/components/dashboard/lead-detail';
 import { ChatWidget } from '@/components/chat/chat-widget';
 import { createClient } from '@/lib/supabase-browser';
-import { RefreshCw, LogOut, Activity } from 'lucide-react';
+import { useRealtimeLeads } from '@/hooks/use-realtime-leads';
+import { RefreshCw, LogOut, Activity, Search, Filter, X, Settings } from 'lucide-react';
 import Image from 'next/image';
 import { cn } from '@/lib/utils';
 
@@ -156,8 +157,76 @@ export default function Dashboard() {
   const [isLoading, setIsLoading] = useState(false);
   const [period, setPeriod] = useState<'day' | 'week' | 'month'>('week');
   const [userEmail, setUserEmail] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [statusFilter, setStatusFilter] = useState<string>('all');
+  const [urgencyFilter, setUrgencyFilter] = useState<string>('all');
+  const [showFilters, setShowFilters] = useState(false);
   const router = useRouter();
   const supabase = createClient();
+
+  // Real-time lead updates
+  const handleLeadInsert = useCallback((newLead: Lead) => {
+    setLeads((prev) => [newLead, ...prev]);
+  }, []);
+
+  const handleLeadUpdate = useCallback((updatedLead: Lead) => {
+    setLeads((prev) =>
+      prev.map((l) => (l.id === updatedLead.id ? updatedLead : l))
+    );
+    // Update selected lead if it's the one being viewed
+    setSelectedLead((prev) =>
+      prev?.id === updatedLead.id ? updatedLead : prev
+    );
+  }, []);
+
+  const handleLeadDelete = useCallback((deletedId: string) => {
+    setLeads((prev) => prev.filter((l) => l.id !== deletedId));
+    setSelectedLead((prev) => (prev?.id === deletedId ? null : prev));
+  }, []);
+
+  useRealtimeLeads({
+    businessId: DEMO_BUSINESS_ID,
+    onInsert: handleLeadInsert,
+    onUpdate: handleLeadUpdate,
+    onDelete: handleLeadDelete,
+  });
+
+  // Filtered leads based on search and filters
+  const filteredLeads = useMemo(() => {
+    return leads.filter((lead) => {
+      // Search filter
+      if (searchQuery) {
+        const query = searchQuery.toLowerCase();
+        const matchesPhone = lead.caller_phone.toLowerCase().includes(query);
+        const matchesIssue = lead.issue?.toLowerCase().includes(query);
+        const matchesResponse = lead.sms_response_text?.toLowerCase().includes(query);
+        if (!matchesPhone && !matchesIssue && !matchesResponse) {
+          return false;
+        }
+      }
+
+      // Status filter
+      if (statusFilter !== 'all' && lead.status !== statusFilter) {
+        return false;
+      }
+
+      // Urgency filter
+      if (urgencyFilter !== 'all') {
+        if (urgencyFilter === 'none' && lead.urgency !== null) {
+          return false;
+        } else if (urgencyFilter !== 'none' && lead.urgency !== urgencyFilter) {
+          return false;
+        }
+      }
+
+      return true;
+    });
+  }, [leads, searchQuery, statusFilter, urgencyFilter]);
+
+  const activeFilterCount = [
+    statusFilter !== 'all',
+    urgencyFilter !== 'all',
+  ].filter(Boolean).length;
 
   useEffect(() => {
     supabase.auth.getUser().then((result: { data: { user: { email?: string } | null } }) => {
@@ -171,12 +240,12 @@ export default function Dashboard() {
     router.refresh();
   };
 
-  const fetchData = async () => {
+  const fetchData = useCallback(async (currentPeriod: 'day' | 'week' | 'month') => {
     setIsLoading(true);
     try {
       // Fetch stats
       const statsRes = await fetch(
-        `/api/stats?businessId=${DEMO_BUSINESS_ID}&period=${period}`
+        `/api/stats?businessId=${DEMO_BUSINESS_ID}&period=${currentPeriod}`
       );
       if (statsRes.ok) {
         const statsData = await statsRes.json();
@@ -199,14 +268,14 @@ export default function Dashboard() {
     } finally {
       setIsLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
-    fetchData();
+    fetchData(period);
     // Poll for updates every 30 seconds
-    const interval = setInterval(fetchData, 30000);
+    const interval = setInterval(() => fetchData(period), 30000);
     return () => clearInterval(interval);
-  }, [period]);
+  }, [period, fetchData]);
 
   const handleMarkConverted = async (leadId: string) => {
     // Update locally first (optimistic update)
@@ -230,12 +299,12 @@ export default function Dashboard() {
       if (!response.ok) {
         console.error('Failed to update lead status');
         // Revert optimistic update on error
-        fetchData();
+        fetchData(period);
       }
     } catch (error) {
       console.error('Error updating lead:', error);
       // Revert optimistic update on error
-      fetchData();
+      fetchData(period);
     }
   };
 
@@ -261,12 +330,12 @@ export default function Dashboard() {
       if (!response.ok) {
         console.error('Failed to escalate lead');
         // Revert optimistic update on error
-        fetchData();
+        fetchData(period);
       }
     } catch (error) {
       console.error('Error escalating lead:', error);
       // Revert optimistic update on error
-      fetchData();
+      fetchData(period);
     }
   };
 
@@ -279,14 +348,16 @@ export default function Dashboard() {
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
             <div className="flex items-center justify-between h-20">
               {/* Logo & Title */}
-              <div className="flex items-center gap-4">
-                <Image
-                  src="/logo.png"
-                  alt="Missed Call Recovery"
-                  width={52}
-                  height={45}
-                  className="drop-shadow-lg"
-                />
+              <div className="flex items-center gap-3">
+                <div className="w-11 h-11 rounded-xl bg-[#002642]/60 border border-[#E5DADA]/10 flex items-center justify-center p-1.5">
+                  <Image
+                    src="/logo.png"
+                    alt="Missed Call Recovery"
+                    width={36}
+                    height={31}
+                    className="drop-shadow-md"
+                  />
+                </div>
                 <div>
                   <h1 className="text-xl font-bold text-[#E5DADA]">Missed Call Recovery</h1>
                   <p className="text-sm text-[#E5DADA]/60 flex items-center gap-2">
@@ -318,15 +389,28 @@ export default function Dashboard() {
 
                 {/* Refresh button */}
                 <button
-                  onClick={fetchData}
+                  onClick={() => fetchData(period)}
                   disabled={isLoading}
                   className={cn(
                     'p-3 rounded-xl bg-[#002642]/50 backdrop-blur-sm border border-[#E5DADA]/10',
                     'hover:bg-[#E59500]/20 hover:border-[#E59500]/30 transition-all duration-200',
                     'disabled:opacity-50 disabled:cursor-not-allowed'
                   )}
+                  title="Refresh data"
                 >
                   <RefreshCw className={cn('w-5 h-5 text-[#E5DADA]/70', isLoading && 'animate-spin')} />
+                </button>
+
+                {/* Settings button */}
+                <button
+                  onClick={() => router.push('/settings')}
+                  className={cn(
+                    'p-3 rounded-xl bg-[#002642]/50 backdrop-blur-sm border border-[#E5DADA]/10',
+                    'hover:bg-[#E59500]/20 hover:border-[#E59500]/30 transition-all duration-200'
+                  )}
+                  title="Settings"
+                >
+                  <Settings className="w-5 h-5 text-[#E5DADA]/70" />
                 </button>
 
                 {/* User menu */}
@@ -352,7 +436,136 @@ export default function Dashboard() {
         {/* Main content */}
         <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
           <StatsCards stats={stats} />
-          <LeadsTable leads={leads} onSelectLead={setSelectedLead} />
+
+          {/* Search and Filter Bar */}
+          <div className="glass-card rounded-2xl p-4">
+            <div className="flex flex-col sm:flex-row gap-4">
+              {/* Search Input */}
+              <div className="relative flex-1">
+                <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-[#E5DADA]/40" />
+                <input
+                  type="text"
+                  placeholder="Search by phone, issue, or message..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className={cn(
+                    'w-full pl-12 pr-10 py-3 rounded-xl',
+                    'bg-[#002642]/50 border border-[#E5DADA]/10',
+                    'text-[#E5DADA] placeholder-[#E5DADA]/40',
+                    'focus:outline-none focus:border-[#E59500]/50 focus:ring-1 focus:ring-[#E59500]/30',
+                    'transition-all duration-200'
+                  )}
+                />
+                {searchQuery && (
+                  <button
+                    onClick={() => setSearchQuery('')}
+                    className="absolute right-4 top-1/2 -translate-y-1/2 text-[#E5DADA]/40 hover:text-[#E5DADA] transition-colors"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
+
+              {/* Filter Toggle */}
+              <button
+                onClick={() => setShowFilters(!showFilters)}
+                className={cn(
+                  'flex items-center gap-2 px-4 py-3 rounded-xl',
+                  'bg-[#002642]/50 border border-[#E5DADA]/10',
+                  'text-[#E5DADA]/70 hover:text-[#E5DADA] hover:border-[#E59500]/30',
+                  'transition-all duration-200',
+                  showFilters && 'border-[#E59500]/50 text-[#E59500]'
+                )}
+              >
+                <Filter className="w-5 h-5" />
+                <span className="font-medium">Filters</span>
+                {activeFilterCount > 0 && (
+                  <span className="px-2 py-0.5 text-xs font-bold rounded-full bg-[#E59500] text-[#02040F]">
+                    {activeFilterCount}
+                  </span>
+                )}
+              </button>
+            </div>
+
+            {/* Filter Options */}
+            {showFilters && (
+              <div className="mt-4 pt-4 border-t border-[#E5DADA]/10 flex flex-wrap gap-4 animate-fade-in">
+                {/* Status Filter */}
+                <div className="flex flex-col gap-2">
+                  <label className="text-xs font-medium text-[#E5DADA]/60 uppercase tracking-wide">
+                    Status
+                  </label>
+                  <select
+                    value={statusFilter}
+                    onChange={(e) => setStatusFilter(e.target.value)}
+                    className={cn(
+                      'px-4 py-2 rounded-lg',
+                      'bg-[#002642]/60 border border-[#E5DADA]/10',
+                      'text-[#E5DADA] text-sm',
+                      'focus:outline-none focus:border-[#E59500]/50',
+                      'cursor-pointer'
+                    )}
+                  >
+                    <option value="all">All Statuses</option>
+                    <option value="pending">Pending</option>
+                    <option value="responded">Responded</option>
+                    <option value="qualified">Qualified</option>
+                    <option value="escalated">Escalated</option>
+                    <option value="converted">Converted</option>
+                    <option value="lost">Lost</option>
+                    <option value="spam">Spam</option>
+                  </select>
+                </div>
+
+                {/* Urgency Filter */}
+                <div className="flex flex-col gap-2">
+                  <label className="text-xs font-medium text-[#E5DADA]/60 uppercase tracking-wide">
+                    Urgency
+                  </label>
+                  <select
+                    value={urgencyFilter}
+                    onChange={(e) => setUrgencyFilter(e.target.value)}
+                    className={cn(
+                      'px-4 py-2 rounded-lg',
+                      'bg-[#002642]/60 border border-[#E5DADA]/10',
+                      'text-[#E5DADA] text-sm',
+                      'focus:outline-none focus:border-[#E59500]/50',
+                      'cursor-pointer'
+                    )}
+                  >
+                    <option value="all">All Urgencies</option>
+                    <option value="emergency">Emergency</option>
+                    <option value="high">High</option>
+                    <option value="normal">Normal</option>
+                    <option value="low">Low</option>
+                    <option value="none">Not Classified</option>
+                  </select>
+                </div>
+
+                {/* Clear Filters */}
+                {activeFilterCount > 0 && (
+                  <button
+                    onClick={() => {
+                      setStatusFilter('all');
+                      setUrgencyFilter('all');
+                    }}
+                    className="self-end px-4 py-2 text-sm text-[#840032] hover:text-[#e07090] transition-colors"
+                  >
+                    Clear Filters
+                  </button>
+                )}
+              </div>
+            )}
+
+            {/* Results Count */}
+            {(searchQuery || activeFilterCount > 0) && (
+              <div className="mt-3 text-sm text-[#E5DADA]/60">
+                Showing {filteredLeads.length} of {leads.length} leads
+              </div>
+            )}
+          </div>
+
+          <LeadsTable leads={filteredLeads} onSelectLead={setSelectedLead} />
         </main>
 
         {/* Lead detail panel */}
