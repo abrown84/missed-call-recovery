@@ -6,7 +6,7 @@ Automated missed-call recovery for service businesses. When a call goes unanswer
 
 - **Missed-call detection** through Twilio voice status webhooks (`no-answer`, `busy`, `failed`)
 - **Instant recovery SMS** sent to the caller
-- **AI urgency sorting** with Google Gemini Flash (`gemini-2.0-flash`) — emergency / high / normal / low — using prompts tailored to each trade, plus a keyword fallback
+- **AI urgency sorting** with Google Gemini Flash (`gemini-3.8-flash`, overridable via `GEMINI_MODEL`) — emergency / high / normal / low — using prompts tailored to each trade, plus a keyword fallback
 - **Escalation** of emergency and high-urgency leads (SMS to the business emergency number)
 - **Multi-touch follow-up campaigns** with auto-enrollment, pause-on-reply, and a Vercel cron processor (`/api/cron/campaigns`)
 - **Dashboard** with stats, a leads table, lead detail panel, and Supabase Realtime updates
@@ -51,7 +51,7 @@ Required env vars (see `.env.example`):
 | `TWILIO_AUTH_TOKEN` | Twilio client |
 | `GOOGLE_GEMINI_API_KEY` | Gemini classification |
 
-Optional: `NEXT_PUBLIC_APP_URL` (app base URL), `CRON_SECRET` (Bearer auth for `/api/cron/campaigns`).
+Optional: `NEXT_PUBLIC_APP_URL` (app base URL), `CRON_SECRET` (Bearer auth for `/api/cron/campaigns`), `GEMINI_MODEL` (defaults to `gemini-3.8-flash`).
 
 ## Roadmap
 

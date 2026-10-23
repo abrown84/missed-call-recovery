@@ -56,7 +56,8 @@ async function classifyWithAI(
     contents: [{ role: 'user', parts: [{ text: prompt }] }],
     generationConfig: {
       temperature: 0,
-      maxOutputTokens: 256,
+      // Thinking tokens count toward this limit on Gemini 3.x; keep headroom for JSON.
+      maxOutputTokens: 1024,
       responseMimeType: 'application/json',
     },
   });
