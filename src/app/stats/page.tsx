@@ -1,10 +1,10 @@
 'use client';
 
-import { useState, Suspense } from 'react';
+import { Suspense, useState } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
+import { AppShell } from '@/components/layout/app-shell';
 import { cn } from '@/lib/utils';
 import {
-  ArrowLeft,
   PhoneOff,
   MessageSquare,
   TrendingUp,
@@ -16,6 +16,7 @@ import {
   BarChart3,
   PieChart,
   Loader2,
+  ArrowLeft,
 } from 'lucide-react';
 
 interface StatDetail {
@@ -30,49 +31,51 @@ interface DailyBreakdown {
   value: number;
 }
 
-// Demo data
-const STAT_CONFIGS: Record<string, {
-  title: string;
-  icon: typeof PhoneOff;
-  color: string;
-  description: string;
-  unit?: string;
-}> = {
+const STAT_CONFIGS: Record<
+  string,
+  {
+    title: string;
+    icon: typeof PhoneOff;
+    color: string;
+    description: string;
+    unit?: string;
+  }
+> = {
   'missed-calls': {
     title: 'Missed Calls',
     icon: PhoneOff,
-    color: 'text-[#E5DADA]',
+    color: 'text-foreground',
     description: 'Total inbound calls that went unanswered',
   },
   'sms-sent': {
     title: 'SMS Sent',
     icon: MessageSquare,
-    color: 'text-[#E59500]',
+    color: 'text-primary',
     description: 'Recovery messages sent to missed callers',
   },
   'response-rate': {
     title: 'Response Rate',
     icon: TrendingUp,
-    color: 'text-emerald-400',
+    color: 'text-success',
     description: 'Percentage of SMS that received a reply',
     unit: '%',
   },
-  'emergencies': {
+  emergencies: {
     title: 'Emergencies',
     icon: AlertTriangle,
-    color: 'text-[#840032]',
+    color: 'text-danger',
     description: 'High-priority leads requiring immediate attention',
   },
-  'recovered': {
+  recovered: {
     title: 'Recovered Leads',
     icon: CheckCircle,
-    color: 'text-emerald-400',
+    color: 'text-success',
     description: 'Leads successfully converted into jobs',
   },
-  'revenue': {
+  revenue: {
     title: 'Estimated Revenue',
     icon: DollarSign,
-    color: 'text-[#E59500]',
+    color: 'text-primary',
     description: 'Potential value from recovered leads',
     unit: '$',
   },
@@ -108,258 +111,231 @@ function StatsPageContent() {
   const maxValue = Math.max(...dailyData.map((d) => d.value));
 
   return (
-    <div className="min-h-screen relative">
-      <div className="relative z-10">
-        {/* Header */}
-        <header className="glass-card border-b border-[#E5DADA]/10">
-          <div className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div className="flex items-center justify-between h-20">
-              <div className="flex items-center gap-4">
-                <button
-                  onClick={() => router.push('/')}
-                  className="p-2 rounded-lg hover:bg-[#E5DADA]/10 transition-colors"
-                >
-                  <ArrowLeft className="w-5 h-5 text-[#E5DADA]/70" />
-                </button>
-                <div className="flex items-center gap-3">
-                  <div className={cn(
-                    'p-3 rounded-xl bg-[#002642]/60 border border-[#E5DADA]/10'
-                  )}>
-                    <Icon className={cn('w-6 h-6', config.color)} strokeWidth={2} />
-                  </div>
-                  <div>
-                    <h1 className="text-xl font-bold text-[#E5DADA]">{config.title}</h1>
-                    <p className="text-sm text-[#E5DADA]/60">{config.description}</p>
-                  </div>
-                </div>
-              </div>
-
-              {/* Period selector */}
-              <div className="flex bg-[#002642]/50 backdrop-blur-sm rounded-xl p-1 border border-[#E5DADA]/10">
-                {(['day', 'week', 'month'] as const).map((p) => (
-                  <button
-                    key={p}
-                    onClick={() => setSelectedPeriod(p)}
-                    className={cn(
-                      'px-4 py-2 text-sm font-semibold rounded-lg transition-all duration-200',
-                      selectedPeriod === p
-                        ? 'bg-gradient-to-r from-[#E59500] to-[#840032] text-white shadow-lg'
-                        : 'text-[#E5DADA]/60 hover:text-[#E5DADA]'
-                    )}
-                  >
-                    {p.charAt(0).toUpperCase() + p.slice(1)}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-        </header>
-
-        <main className="max-w-5xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
-          {/* Period Comparison */}
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-            {periods.map((period) => (
-              <div
-                key={period.period}
-                className="glass-card rounded-2xl p-5 hover:shadow-[0_0_30px_rgba(229,149,0,0.15)] transition-all duration-300"
+    <AppShell
+      title={config.title}
+      subtitle={config.description}
+      maxWidth="5xl"
+      actions={
+        <>
+          <button
+            type="button"
+            onClick={() => router.push('/')}
+            className="btn-ghost"
+            aria-label="Back to dashboard"
+          >
+            <ArrowLeft className="w-5 h-5" />
+          </button>
+          <div
+            className="hidden sm:flex bg-surface/70 rounded-xl p-1 border border-border/50"
+            role="group"
+            aria-label="Time period"
+          >
+            {(['day', 'week', 'month'] as const).map((p) => (
+              <button
+                key={p}
+                type="button"
+                onClick={() => setSelectedPeriod(p)}
+                className={cn(
+                  'px-3 py-1.5 text-sm font-semibold rounded-lg transition-all',
+                  selectedPeriod === p
+                    ? 'bg-gradient-to-r from-primary to-accent text-primary-foreground'
+                    : 'text-muted-foreground hover:text-foreground'
+                )}
               >
-                <div className="text-sm text-[#E5DADA]/60 mb-1">{period.period}</div>
-                <div className="stat-number text-3xl">
-                  {config.unit === '$' && '$'}
-                  {period.value.toLocaleString()}
-                  {config.unit === '%' && '%'}
-                </div>
-                <div className={cn(
-                  'flex items-center gap-1 text-sm mt-2',
-                  period.change >= 0 ? 'text-emerald-400' : 'text-[#840032]'
-                )}>
-                  {period.change >= 0 ? (
-                    <ArrowUpRight className="w-4 h-4" />
-                  ) : (
-                    <ArrowDownRight className="w-4 h-4" />
-                  )}
-                  <span>
-                    {period.change >= 0 ? '+' : ''}{period.changePercent.toFixed(1)}%
-                  </span>
-                </div>
-              </div>
+                {p.charAt(0).toUpperCase() + p.slice(1)}
+              </button>
             ))}
           </div>
+        </>
+      }
+    >
+      <div className="space-y-6 sm:space-y-8">
+        <div className="flex items-center gap-3 sm:hidden">
+          <div className="p-3 rounded-xl bg-surface border border-border/50">
+            <Icon className={cn('w-6 h-6', config.color)} aria-hidden />
+          </div>
+          <div
+            className="flex-1 flex bg-surface/70 rounded-xl p-1 border border-border/50"
+            role="group"
+            aria-label="Time period"
+          >
+            {(['day', 'week', 'month'] as const).map((p) => (
+              <button
+                key={p}
+                type="button"
+                onClick={() => setSelectedPeriod(p)}
+                className={cn(
+                  'flex-1 px-2 py-1.5 text-xs font-semibold rounded-lg',
+                  selectedPeriod === p
+                    ? 'bg-gradient-to-r from-primary to-accent text-primary-foreground'
+                    : 'text-muted-foreground'
+                )}
+              >
+                {p.charAt(0).toUpperCase() + p.slice(1)}
+              </button>
+            ))}
+          </div>
+        </div>
 
-          {/* Chart */}
-          <div className="glass-card rounded-2xl p-6">
-            <div className="flex items-center justify-between mb-6">
-              <h2 className="text-lg font-bold text-[#E5DADA] flex items-center gap-2">
-                <BarChart3 className="w-5 h-5 text-[#E59500]" />
-                Daily Breakdown
-              </h2>
-              <span className="text-sm text-[#E5DADA]/60">Last 7 days</span>
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 sm:gap-4">
+          {periods.map((period) => (
+            <div key={period.period} className="glass-card rounded-2xl p-4 sm:p-5">
+              <div className="text-sm text-muted-foreground mb-1">{period.period}</div>
+              <div className="stat-number text-2xl sm:text-3xl">
+                {config.unit === '$' && '$'}
+                {period.value.toLocaleString()}
+                {config.unit === '%' && '%'}
+              </div>
+              <div
+                className={cn(
+                  'flex items-center gap-1 text-sm mt-2',
+                  period.change >= 0 ? 'text-success' : 'text-danger'
+                )}
+              >
+                {period.change >= 0 ? (
+                  <ArrowUpRight className="w-4 h-4" aria-hidden />
+                ) : (
+                  <ArrowDownRight className="w-4 h-4" aria-hidden />
+                )}
+                <span>
+                  {period.change >= 0 ? '+' : ''}
+                  {period.changePercent.toFixed(1)}%
+                </span>
+              </div>
             </div>
+          ))}
+        </div>
 
-            {/* Simple Bar Chart */}
-            <div className="flex items-end justify-between gap-2 h-48 mt-4">
-              {dailyData.map((day, index) => {
-                const height = maxValue > 0 ? (day.value / maxValue) * 100 : 0;
-                const date = new Date(day.date);
-                const dayName = date.toLocaleDateString('en-US', { weekday: 'short' });
+        <section className="glass-card rounded-2xl p-5 sm:p-6">
+          <div className="flex items-center justify-between mb-6">
+            <h2 className="text-lg font-bold flex items-center gap-2">
+              <BarChart3 className="w-5 h-5 text-primary" aria-hidden />
+              Daily breakdown
+            </h2>
+            <span className="text-sm text-muted-foreground">Last 7 days</span>
+          </div>
 
-                return (
-                  <div key={day.date} className="flex-1 flex flex-col items-center gap-2">
-                    <div className="text-xs text-[#E5DADA] font-medium">{day.value}</div>
-                    <div className="w-full relative" style={{ height: '160px' }}>
-                      <div
-                        className={cn(
-                          'absolute bottom-0 left-0 right-0 rounded-t-lg transition-all duration-500',
-                          'bg-gradient-to-t from-[#E59500] to-[#840032]',
-                          'hover:from-[#f5a520] hover:to-[#a01042]',
-                          'cursor-pointer'
-                        )}
-                        style={{
-                          height: `${height}%`,
-                          animationDelay: `${index * 0.1}s`,
-                        }}
-                      />
-                    </div>
-                    <div className="text-xs text-[#E5DADA]/60">{dayName}</div>
+          <div className="flex items-end justify-between gap-2 h-48 mt-4" role="img" aria-label="Daily values bar chart">
+            {dailyData.map((day, index) => {
+              const height = maxValue > 0 ? (day.value / maxValue) * 100 : 0;
+              const date = new Date(day.date);
+              const dayName = date.toLocaleDateString('en-US', { weekday: 'short' });
+
+              return (
+                <div key={day.date} className="flex-1 flex flex-col items-center gap-2">
+                  <div className="text-xs text-foreground font-medium">{day.value}</div>
+                  <div className="w-full relative" style={{ height: '160px' }}>
+                    <div
+                      className="absolute bottom-0 left-0 right-0 rounded-t-lg bg-gradient-to-t from-primary to-accent transition-all duration-500"
+                      style={{ height: `${height}%`, animationDelay: `${index * 0.1}s` }}
+                    />
                   </div>
+                  <div className="text-xs text-muted-foreground">{dayName}</div>
+                </div>
+              );
+            })}
+          </div>
+        </section>
+
+        {statType === 'emergencies' && (
+          <section className="glass-card rounded-2xl p-5 sm:p-6">
+            <h2 className="text-lg font-bold mb-6 flex items-center gap-2">
+              <PieChart className="w-5 h-5 text-accent" aria-hidden />
+              Emergency breakdown
+            </h2>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              {[
+                { label: 'Flooding', value: 12, color: 'bg-accent' },
+                { label: 'No Heat', value: 8, color: 'bg-primary' },
+                { label: 'Gas Leak', value: 3, color: 'bg-danger' },
+                { label: 'Other', value: 5, color: 'bg-muted-foreground/40' },
+              ].map((item) => (
+                <div key={item.label} className="p-4 rounded-xl bg-surface/70 border border-border/50">
+                  <div className="flex items-center gap-2 mb-2">
+                    <div className={cn('w-3 h-3 rounded-full', item.color)} aria-hidden />
+                    <span className="text-sm text-muted-foreground">{item.label}</span>
+                  </div>
+                  <div className="text-2xl font-bold">{item.value}</div>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+
+        {statType === 'revenue' && (
+          <section className="glass-card rounded-2xl p-5 sm:p-6">
+            <h2 className="text-lg font-bold mb-6 flex items-center gap-2">
+              <DollarSign className="w-5 h-5 text-primary" aria-hidden />
+              Revenue by service type
+            </h2>
+            <div className="space-y-4">
+              {[
+                { label: 'Emergency Repairs', value: 3200, percent: 50 },
+                { label: 'Standard Service', value: 2100, percent: 33 },
+                { label: 'Installations', value: 1000, percent: 17 },
+              ].map((item) => (
+                <div key={item.label}>
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-sm">{item.label}</span>
+                    <span className="text-sm font-medium text-primary">${item.value.toLocaleString()}</span>
+                  </div>
+                  <div className="h-2 bg-muted rounded-full overflow-hidden">
+                    <div
+                      className="h-full bg-gradient-to-r from-primary to-accent rounded-full"
+                      style={{ width: `${item.percent}%` }}
+                    />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+
+        <section className="glass-card rounded-2xl p-5 sm:p-6">
+          <h2 className="text-lg font-bold mb-4">Quick actions</h2>
+          <div className="flex flex-wrap gap-3">
+            <button type="button" onClick={() => router.push('/')} className="btn-secondary">
+              View all leads
+            </button>
+            <button type="button" onClick={() => router.push('/settings')} className="btn-secondary">
+              Settings
+            </button>
+            <button type="button" className="btn-secondary border-primary/30 text-primary">
+              Export report
+            </button>
+          </div>
+        </section>
+
+        <section className="glass-card rounded-2xl p-5 sm:p-6">
+          <h2 className="text-lg font-bold mb-4">Other stats</h2>
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+            {Object.entries(STAT_CONFIGS)
+              .filter(([key]) => key !== statType)
+              .map(([key, cfg]) => {
+                const StatIcon = cfg.icon;
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    onClick={() => router.push(`/stats?type=${key}`)}
+                    className="flex items-center gap-3 p-4 rounded-xl bg-surface/70 border border-border/50 hover:border-primary/30 transition-all text-left"
+                  >
+                    <StatIcon className={cn('w-5 h-5', cfg.color)} aria-hidden />
+                    <span className="text-sm">{cfg.title}</span>
+                  </button>
                 );
               })}
-            </div>
           </div>
-
-          {/* Stats Breakdown by Type */}
-          {statType === 'emergencies' && (
-            <div className="glass-card rounded-2xl p-6">
-              <h2 className="text-lg font-bold text-[#E5DADA] mb-6 flex items-center gap-2">
-                <PieChart className="w-5 h-5 text-[#840032]" />
-                Emergency Breakdown
-              </h2>
-
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                {[
-                  { label: 'Flooding', value: 12, color: 'bg-[#840032]' },
-                  { label: 'No Heat', value: 8, color: 'bg-[#E59500]' },
-                  { label: 'Gas Leak', value: 3, color: 'bg-red-500' },
-                  { label: 'Other', value: 5, color: 'bg-[#E5DADA]/30' },
-                ].map((item) => (
-                  <div key={item.label} className="p-4 rounded-xl bg-[#002642]/50 border border-[#E5DADA]/10">
-                    <div className="flex items-center gap-2 mb-2">
-                      <div className={cn('w-3 h-3 rounded-full', item.color)} />
-                      <span className="text-sm text-[#E5DADA]/80">{item.label}</span>
-                    </div>
-                    <div className="text-2xl font-bold text-[#E5DADA]">{item.value}</div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {statType === 'revenue' && (
-            <div className="glass-card rounded-2xl p-6">
-              <h2 className="text-lg font-bold text-[#E5DADA] mb-6 flex items-center gap-2">
-                <DollarSign className="w-5 h-5 text-[#E59500]" />
-                Revenue by Service Type
-              </h2>
-
-              <div className="space-y-4">
-                {[
-                  { label: 'Emergency Repairs', value: 3200, percent: 50 },
-                  { label: 'Standard Service', value: 2100, percent: 33 },
-                  { label: 'Installations', value: 1000, percent: 17 },
-                ].map((item) => (
-                  <div key={item.label}>
-                    <div className="flex items-center justify-between mb-2">
-                      <span className="text-sm text-[#E5DADA]">{item.label}</span>
-                      <span className="text-sm font-medium text-[#E59500]">${item.value.toLocaleString()}</span>
-                    </div>
-                    <div className="h-2 bg-[#002642]/60 rounded-full overflow-hidden">
-                      <div
-                        className="h-full bg-gradient-to-r from-[#E59500] to-[#840032] rounded-full"
-                        style={{ width: `${item.percent}%` }}
-                      />
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Quick Actions */}
-          <div className="glass-card rounded-2xl p-6">
-            <h2 className="text-lg font-bold text-[#E5DADA] mb-4">Quick Actions</h2>
-            <div className="flex flex-wrap gap-3">
-              <button
-                onClick={() => router.push('/')}
-                className={cn(
-                  'px-4 py-2 rounded-xl text-sm font-medium',
-                  'bg-[#002642]/50 border border-[#E5DADA]/10',
-                  'text-[#E5DADA]/70 hover:text-[#E5DADA] hover:border-[#E59500]/30',
-                  'transition-all duration-200'
-                )}
-              >
-                View All Leads
-              </button>
-              <button
-                onClick={() => router.push('/settings')}
-                className={cn(
-                  'px-4 py-2 rounded-xl text-sm font-medium',
-                  'bg-[#002642]/50 border border-[#E5DADA]/10',
-                  'text-[#E5DADA]/70 hover:text-[#E5DADA] hover:border-[#E59500]/30',
-                  'transition-all duration-200'
-                )}
-              >
-                Settings
-              </button>
-              <button
-                className={cn(
-                  'px-4 py-2 rounded-xl text-sm font-medium',
-                  'bg-gradient-to-r from-[#E59500]/20 to-[#840032]/20',
-                  'border border-[#E59500]/30 text-[#E59500]',
-                  'hover:from-[#E59500]/30 hover:to-[#840032]/30',
-                  'transition-all duration-200'
-                )}
-              >
-                Export Report
-              </button>
-            </div>
-          </div>
-
-          {/* Stat Navigation */}
-          <div className="glass-card rounded-2xl p-6">
-            <h2 className="text-lg font-bold text-[#E5DADA] mb-4">Other Stats</h2>
-            <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-              {Object.entries(STAT_CONFIGS)
-                .filter(([key]) => key !== statType)
-                .map(([key, cfg]) => {
-                  const StatIcon = cfg.icon;
-                  return (
-                    <button
-                      key={key}
-                      onClick={() => router.push(`/stats?type=${key}`)}
-                      className={cn(
-                        'flex items-center gap-3 p-4 rounded-xl',
-                        'bg-[#002642]/50 border border-[#E5DADA]/10',
-                        'hover:border-[#E59500]/30 hover:bg-[#002642]/70',
-                        'transition-all duration-200 text-left'
-                      )}
-                    >
-                      <StatIcon className={cn('w-5 h-5', cfg.color)} />
-                      <span className="text-sm text-[#E5DADA]">{cfg.title}</span>
-                    </button>
-                  );
-                })}
-            </div>
-          </div>
-        </main>
+        </section>
       </div>
-    </div>
+    </AppShell>
   );
 }
 
 function StatsPageFallback() {
   return (
-    <div className="min-h-screen flex items-center justify-center">
-      <Loader2 className="w-8 h-8 text-[#E59500] animate-spin" />
+    <div className="min-h-screen flex items-center justify-center" role="status">
+      <Loader2 className="w-8 h-8 text-primary animate-spin" aria-label="Loading stats" />
     </div>
   );
 }
