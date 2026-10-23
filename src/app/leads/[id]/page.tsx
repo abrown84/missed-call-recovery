@@ -2,9 +2,9 @@
 
 import { useState, useEffect } from 'react';
 import { useRouter, useParams } from 'next/navigation';
-import { createClient } from '@/lib/supabase-browser';
+import { AppShell } from '@/components/layout/app-shell';
+import { EmptyState } from '@/components/ui/empty-state';
 import { cn, formatPhone, formatRelativeTime } from '@/lib/utils';
-import Image from 'next/image';
 import {
   ArrowLeft,
   Phone,
@@ -16,10 +16,8 @@ import {
   XCircle,
   Send,
   User,
-  Building2,
   Calendar,
   TrendingUp,
-  MoreVertical,
   Loader2,
   Copy,
   Check,
@@ -45,7 +43,6 @@ interface Lead {
   sms_messages?: SMSMessage[];
 }
 
-// Demo lead for fallback
 const DEMO_LEAD: Lead = {
   id: '1',
   caller_phone: '+15551234567',
@@ -84,37 +81,21 @@ const DEMO_LEAD: Lead = {
   ],
 };
 
-const urgencyConfig: Record<string, { label: string; className: string; bgClass: string }> = {
-  emergency: {
-    label: 'EMERGENCY',
-    className: 'urgency-emergency border text-sm font-bold',
-    bgClass: 'bg-[#840032]/20 border-[#840032]/50',
-  },
-  high: {
-    label: 'HIGH',
-    className: 'urgency-high border text-sm font-semibold',
-    bgClass: 'bg-[#E59500]/20 border-[#E59500]/50',
-  },
-  normal: {
-    label: 'NORMAL',
-    className: 'urgency-normal border text-sm',
-    bgClass: 'bg-[#E5DADA]/10 border-[#E5DADA]/20',
-  },
-  low: {
-    label: 'LOW',
-    className: 'urgency-low border text-sm',
-    bgClass: 'bg-[#002642]/50 border-[#E5DADA]/10',
-  },
+const urgencyConfig: Record<string, { label: string; className: string }> = {
+  emergency: { label: 'EMERGENCY', className: 'urgency-emergency border' },
+  high: { label: 'HIGH', className: 'urgency-high border' },
+  normal: { label: 'NORMAL', className: 'urgency-normal border' },
+  low: { label: 'LOW', className: 'urgency-low border' },
 };
 
 const statusConfig: Record<string, { label: string; icon: typeof CheckCircle; color: string }> = {
-  pending: { label: 'Pending', icon: Clock, color: 'text-[#E5DADA]/60' },
-  responded: { label: 'Responded', icon: MessageSquare, color: 'text-[#E59500]' },
-  qualified: { label: 'Qualified', icon: TrendingUp, color: 'text-[#E5DADA]' },
-  escalated: { label: 'Escalated', icon: AlertTriangle, color: 'text-[#840032]' },
-  converted: { label: 'Converted', icon: CheckCircle, color: 'text-emerald-400' },
-  lost: { label: 'Lost', icon: XCircle, color: 'text-[#E5DADA]/40' },
-  spam: { label: 'Spam', icon: XCircle, color: 'text-[#E5DADA]/40' },
+  pending: { label: 'Pending', icon: Clock, color: 'text-muted-foreground' },
+  responded: { label: 'Responded', icon: MessageSquare, color: 'text-primary' },
+  qualified: { label: 'Qualified', icon: TrendingUp, color: 'text-foreground' },
+  escalated: { label: 'Escalated', icon: AlertTriangle, color: 'text-danger' },
+  converted: { label: 'Converted', icon: CheckCircle, color: 'text-success' },
+  lost: { label: 'Lost', icon: XCircle, color: 'text-muted-foreground' },
+  spam: { label: 'Spam', icon: XCircle, color: 'text-muted-foreground' },
 };
 
 export default function LeadDetailPage() {
@@ -125,14 +106,11 @@ export default function LeadDetailPage() {
   const [newMessage, setNewMessage] = useState('');
   const [isSending, setIsSending] = useState(false);
   const [copiedPhone, setCopiedPhone] = useState(false);
-  const supabase = createClient();
 
   useEffect(() => {
     const fetchLead = async () => {
       setIsLoading(true);
       try {
-        // In demo mode, use demo lead
-        // TODO: Fetch from API in production
         await new Promise((resolve) => setTimeout(resolve, 500));
         setLead(DEMO_LEAD);
       } catch (error) {
@@ -141,43 +119,38 @@ export default function LeadDetailPage() {
         setIsLoading(false);
       }
     };
-
     fetchLead();
   }, [params.id]);
 
   const handleSendMessage = async () => {
     if (!newMessage.trim() || !lead) return;
-
     setIsSending(true);
-    // Simulate sending
     await new Promise((resolve) => setTimeout(resolve, 1000));
-
     const newSms: SMSMessage = {
       id: `m${Date.now()}`,
       direction: 'outbound',
       body: newMessage,
       sent_at: new Date().toISOString(),
     };
-
-    setLead((prev) => prev ? {
-      ...prev,
-      sms_messages: [...(prev.sms_messages || []), newSms],
-    } : null);
-
+    setLead((prev) =>
+      prev ? { ...prev, sms_messages: [...(prev.sms_messages || []), newSms] } : null
+    );
     setNewMessage('');
     setIsSending(false);
   };
 
   const handleMarkConverted = async () => {
     if (!lead) return;
-    setLead((prev) => prev ? { ...prev, status: 'converted', converted_at: new Date().toISOString() } : null);
-    // TODO: API call
+    setLead((prev) =>
+      prev ? { ...prev, status: 'converted', converted_at: new Date().toISOString() } : null
+    );
   };
 
   const handleEscalate = async () => {
     if (!lead) return;
-    setLead((prev) => prev ? { ...prev, status: 'escalated', escalated_at: new Date().toISOString() } : null);
-    // TODO: API call
+    setLead((prev) =>
+      prev ? { ...prev, status: 'escalated', escalated_at: new Date().toISOString() } : null
+    );
   };
 
   const copyPhone = () => {
@@ -190,24 +163,28 @@ export default function LeadDetailPage() {
 
   if (isLoading) {
     return (
-      <div className="min-h-screen flex items-center justify-center">
-        <Loader2 className="w-8 h-8 text-[#E59500] animate-spin" />
-      </div>
+      <AppShell title="Lead" subtitle="Loading…" maxWidth="5xl" showNav={false}>
+        <div className="flex items-center justify-center py-24" role="status">
+          <Loader2 className="w-8 h-8 text-primary animate-spin" aria-label="Loading lead" />
+        </div>
+      </AppShell>
     );
   }
 
   if (!lead) {
     return (
-      <div className="min-h-screen flex flex-col items-center justify-center gap-4">
-        <XCircle className="w-16 h-16 text-[#840032]" />
-        <h1 className="text-xl font-bold text-[#E5DADA]">Lead not found</h1>
-        <button
-          onClick={() => router.push('/')}
-          className="text-[#E59500] hover:underline"
-        >
-          Return to dashboard
-        </button>
-      </div>
+      <AppShell title="Lead" subtitle="Not found" maxWidth="5xl">
+        <EmptyState
+          icon={XCircle}
+          title="Lead not found"
+          description="This lead may have been removed or the link is invalid."
+          action={
+            <button type="button" onClick={() => router.push('/')} className="btn-primary">
+              Return to dashboard
+            </button>
+          }
+        />
+      </AppShell>
     );
   }
 
@@ -216,293 +193,203 @@ export default function LeadDetailPage() {
   const StatusIcon = status.icon;
 
   return (
-    <div className="min-h-screen relative">
-      <div className="relative z-10">
-        {/* Header */}
-        <header className="glass-card border-b border-[#E5DADA]/10 sticky top-0 z-20">
-          <div className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div className="flex items-center justify-between h-20">
-              <div className="flex items-center gap-4">
-                <button
-                  onClick={() => router.push('/')}
-                  className="p-2 rounded-lg hover:bg-[#E5DADA]/10 transition-colors"
-                >
-                  <ArrowLeft className="w-5 h-5 text-[#E5DADA]/70" />
+    <AppShell
+      title={formatPhone(lead.caller_phone)}
+      subtitle={status.label}
+      maxWidth="5xl"
+      actions={
+        <>
+          <button
+            type="button"
+            onClick={() => router.push('/')}
+            className="btn-ghost"
+            aria-label="Back to dashboard"
+          >
+            <ArrowLeft className="w-5 h-5" />
+          </button>
+          {lead.status !== 'converted' && lead.status !== 'lost' && (
+            <>
+              <button type="button" onClick={handleEscalate} className="btn-secondary border-accent/40 text-danger hidden sm:inline-flex">
+                <Zap className="w-4 h-4" aria-hidden />
+                Escalate
+              </button>
+              <button type="button" onClick={handleMarkConverted} className="btn-secondary border-success/40 text-success hidden sm:inline-flex">
+                <CheckCircle className="w-4 h-4" aria-hidden />
+                Mark converted
+              </button>
+            </>
+          )}
+        </>
+      }
+    >
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-5 sm:gap-6">
+        <div className="space-y-5">
+          <section className="glass-card rounded-2xl p-5 sm:p-6">
+            <h2 className="text-lg font-bold mb-4 flex items-center gap-2">
+              <User className="w-5 h-5 text-primary" aria-hidden />
+              Contact info
+            </h2>
+            <div className="space-y-3">
+              <div className="flex items-center justify-between p-3 rounded-xl bg-surface/70 border border-border/50">
+                <div className="flex items-center gap-3 min-w-0">
+                  <Phone className="w-5 h-5 text-primary shrink-0" aria-hidden />
+                  <span className="font-mono truncate">{formatPhone(lead.caller_phone)}</span>
+                </div>
+                <button type="button" onClick={copyPhone} className="btn-ghost p-2" aria-label="Copy phone number">
+                  {copiedPhone ? <Check className="w-4 h-4 text-success" /> : <Copy className="w-4 h-4" />}
                 </button>
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-xl bg-[#002642]/60 border border-[#E5DADA]/10 flex items-center justify-center p-1.5">
-                    <Image
-                      src="/logo.png"
-                      alt="Missed Call Recovery"
-                      width={32}
-                      height={28}
-                      className="drop-shadow-md"
-                    />
-                  </div>
-                  <div>
-                    <h1 className="text-xl font-bold text-[#E5DADA] font-['JetBrains_Mono']">
-                      {formatPhone(lead.caller_phone)}
-                    </h1>
-                    <div className="flex items-center gap-2 text-sm text-[#E5DADA]/60">
-                      <StatusIcon className={cn('w-4 h-4', status.color)} />
-                      {status.label}
-                    </div>
-                  </div>
+              </div>
+              <div className="flex items-center gap-3 p-3 rounded-xl bg-surface/70 border border-border/50">
+                <Calendar className="w-5 h-5 text-muted-foreground" aria-hidden />
+                <div>
+                  <div className="text-xs text-muted-foreground">Called</div>
+                  <div className="text-sm">{new Date(lead.created_at).toLocaleString()}</div>
                 </div>
               </div>
+              <a href={`tel:${lead.caller_phone}`} className="btn-primary w-full bg-gradient-to-r from-success to-emerald-600">
+                <Phone className="w-4 h-4" aria-hidden />
+                Call back
+              </a>
+            </div>
+          </section>
 
-              {/* Actions */}
-              <div className="flex items-center gap-3">
-                {lead.status !== 'converted' && lead.status !== 'lost' && (
-                  <>
-                    <button
-                      onClick={handleEscalate}
-                      className={cn(
-                        'px-4 py-2.5 rounded-xl font-semibold text-sm',
-                        'bg-[#840032]/20 border border-[#840032]/50',
-                        'text-[#e07090] hover:bg-[#840032]/30',
-                        'transition-all duration-200'
-                      )}
-                    >
-                      <Zap className="w-4 h-4 inline mr-2" />
-                      Escalate
-                    </button>
-                    <button
-                      onClick={handleMarkConverted}
-                      className={cn(
-                        'px-4 py-2.5 rounded-xl font-semibold text-sm',
-                        'bg-gradient-to-r from-emerald-500/20 to-emerald-600/20',
-                        'border border-emerald-500/50',
-                        'text-emerald-400 hover:from-emerald-500/30 hover:to-emerald-600/30',
-                        'transition-all duration-200'
-                      )}
-                    >
-                      <CheckCircle className="w-4 h-4 inline mr-2" />
-                      Mark Converted
-                    </button>
-                  </>
+          <section className="glass-card rounded-2xl p-5 sm:p-6">
+            <h2 className="text-lg font-bold mb-4">Classification</h2>
+            <div className="space-y-4">
+              <div className="flex flex-wrap items-center gap-2">
+                <StatusIcon className={cn('w-4 h-4', status.color)} aria-hidden />
+                <span className="text-sm font-medium">{status.label}</span>
+                {urgency && (
+                  <span className={cn('px-2.5 py-1 rounded-md text-xs font-bold', urgency.className)}>
+                    {urgency.label}
+                  </span>
                 )}
               </div>
+              {lead.issue && (
+                <div>
+                  <div className="text-xs text-muted-foreground uppercase tracking-wide mb-1">Issue</div>
+                  <p className="text-sm">{lead.issue}</p>
+                </div>
+              )}
+            </div>
+          </section>
+
+          <section className="glass-card rounded-2xl p-5 sm:p-6">
+            <h2 className="text-lg font-bold mb-4 flex items-center gap-2">
+              <Clock className="w-5 h-5 text-primary" aria-hidden />
+              Timeline
+            </h2>
+            <ol className="space-y-3">
+              <li className="flex items-center gap-3">
+                <span className="w-2 h-2 rounded-full bg-foreground" aria-hidden />
+                <div className="text-sm">
+                  <div>Call received</div>
+                  <div className="text-xs text-muted-foreground">{formatRelativeTime(lead.created_at)}</div>
+                </div>
+              </li>
+              {lead.sms_messages && lead.sms_messages.length > 0 && (
+                <li className="flex items-center gap-3">
+                  <span className="w-2 h-2 rounded-full bg-primary" aria-hidden />
+                  <div className="text-sm">
+                    <div>SMS sent</div>
+                    <div className="text-xs text-muted-foreground">{formatRelativeTime(lead.sms_messages[0].sent_at)}</div>
+                  </div>
+                </li>
+              )}
+              {lead.escalated_at && (
+                <li className="flex items-center gap-3">
+                  <span className="w-2 h-2 rounded-full bg-accent" aria-hidden />
+                  <div className="text-sm">
+                    <div className="text-danger">Escalated</div>
+                    <div className="text-xs text-muted-foreground">{formatRelativeTime(lead.escalated_at)}</div>
+                  </div>
+                </li>
+              )}
+              {lead.converted_at && (
+                <li className="flex items-center gap-3">
+                  <span className="w-2 h-2 rounded-full bg-success" aria-hidden />
+                  <div className="text-sm">
+                    <div className="text-success">Converted</div>
+                    <div className="text-xs text-muted-foreground">{formatRelativeTime(lead.converted_at)}</div>
+                  </div>
+                </li>
+              )}
+            </ol>
+          </section>
+
+          {lead.status !== 'converted' && lead.status !== 'lost' && (
+            <div className="flex sm:hidden gap-2">
+              <button type="button" onClick={handleEscalate} className="btn-secondary flex-1 border-accent/40 text-danger">
+                Escalate
+              </button>
+              <button type="button" onClick={handleMarkConverted} className="btn-secondary flex-1 border-success/40 text-success">
+                Converted
+              </button>
+            </div>
+          )}
+        </div>
+
+        <section className="lg:col-span-2 glass-card rounded-2xl overflow-hidden min-h-[28rem] flex flex-col">
+          <div className="px-5 py-4 border-b border-border/40 flex items-center justify-between">
+            <h2 className="text-lg font-bold flex items-center gap-2">
+              <MessageSquare className="w-5 h-5 text-primary" aria-hidden />
+              Conversation
+            </h2>
+            <span className="text-sm text-muted-foreground">
+              {lead.sms_messages?.length || 0} messages
+            </span>
+          </div>
+
+          <div className="flex-1 overflow-y-auto p-5 space-y-3">
+            {lead.sms_messages?.map((msg) => (
+              <div
+                key={msg.id}
+                className={cn('flex', msg.direction === 'outbound' ? 'justify-end' : 'justify-start')}
+              >
+                <div
+                  className={cn(
+                    'max-w-[85%] rounded-2xl px-4 py-3',
+                    msg.direction === 'outbound'
+                      ? 'bg-primary/15 border border-primary/25 rounded-br-sm'
+                      : 'bg-surface/80 border border-border/50 rounded-bl-sm'
+                  )}
+                >
+                  <p className="text-sm">{msg.body}</p>
+                  <div className="text-xs text-muted-foreground mt-1 text-right font-mono">
+                    {formatRelativeTime(msg.sent_at)}
+                  </div>
+                </div>
+              </div>
+            ))}
+            {(!lead.sms_messages || lead.sms_messages.length === 0) && (
+              <div className="text-center text-muted-foreground py-12">No messages yet</div>
+            )}
+          </div>
+
+          <div className="p-4 border-t border-border/40">
+            <div className="flex gap-3">
+              <input
+                type="text"
+                value={newMessage}
+                onChange={(e) => setNewMessage(e.target.value)}
+                onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
+                placeholder="Type a message…"
+                className="field-input flex-1"
+                aria-label="New message"
+              />
+              <button
+                type="button"
+                onClick={handleSendMessage}
+                disabled={!newMessage.trim() || isSending}
+                className="btn-primary px-4"
+                aria-label="Send message"
+              >
+                {isSending ? <Loader2 className="w-5 h-5 animate-spin" /> : <Send className="w-5 h-5" />}
+              </button>
             </div>
           </div>
-        </header>
-
-        <main className="max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            {/* Lead Info Sidebar */}
-            <div className="space-y-6">
-              {/* Contact Card */}
-              <div className="glass-card rounded-2xl p-6">
-                <h2 className="text-lg font-bold text-[#E5DADA] mb-4 flex items-center gap-2">
-                  <User className="w-5 h-5 text-[#E59500]" />
-                  Contact Info
-                </h2>
-
-                <div className="space-y-4">
-                  <div className="flex items-center justify-between p-3 rounded-lg bg-[#002642]/50 border border-[#E5DADA]/10">
-                    <div className="flex items-center gap-3">
-                      <Phone className="w-5 h-5 text-[#E59500]" />
-                      <span className="font-['JetBrains_Mono'] text-[#E5DADA]">
-                        {formatPhone(lead.caller_phone)}
-                      </span>
-                    </div>
-                    <button
-                      onClick={copyPhone}
-                      className="p-2 rounded-lg hover:bg-[#E5DADA]/10 transition-colors"
-                    >
-                      {copiedPhone ? (
-                        <Check className="w-4 h-4 text-emerald-400" />
-                      ) : (
-                        <Copy className="w-4 h-4 text-[#E5DADA]/40" />
-                      )}
-                    </button>
-                  </div>
-
-                  <div className="flex items-center gap-3 p-3 rounded-lg bg-[#002642]/50 border border-[#E5DADA]/10">
-                    <Calendar className="w-5 h-5 text-[#E5DADA]/40" />
-                    <div>
-                      <div className="text-xs text-[#E5DADA]/60">Called</div>
-                      <div className="text-sm text-[#E5DADA]">
-                        {new Date(lead.created_at).toLocaleString()}
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* Status Card */}
-              <div className={cn('glass-card rounded-2xl p-6', urgency?.bgClass)}>
-                <h2 className="text-lg font-bold text-[#E5DADA] mb-4">Classification</h2>
-
-                <div className="space-y-4">
-                  {urgency && (
-                    <div className="flex items-center gap-2">
-                      {lead.urgency === 'emergency' && (
-                        <Zap className="w-5 h-5 text-[#840032]" />
-                      )}
-                      <span className={cn('px-3 py-1.5 rounded-lg', urgency.className)}>
-                        {urgency.label}
-                      </span>
-                    </div>
-                  )}
-
-                  {lead.issue && (
-                    <div>
-                      <div className="text-xs text-[#E5DADA]/60 uppercase tracking-wide mb-1">
-                        Issue
-                      </div>
-                      <p className="text-[#E5DADA]">{lead.issue}</p>
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {/* Timeline */}
-              <div className="glass-card rounded-2xl p-6">
-                <h2 className="text-lg font-bold text-[#E5DADA] mb-4 flex items-center gap-2">
-                  <Clock className="w-5 h-5 text-[#E59500]" />
-                  Timeline
-                </h2>
-
-                <div className="space-y-3">
-                  <div className="flex items-center gap-3">
-                    <div className="w-2 h-2 rounded-full bg-[#E5DADA]" />
-                    <div className="text-sm">
-                      <div className="text-[#E5DADA]">Call received</div>
-                      <div className="text-xs text-[#E5DADA]/60">
-                        {formatRelativeTime(lead.created_at)}
-                      </div>
-                    </div>
-                  </div>
-
-                  {lead.sms_messages && lead.sms_messages.length > 0 && (
-                    <div className="flex items-center gap-3">
-                      <div className="w-2 h-2 rounded-full bg-[#E59500]" />
-                      <div className="text-sm">
-                        <div className="text-[#E5DADA]">SMS sent</div>
-                        <div className="text-xs text-[#E5DADA]/60">
-                          {formatRelativeTime(lead.sms_messages[0].sent_at)}
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  {lead.escalated_at && (
-                    <div className="flex items-center gap-3">
-                      <div className="w-2 h-2 rounded-full bg-[#840032]" />
-                      <div className="text-sm">
-                        <div className="text-[#e07090]">Escalated</div>
-                        <div className="text-xs text-[#E5DADA]/60">
-                          {formatRelativeTime(lead.escalated_at)}
-                        </div>
-                      </div>
-                    </div>
-                  )}
-
-                  {lead.converted_at && (
-                    <div className="flex items-center gap-3">
-                      <div className="w-2 h-2 rounded-full bg-emerald-400" />
-                      <div className="text-sm">
-                        <div className="text-emerald-400">Converted</div>
-                        <div className="text-xs text-[#E5DADA]/60">
-                          {formatRelativeTime(lead.converted_at)}
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            {/* Conversation */}
-            <div className="lg:col-span-2">
-              <div className="glass-card rounded-2xl overflow-hidden h-[calc(100vh-200px)] flex flex-col">
-                {/* Conversation Header */}
-                <div className="px-6 py-4 border-b border-[#E5DADA]/10 flex items-center justify-between">
-                  <h2 className="text-lg font-bold text-[#E5DADA] flex items-center gap-2">
-                    <MessageSquare className="w-5 h-5 text-[#E59500]" />
-                    Conversation
-                  </h2>
-                  <span className="text-sm text-[#E5DADA]/60">
-                    {lead.sms_messages?.length || 0} messages
-                  </span>
-                </div>
-
-                {/* Messages */}
-                <div className="flex-1 overflow-y-auto p-6 space-y-4">
-                  {lead.sms_messages?.map((msg) => (
-                    <div
-                      key={msg.id}
-                      className={cn(
-                        'flex',
-                        msg.direction === 'outbound' ? 'justify-end' : 'justify-start'
-                      )}
-                    >
-                      <div
-                        className={cn(
-                          'max-w-[80%] rounded-2xl px-4 py-3',
-                          msg.direction === 'outbound'
-                            ? 'bg-gradient-to-r from-[#E59500]/20 to-[#840032]/20 border border-[#E59500]/30 rounded-br-sm'
-                            : 'bg-[#002642]/60 border border-[#E5DADA]/10 rounded-bl-sm'
-                        )}
-                      >
-                        <p className="text-[#E5DADA] text-sm">{msg.body}</p>
-                        <div className="text-xs text-[#E5DADA]/50 mt-1 text-right">
-                          {formatRelativeTime(msg.sent_at)}
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-
-                  {(!lead.sms_messages || lead.sms_messages.length === 0) && (
-                    <div className="text-center text-[#E5DADA]/40 py-12">
-                      No messages yet
-                    </div>
-                  )}
-                </div>
-
-                {/* Message Input */}
-                <div className="p-4 border-t border-[#E5DADA]/10">
-                  <div className="flex gap-3">
-                    <input
-                      type="text"
-                      value={newMessage}
-                      onChange={(e) => setNewMessage(e.target.value)}
-                      onKeyDown={(e) => e.key === 'Enter' && handleSendMessage()}
-                      placeholder="Type a message..."
-                      className={cn(
-                        'flex-1 px-4 py-3 rounded-xl',
-                        'bg-[#002642]/50 border border-[#E5DADA]/10',
-                        'text-[#E5DADA] placeholder-[#E5DADA]/40',
-                        'focus:outline-none focus:border-[#E59500]/50',
-                        'transition-all duration-200'
-                      )}
-                    />
-                    <button
-                      onClick={handleSendMessage}
-                      disabled={!newMessage.trim() || isSending}
-                      className={cn(
-                        'px-5 py-3 rounded-xl font-semibold',
-                        'bg-gradient-to-r from-[#E59500] to-[#840032]',
-                        'text-white shadow-lg',
-                        'hover:shadow-[0_0_20px_rgba(229,149,0,0.3)]',
-                        'disabled:opacity-50 disabled:cursor-not-allowed',
-                        'transition-all duration-200'
-                      )}
-                    >
-                      {isSending ? (
-                        <Loader2 className="w-5 h-5 animate-spin" />
-                      ) : (
-                        <Send className="w-5 h-5" />
-                      )}
-                    </button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </main>
+        </section>
       </div>
-    </div>
+    </AppShell>
   );
 }

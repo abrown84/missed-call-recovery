@@ -9,7 +9,7 @@
     "lint": "next lint"
   },
   "dependencies": {
-    "@google/generative-ai": "^0.21.0",
+    "@google/genai": "^2.31.0",
     "@supabase/ssr": "^0.8.0",
     "@supabase/supabase-js": "^2.47.0",
     "class-variance-authority": "^0.7.0",

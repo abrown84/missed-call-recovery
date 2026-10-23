@@ -1,18 +1,17 @@
 'use client';
 
-import { useEffect, useState, useCallback, useMemo } from 'react';
-import { useRouter } from 'next/navigation';
+import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { StatsCards } from '@/components/dashboard/stats-cards';
 import { LeadsTable } from '@/components/dashboard/leads-table';
 import { LeadDetail } from '@/components/dashboard/lead-detail';
+import { CampaignOverview } from '@/components/dashboard/campaign-overview';
 import { ChatWidget } from '@/components/chat/chat-widget';
-import { createClient } from '@/lib/supabase-browser';
+import { AppShell } from '@/components/layout/app-shell';
+import { StatsCardsSkeleton, LeadsTableSkeleton } from '@/components/ui/skeleton';
 import { useRealtimeLeads } from '@/hooks/use-realtime-leads';
-import { RefreshCw, LogOut, Activity, Search, Filter, X, Settings } from 'lucide-react';
-import Image from 'next/image';
+import { RefreshCw, Search, Filter, X } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
-// Demo business ID - replace with auth in production
 const DEMO_BUSINESS_ID = 'demo-business-id';
 
 interface Lead {
@@ -43,7 +42,6 @@ interface Stats {
   estimatedRevenue: number;
 }
 
-// Demo data for initial display
 const DEMO_STATS: Stats = {
   missedCalls: 47,
   smsDelivered: 45,
@@ -69,7 +67,7 @@ const DEMO_LEADS: Lead[] = [
       {
         id: 'm1',
         direction: 'outbound',
-        body: "Hi, this is ABC Plumbing. We noticed we missed your call. What plumbing issue can we help you with today?",
+        body: 'Hi, this is ABC Plumbing. We noticed we missed your call. What plumbing issue can we help you with today?',
         sent_at: new Date(Date.now() - 14 * 60000).toISOString(),
       },
       {
@@ -86,7 +84,7 @@ const DEMO_LEADS: Lead[] = [
     status: 'qualified',
     urgency: 'high',
     issue: 'No hot water, water heater not working',
-    sms_response_text: "Water heater stopped working this morning. No hot water at all.",
+    sms_response_text: 'Water heater stopped working this morning. No hot water at all.',
     created_at: new Date(Date.now() - 2 * 3600000).toISOString(),
     escalated_at: null,
     converted_at: null,
@@ -94,13 +92,13 @@ const DEMO_LEADS: Lead[] = [
       {
         id: 'm3',
         direction: 'outbound',
-        body: "Hi, this is ABC Plumbing. We noticed we missed your call. What plumbing issue can we help you with today?",
+        body: 'Hi, this is ABC Plumbing. We noticed we missed your call. What plumbing issue can we help you with today?',
         sent_at: new Date(Date.now() - 2 * 3600000 + 60000).toISOString(),
       },
       {
         id: 'm4',
         direction: 'inbound',
-        body: "Water heater stopped working this morning. No hot water at all.",
+        body: 'Water heater stopped working this morning. No hot water at all.',
         sent_at: new Date(Date.now() - 2 * 3600000 + 180000).toISOString(),
       },
     ],
@@ -111,7 +109,7 @@ const DEMO_LEADS: Lead[] = [
     status: 'converted',
     urgency: 'normal',
     issue: 'Dripping faucet in kitchen',
-    sms_response_text: "Kitchen faucet has been dripping for a few days. Would like to get it fixed.",
+    sms_response_text: 'Kitchen faucet has been dripping for a few days. Would like to get it fixed.',
     created_at: new Date(Date.now() - 5 * 3600000).toISOString(),
     escalated_at: null,
     converted_at: new Date(Date.now() - 4 * 3600000).toISOString(),
@@ -131,7 +129,7 @@ const DEMO_LEADS: Lead[] = [
       {
         id: 'm5',
         direction: 'outbound',
-        body: "Hi, this is ABC Plumbing. We noticed we missed your call. What plumbing issue can we help you with today?",
+        body: 'Hi, this is ABC Plumbing. We noticed we missed your call. What plumbing issue can we help you with today?',
         sent_at: new Date(Date.now() - 29 * 60000).toISOString(),
       },
     ],
@@ -142,7 +140,7 @@ const DEMO_LEADS: Lead[] = [
     status: 'qualified',
     urgency: 'low',
     issue: 'Quote request for bathroom remodel',
-    sms_response_text: "Looking for a quote on a bathroom remodel. Can you come out next week?",
+    sms_response_text: 'Looking for a quote on a bathroom remodel. Can you come out next week?',
     created_at: new Date(Date.now() - 24 * 3600000).toISOString(),
     escalated_at: null,
     converted_at: null,
@@ -154,29 +152,20 @@ export default function Dashboard() {
   const [stats, setStats] = useState<Stats>(DEMO_STATS);
   const [leads, setLeads] = useState<Lead[]>(DEMO_LEADS);
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
-  const [isLoading, setIsLoading] = useState(false);
+  const [isLoading, setIsLoading] = useState(true);
+  const [isRefreshing, setIsRefreshing] = useState(false);
   const [period, setPeriod] = useState<'day' | 'week' | 'month'>('week');
-  const [userEmail, setUserEmail] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [urgencyFilter, setUrgencyFilter] = useState<string>('all');
   const [showFilters, setShowFilters] = useState(false);
-  const router = useRouter();
-  const supabase = createClient();
-
-  // Real-time lead updates
   const handleLeadInsert = useCallback((newLead: Lead) => {
     setLeads((prev) => [newLead, ...prev]);
   }, []);
 
   const handleLeadUpdate = useCallback((updatedLead: Lead) => {
-    setLeads((prev) =>
-      prev.map((l) => (l.id === updatedLead.id ? updatedLead : l))
-    );
-    // Update selected lead if it's the one being viewed
-    setSelectedLead((prev) =>
-      prev?.id === updatedLead.id ? updatedLead : prev
-    );
+    setLeads((prev) => prev.map((l) => (l.id === updatedLead.id ? updatedLead : l)));
+    setSelectedLead((prev) => (prev?.id === updatedLead.id ? updatedLead : prev));
   }, []);
 
   const handleLeadDelete = useCallback((deletedId: string) => {
@@ -191,70 +180,49 @@ export default function Dashboard() {
     onDelete: handleLeadDelete,
   });
 
-  // Filtered leads based on search and filters
   const filteredLeads = useMemo(() => {
     return leads.filter((lead) => {
-      // Search filter
       if (searchQuery) {
         const query = searchQuery.toLowerCase();
         const matchesPhone = lead.caller_phone.toLowerCase().includes(query);
         const matchesIssue = lead.issue?.toLowerCase().includes(query);
         const matchesResponse = lead.sms_response_text?.toLowerCase().includes(query);
-        if (!matchesPhone && !matchesIssue && !matchesResponse) {
-          return false;
-        }
+        if (!matchesPhone && !matchesIssue && !matchesResponse) return false;
       }
-
-      // Status filter
-      if (statusFilter !== 'all' && lead.status !== statusFilter) {
-        return false;
-      }
-
-      // Urgency filter
+      if (statusFilter !== 'all' && lead.status !== statusFilter) return false;
       if (urgencyFilter !== 'all') {
-        if (urgencyFilter === 'none' && lead.urgency !== null) {
-          return false;
-        } else if (urgencyFilter !== 'none' && lead.urgency !== urgencyFilter) {
-          return false;
-        }
+        if (urgencyFilter === 'none' && lead.urgency !== null) return false;
+        if (urgencyFilter !== 'none' && lead.urgency !== urgencyFilter) return false;
       }
-
       return true;
     });
   }, [leads, searchQuery, statusFilter, urgencyFilter]);
 
-  const activeFilterCount = [
-    statusFilter !== 'all',
-    urgencyFilter !== 'all',
-  ].filter(Boolean).length;
+  const campaignStats = useMemo(() => {
+    const active = leads.filter((l) => l.status === 'pending').length;
+    const paused = leads.filter((l) =>
+      ['responded', 'qualified', 'escalated'].includes(l.status)
+    ).length;
+    const completed = leads.filter((l) =>
+      ['converted', 'lost', 'spam'].includes(l.status)
+    ).length;
+    return { active, paused, completed };
+  }, [leads]);
 
-  useEffect(() => {
-    supabase.auth.getUser().then((result: { data: { user: { email?: string } | null } }) => {
-      setUserEmail(result.data?.user?.email || null);
-    });
-  }, []);
+  const activeFilterCount = [statusFilter !== 'all', urgencyFilter !== 'all'].filter(Boolean).length;
 
-  const handleLogout = async () => {
-    await supabase.auth.signOut();
-    router.push('/login');
-    router.refresh();
-  };
-
-  const fetchData = useCallback(async (currentPeriod: 'day' | 'week' | 'month') => {
-    setIsLoading(true);
+  const fetchData = useCallback(async (currentPeriod: 'day' | 'week' | 'month', mode: 'initial' | 'refresh' = 'refresh') => {
+    if (mode === 'initial') setIsLoading(true);
+    else setIsRefreshing(true);
     try {
-      // Fetch stats
       const statsRes = await fetch(
         `/api/stats?businessId=${DEMO_BUSINESS_ID}&period=${currentPeriod}`
       );
       if (statsRes.ok) {
         const statsData = await statsRes.json();
-        if (statsData.success) {
-          setStats(statsData.data);
-        }
+        if (statsData.success) setStats(statsData.data);
       }
 
-      // Fetch leads
       const leadsRes = await fetch(`/api/leads?businessId=${DEMO_BUSINESS_ID}&limit=20`);
       if (leadsRes.ok) {
         const leadsData = await leadsRes.json();
@@ -264,21 +232,33 @@ export default function Dashboard() {
       }
     } catch (error) {
       console.error('Failed to fetch data:', error);
-      // Keep demo data on error
     } finally {
       setIsLoading(false);
+      setIsRefreshing(false);
     }
   }, []);
 
+  const initialLoadDone = useRef(false);
+
   useEffect(() => {
-    fetchData(period);
-    // Poll for updates every 30 seconds
-    const interval = setInterval(() => fetchData(period), 30000);
-    return () => clearInterval(interval);
+    let cancelled = false;
+    const mode = initialLoadDone.current ? 'refresh' : 'initial';
+    (async () => {
+      if (!cancelled) {
+        await fetchData(period, mode);
+        initialLoadDone.current = true;
+      }
+    })();
+    const interval = setInterval(() => {
+      if (!cancelled) fetchData(period, 'refresh');
+    }, 30000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
   }, [period, fetchData]);
 
   const handleMarkConverted = async (leadId: string) => {
-    // Update locally first (optimistic update)
     setLeads((prev) =>
       prev.map((l) =>
         l.id === leadId
@@ -287,29 +267,19 @@ export default function Dashboard() {
       )
     );
     setSelectedLead(null);
-
-    // API call to update lead status
     try {
       const response = await fetch(`/api/leads/${leadId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: 'converted' }),
       });
-
-      if (!response.ok) {
-        console.error('Failed to update lead status');
-        // Revert optimistic update on error
-        fetchData(period);
-      }
-    } catch (error) {
-      console.error('Error updating lead:', error);
-      // Revert optimistic update on error
+      if (!response.ok) fetchData(period);
+    } catch {
       fetchData(period);
     }
   };
 
   const handleEscalate = async (leadId: string) => {
-    // Update locally first (optimistic update)
     setLeads((prev) =>
       prev.map((l) =>
         l.id === leadId
@@ -318,269 +288,227 @@ export default function Dashboard() {
       )
     );
     setSelectedLead(null);
-
-    // API call to escalate lead
     try {
       const response = await fetch(`/api/leads/${leadId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: 'escalated' }),
       });
-
-      if (!response.ok) {
-        console.error('Failed to escalate lead');
-        // Revert optimistic update on error
-        fetchData(period);
-      }
-    } catch (error) {
-      console.error('Error escalating lead:', error);
-      // Revert optimistic update on error
+      if (!response.ok) fetchData(period);
+    } catch {
       fetchData(period);
     }
   };
 
+  const headerActions = (
+    <>
+      <div
+        className="hidden sm:flex bg-surface/70 rounded-xl p-1 border border-border/50"
+        role="group"
+        aria-label="Time period"
+      >
+        {(['day', 'week', 'month'] as const).map((p) => (
+          <button
+            key={p}
+            type="button"
+            onClick={() => setPeriod(p)}
+            className={cn(
+              'px-3 py-1.5 text-sm font-semibold rounded-lg transition-all',
+              period === p
+                ? 'bg-gradient-to-r from-primary to-accent text-primary-foreground shadow-soft'
+                : 'text-muted-foreground hover:text-foreground'
+            )}
+          >
+            {p.charAt(0).toUpperCase() + p.slice(1)}
+          </button>
+        ))}
+      </div>
+
+      <button
+        type="button"
+        onClick={() => fetchData(period, 'refresh')}
+        disabled={isRefreshing || isLoading}
+        className="btn-ghost"
+        aria-label="Refresh data"
+        title="Refresh data"
+      >
+        <RefreshCw className={cn('w-5 h-5', (isRefreshing || isLoading) && 'animate-spin')} />
+      </button>
+    </>
+  );
+
   return (
-    <div className="min-h-screen relative">
-      {/* Background is handled by globals.css */}
-      <div className="relative z-10">
-        {/* Header */}
-        <header className="glass-card border-b border-[#E5DADA]/10">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div className="flex items-center justify-between h-20">
-              {/* Logo & Title */}
-              <div className="flex items-center gap-3">
-                <div className="w-11 h-11 rounded-xl bg-[#002642]/60 border border-[#E5DADA]/10 flex items-center justify-center p-1.5">
-                  <Image
-                    src="/logo.png"
-                    alt="Missed Call Recovery"
-                    width={36}
-                    height={31}
-                    className="drop-shadow-md"
-                  />
-                </div>
-                <div>
-                  <h1 className="text-xl font-bold text-[#E5DADA]">Missed Call Recovery</h1>
-                  <p className="text-sm text-[#E5DADA]/60 flex items-center gap-2">
-                    <Activity className="w-3 h-3" />
-                    ABC Plumbing
-                  </p>
-                </div>
-              </div>
-
-              {/* Controls */}
-              <div className="flex items-center gap-4">
-                {/* Period selector */}
-                <div className="flex bg-[#002642]/50 backdrop-blur-sm rounded-xl p-1 border border-[#E5DADA]/10">
-                  {(['day', 'week', 'month'] as const).map((p) => (
-                    <button
-                      key={p}
-                      onClick={() => setPeriod(p)}
-                      className={cn(
-                        'px-4 py-2 text-sm font-semibold rounded-lg transition-all duration-200',
-                        period === p
-                          ? 'bg-gradient-to-r from-[#E59500] to-[#840032] text-white shadow-lg'
-                          : 'text-[#E5DADA]/60 hover:text-[#E5DADA]'
-                      )}
-                    >
-                      {p.charAt(0).toUpperCase() + p.slice(1)}
-                    </button>
-                  ))}
-                </div>
-
-                {/* Refresh button */}
-                <button
-                  onClick={() => fetchData(period)}
-                  disabled={isLoading}
-                  className={cn(
-                    'p-3 rounded-xl bg-[#002642]/50 backdrop-blur-sm border border-[#E5DADA]/10',
-                    'hover:bg-[#E59500]/20 hover:border-[#E59500]/30 transition-all duration-200',
-                    'disabled:opacity-50 disabled:cursor-not-allowed'
-                  )}
-                  title="Refresh data"
-                >
-                  <RefreshCw className={cn('w-5 h-5 text-[#E5DADA]/70', isLoading && 'animate-spin')} />
-                </button>
-
-                {/* Settings button */}
-                <button
-                  onClick={() => router.push('/settings')}
-                  className={cn(
-                    'p-3 rounded-xl bg-[#002642]/50 backdrop-blur-sm border border-[#E5DADA]/10',
-                    'hover:bg-[#E59500]/20 hover:border-[#E59500]/30 transition-all duration-200'
-                  )}
-                  title="Settings"
-                >
-                  <Settings className="w-5 h-5 text-[#E5DADA]/70" />
-                </button>
-
-                {/* User menu */}
-                <div className="flex items-center gap-3 pl-4 border-l border-[#E5DADA]/10">
-                  {userEmail && (
-                    <span className="text-sm text-[#E5DADA]/80 hidden sm:block font-medium">
-                      {userEmail}
-                    </span>
-                  )}
-                  <button
-                    onClick={handleLogout}
-                    className="p-3 rounded-xl bg-[#002642]/50 backdrop-blur-sm border border-[#E5DADA]/10 hover:bg-[#840032]/20 hover:border-[#840032]/30 transition-all duration-200"
-                    title="Sign out"
-                  >
-                    <LogOut className="w-5 h-5 text-[#E5DADA]/70" />
-                  </button>
-                </div>
-              </div>
-            </div>
-          </div>
-        </header>
-
-        {/* Main content */}
-        <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
-          <StatsCards stats={stats} />
-
-          {/* Search and Filter Bar */}
-          <div className="glass-card rounded-2xl p-4">
-            <div className="flex flex-col sm:flex-row gap-4">
-              {/* Search Input */}
-              <div className="relative flex-1">
-                <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-[#E5DADA]/40" />
-                <input
-                  type="text"
-                  placeholder="Search by phone, issue, or message..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  className={cn(
-                    'w-full pl-12 pr-10 py-3 rounded-xl',
-                    'bg-[#002642]/50 border border-[#E5DADA]/10',
-                    'text-[#E5DADA] placeholder-[#E5DADA]/40',
-                    'focus:outline-none focus:border-[#E59500]/50 focus:ring-1 focus:ring-[#E59500]/30',
-                    'transition-all duration-200'
-                  )}
-                />
-                {searchQuery && (
-                  <button
-                    onClick={() => setSearchQuery('')}
-                    className="absolute right-4 top-1/2 -translate-y-1/2 text-[#E5DADA]/40 hover:text-[#E5DADA] transition-colors"
-                  >
-                    <X className="w-4 h-4" />
-                  </button>
-                )}
-              </div>
-
-              {/* Filter Toggle */}
+    <>
+      <AppShell actions={headerActions}>
+        <div className="space-y-6 sm:space-y-8">
+          {/* Mobile period selector */}
+          <div
+            className="sm:hidden flex bg-surface/70 rounded-xl p-1 border border-border/50"
+            role="group"
+            aria-label="Time period"
+          >
+            {(['day', 'week', 'month'] as const).map((p) => (
               <button
-                onClick={() => setShowFilters(!showFilters)}
+                key={p}
+                type="button"
+                onClick={() => setPeriod(p)}
                 className={cn(
-                  'flex items-center gap-2 px-4 py-3 rounded-xl',
-                  'bg-[#002642]/50 border border-[#E5DADA]/10',
-                  'text-[#E5DADA]/70 hover:text-[#E5DADA] hover:border-[#E59500]/30',
-                  'transition-all duration-200',
-                  showFilters && 'border-[#E59500]/50 text-[#E59500]'
+                  'flex-1 px-3 py-2 text-sm font-semibold rounded-lg transition-all',
+                  period === p
+                    ? 'bg-gradient-to-r from-primary to-accent text-primary-foreground'
+                    : 'text-muted-foreground'
                 )}
               >
-                <Filter className="w-5 h-5" />
-                <span className="font-medium">Filters</span>
-                {activeFilterCount > 0 && (
-                  <span className="px-2 py-0.5 text-xs font-bold rounded-full bg-[#E59500] text-[#02040F]">
-                    {activeFilterCount}
-                  </span>
-                )}
+                {p.charAt(0).toUpperCase() + p.slice(1)}
               </button>
-            </div>
-
-            {/* Filter Options */}
-            {showFilters && (
-              <div className="mt-4 pt-4 border-t border-[#E5DADA]/10 flex flex-wrap gap-4 animate-fade-in">
-                {/* Status Filter */}
-                <div className="flex flex-col gap-2">
-                  <label className="text-xs font-medium text-[#E5DADA]/60 uppercase tracking-wide">
-                    Status
-                  </label>
-                  <select
-                    value={statusFilter}
-                    onChange={(e) => setStatusFilter(e.target.value)}
-                    className={cn(
-                      'px-4 py-2 rounded-lg',
-                      'bg-[#002642]/60 border border-[#E5DADA]/10',
-                      'text-[#E5DADA] text-sm',
-                      'focus:outline-none focus:border-[#E59500]/50',
-                      'cursor-pointer'
-                    )}
-                  >
-                    <option value="all">All Statuses</option>
-                    <option value="pending">Pending</option>
-                    <option value="responded">Responded</option>
-                    <option value="qualified">Qualified</option>
-                    <option value="escalated">Escalated</option>
-                    <option value="converted">Converted</option>
-                    <option value="lost">Lost</option>
-                    <option value="spam">Spam</option>
-                  </select>
-                </div>
-
-                {/* Urgency Filter */}
-                <div className="flex flex-col gap-2">
-                  <label className="text-xs font-medium text-[#E5DADA]/60 uppercase tracking-wide">
-                    Urgency
-                  </label>
-                  <select
-                    value={urgencyFilter}
-                    onChange={(e) => setUrgencyFilter(e.target.value)}
-                    className={cn(
-                      'px-4 py-2 rounded-lg',
-                      'bg-[#002642]/60 border border-[#E5DADA]/10',
-                      'text-[#E5DADA] text-sm',
-                      'focus:outline-none focus:border-[#E59500]/50',
-                      'cursor-pointer'
-                    )}
-                  >
-                    <option value="all">All Urgencies</option>
-                    <option value="emergency">Emergency</option>
-                    <option value="high">High</option>
-                    <option value="normal">Normal</option>
-                    <option value="low">Low</option>
-                    <option value="none">Not Classified</option>
-                  </select>
-                </div>
-
-                {/* Clear Filters */}
-                {activeFilterCount > 0 && (
-                  <button
-                    onClick={() => {
-                      setStatusFilter('all');
-                      setUrgencyFilter('all');
-                    }}
-                    className="self-end px-4 py-2 text-sm text-[#840032] hover:text-[#e07090] transition-colors"
-                  >
-                    Clear Filters
-                  </button>
-                )}
-              </div>
-            )}
-
-            {/* Results Count */}
-            {(searchQuery || activeFilterCount > 0) && (
-              <div className="mt-3 text-sm text-[#E5DADA]/60">
-                Showing {filteredLeads.length} of {leads.length} leads
-              </div>
-            )}
+            ))}
           </div>
 
-          <LeadsTable leads={filteredLeads} onSelectLead={setSelectedLead} />
-        </main>
+          {isLoading ? (
+            <>
+              <StatsCardsSkeleton />
+              <LeadsTableSkeleton />
+            </>
+          ) : (
+            <>
+              <StatsCards stats={stats} />
+              <CampaignOverview {...campaignStats} />
 
-        {/* Lead detail panel */}
-        {selectedLead && (
-          <LeadDetail
-            lead={selectedLead}
-            onClose={() => setSelectedLead(null)}
-            onMarkConverted={handleMarkConverted}
-            onEscalate={handleEscalate}
-          />
-        )}
+              <div className="glass-card rounded-2xl p-4">
+                <div className="flex flex-col sm:flex-row gap-3">
+                  <div className="relative flex-1">
+                    <Search
+                      className="absolute left-3.5 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground"
+                      aria-hidden
+                    />
+                    <input
+                      type="search"
+                      placeholder="Search by phone, issue, or message…"
+                      value={searchQuery}
+                      onChange={(e) => setSearchQuery(e.target.value)}
+                      className="field-input pl-11 pr-10"
+                      aria-label="Search leads"
+                    />
+                    {searchQuery && (
+                      <button
+                        type="button"
+                        onClick={() => setSearchQuery('')}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                        aria-label="Clear search"
+                      >
+                        <X className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
 
-        {/* AI Chat Assistant */}
-        <ChatWidget businessId={DEMO_BUSINESS_ID} />
-      </div>
-    </div>
+                  <button
+                    type="button"
+                    onClick={() => setShowFilters(!showFilters)}
+                    className={cn(
+                      'btn-secondary',
+                      showFilters && 'border-primary/50 text-primary'
+                    )}
+                    aria-expanded={showFilters}
+                  >
+                    <Filter className="w-5 h-5" aria-hidden />
+                    Filters
+                    {activeFilterCount > 0 && (
+                      <span className="px-2 py-0.5 text-xs font-bold rounded-md bg-primary text-primary-foreground">
+                        {activeFilterCount}
+                      </span>
+                    )}
+                  </button>
+                </div>
+
+                {showFilters && (
+                  <div className="mt-4 pt-4 border-t border-border/40 flex flex-wrap gap-4 animate-fade-in">
+                    <div className="flex flex-col gap-2">
+                      <label htmlFor="status-filter" className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                        Status
+                      </label>
+                      <select
+                        id="status-filter"
+                        value={statusFilter}
+                        onChange={(e) => setStatusFilter(e.target.value)}
+                        className="field-input cursor-pointer min-w-[160px]"
+                      >
+                        <option value="all">All statuses</option>
+                        <option value="pending">Pending</option>
+                        <option value="responded">Responded</option>
+                        <option value="qualified">Qualified</option>
+                        <option value="escalated">Escalated</option>
+                        <option value="converted">Converted</option>
+                        <option value="lost">Lost</option>
+                        <option value="spam">Spam</option>
+                      </select>
+                    </div>
+
+                    <div className="flex flex-col gap-2">
+                      <label htmlFor="urgency-filter" className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                        Urgency
+                      </label>
+                      <select
+                        id="urgency-filter"
+                        value={urgencyFilter}
+                        onChange={(e) => setUrgencyFilter(e.target.value)}
+                        className="field-input cursor-pointer min-w-[160px]"
+                      >
+                        <option value="all">All urgencies</option>
+                        <option value="emergency">Emergency</option>
+                        <option value="high">High</option>
+                        <option value="normal">Normal</option>
+                        <option value="low">Low</option>
+                        <option value="none">Not classified</option>
+                      </select>
+                    </div>
+
+                    {activeFilterCount > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setStatusFilter('all');
+                          setUrgencyFilter('all');
+                        }}
+                        className="self-end text-sm text-danger hover:underline"
+                      >
+                        Clear filters
+                      </button>
+                    )}
+                  </div>
+                )}
+
+                {(searchQuery || activeFilterCount > 0) && (
+                  <div className="mt-3 text-sm text-muted-foreground" aria-live="polite">
+                    Showing {filteredLeads.length} of {leads.length} leads
+                  </div>
+                )}
+              </div>
+
+              <LeadsTable
+                leads={filteredLeads}
+                onSelectLead={setSelectedLead}
+                emptyTitle={searchQuery || activeFilterCount ? 'No matching leads' : 'No leads yet'}
+                emptyDescription={
+                  searchQuery || activeFilterCount
+                    ? 'Try adjusting your search or filters.'
+                    : 'Missed calls will appear here automatically once Twilio webhooks are connected.'
+                }
+              />
+            </>
+          )}
+        </div>
+      </AppShell>
+
+      {selectedLead && (
+        <LeadDetail
+          lead={selectedLead}
+          onClose={() => setSelectedLead(null)}
+          onMarkConverted={handleMarkConverted}
+          onEscalate={handleEscalate}
+        />
+      )}
+
+      <ChatWidget businessId={DEMO_BUSINESS_ID} />
+    </>
   );
 }

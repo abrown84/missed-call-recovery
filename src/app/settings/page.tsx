@@ -1,14 +1,11 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import { createClient } from '@/lib/supabase-browser';
+import { AppShell } from '@/components/layout/app-shell';
 import { cn } from '@/lib/utils';
-import Image from 'next/image';
 import {
-  ArrowLeft,
   Building2,
-  Phone,
   Bell,
   Clock,
   MessageSquare,
@@ -17,6 +14,7 @@ import {
   Loader2,
   Check,
   AlertTriangle,
+  ArrowLeft,
 } from 'lucide-react';
 
 interface BusinessSettings {
@@ -45,7 +43,8 @@ const DEMO_SETTINGS: BusinessSettings = {
   businessHoursEnd: '18:00',
   afterHoursEnabled: true,
   emergencyPhone: '+15559876543',
-  smsTemplate: "Hi, this is {business_name}. We noticed we missed your call. What plumbing issue can we help you with today?",
+  smsTemplate:
+    "Hi, this is {business_name}. We noticed we missed your call. What plumbing issue can we help you with today?",
   autoEscalateEmergencies: true,
   escalationDelayMinutes: 5,
   notifyOnNewLead: true,
@@ -73,21 +72,46 @@ const TIMEZONES = [
   { value: 'Pacific/Honolulu', label: 'Hawaii (HST)' },
 ];
 
+function Toggle({
+  checked,
+  onChange,
+  label,
+}: {
+  checked: boolean;
+  onChange: () => void;
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      onClick={onChange}
+      className={cn(
+        'relative w-12 h-7 rounded-full transition-colors duration-200 shrink-0',
+        checked ? 'bg-gradient-to-r from-primary to-accent' : 'bg-muted border border-border'
+      )}
+    >
+      <span
+        className={cn(
+          'absolute top-0.5 w-6 h-6 rounded-full bg-white shadow transition-all duration-200',
+          checked ? 'left-5' : 'left-0.5'
+        )}
+      />
+    </button>
+  );
+}
+
 export default function SettingsPage() {
   const [settings, setSettings] = useState<BusinessSettings>(DEMO_SETTINGS);
   const [isSaving, setIsSaving] = useState(false);
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [activeTab, setActiveTab] = useState<'business' | 'notifications' | 'sms'>('business');
   const router = useRouter();
-  const supabase = createClient();
-
-  useEffect(() => {
-    // TODO: Fetch actual settings from API
-  }, []);
 
   const handleSave = async () => {
     setIsSaving(true);
-    // Simulate API call
     await new Promise((resolve) => setTimeout(resolve, 1000));
     setIsSaving(false);
     setSaveSuccess(true);
@@ -102,421 +126,242 @@ export default function SettingsPage() {
   };
 
   const tabs = [
-    { id: 'business', label: 'Business', icon: Building2 },
-    { id: 'notifications', label: 'Notifications', icon: Bell },
-    { id: 'sms', label: 'SMS Templates', icon: MessageSquare },
-  ] as const;
+    { id: 'business' as const, label: 'Business', icon: Building2 },
+    { id: 'notifications' as const, label: 'Notifications', icon: Bell },
+    { id: 'sms' as const, label: 'SMS', icon: MessageSquare },
+  ];
 
   return (
-    <div className="min-h-screen relative">
-      <div className="relative z-10">
-        {/* Header */}
-        <header className="glass-card border-b border-[#E5DADA]/10">
-          <div className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8">
-            <div className="flex items-center justify-between h-20">
-              <div className="flex items-center gap-4">
-                <button
-                  onClick={() => router.push('/')}
-                  className="p-2 rounded-lg hover:bg-[#E5DADA]/10 transition-colors"
-                >
-                  <ArrowLeft className="w-5 h-5 text-[#E5DADA]/70" />
-                </button>
-                <div className="flex items-center gap-3">
-                  <div className="w-10 h-10 rounded-xl bg-[#002642]/60 border border-[#E5DADA]/10 flex items-center justify-center p-1.5">
-                    <Image
-                      src="/logo.png"
-                      alt="Missed Call Recovery"
-                      width={32}
-                      height={28}
-                      className="drop-shadow-md"
-                    />
-                  </div>
+    <AppShell
+      title="Settings"
+      subtitle="Configure your business"
+      maxWidth="4xl"
+      actions={
+        <>
+          <button
+            type="button"
+            onClick={() => router.push('/')}
+            className="btn-ghost sm:hidden"
+            aria-label="Back to dashboard"
+          >
+            <ArrowLeft className="w-5 h-5" />
+          </button>
+          <button
+            type="button"
+            onClick={handleSave}
+            disabled={isSaving}
+            className="btn-primary"
+          >
+            {isSaving ? (
+              <Loader2 className="w-5 h-5 animate-spin" />
+            ) : saveSuccess ? (
+              <Check className="w-5 h-5" />
+            ) : (
+              <Save className="w-5 h-5" />
+            )}
+            <span className="hidden sm:inline">{saveSuccess ? 'Saved!' : 'Save changes'}</span>
+          </button>
+        </>
+      }
+    >
+      <div className="space-y-6">
+        <div
+          className="glass-card rounded-2xl p-1.5 flex gap-1 overflow-x-auto"
+          role="tablist"
+          aria-label="Settings sections"
+        >
+          {tabs.map((tab) => (
+            <button
+              key={tab.id}
+              type="button"
+              role="tab"
+              aria-selected={activeTab === tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={cn(
+                'flex-1 min-w-[7rem] flex items-center justify-center gap-2 px-3 py-2.5 rounded-xl text-sm font-semibold transition-all',
+                activeTab === tab.id
+                  ? 'bg-primary/15 text-primary border border-primary/30'
+                  : 'text-muted-foreground hover:text-foreground hover:bg-muted/50'
+              )}
+            >
+              <tab.icon className="w-4 h-4" aria-hidden />
+              {tab.label}
+            </button>
+          ))}
+        </div>
+
+        {activeTab === 'business' && (
+          <div className="space-y-5 animate-fade-in" role="tabpanel">
+            <section className="glass-card rounded-2xl p-5 sm:p-6">
+              <h2 className="text-lg font-bold mb-5 flex items-center gap-2">
+                <Building2 className="w-5 h-5 text-primary" aria-hidden />
+                Business information
+              </h2>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                <div className="space-y-1.5">
+                  <label htmlFor="biz-name" className="text-sm font-medium text-muted-foreground">Business name</label>
+                  <input id="biz-name" type="text" value={settings.name} onChange={(e) => updateSetting('name', e.target.value)} className="field-input" />
+                </div>
+                <div className="space-y-1.5">
+                  <label htmlFor="biz-phone" className="text-sm font-medium text-muted-foreground">Phone number</label>
+                  <input id="biz-phone" type="tel" value={settings.phone} onChange={(e) => updateSetting('phone', e.target.value)} className="field-input font-mono" />
+                </div>
+                <div className="space-y-1.5">
+                  <label htmlFor="biz-vertical" className="text-sm font-medium text-muted-foreground">Industry</label>
+                  <select id="biz-vertical" value={settings.vertical} onChange={(e) => updateSetting('vertical', e.target.value)} className="field-input cursor-pointer">
+                    {VERTICALS.map((v) => (
+                      <option key={v.value} value={v.value}>{v.label}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="space-y-1.5">
+                  <label htmlFor="biz-tz" className="text-sm font-medium text-muted-foreground">Timezone</label>
+                  <select id="biz-tz" value={settings.timezone} onChange={(e) => updateSetting('timezone', e.target.value)} className="field-input cursor-pointer">
+                    {TIMEZONES.map((tz) => (
+                      <option key={tz.value} value={tz.value}>{tz.label}</option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+            </section>
+
+            <section className="glass-card rounded-2xl p-5 sm:p-6">
+              <h2 className="text-lg font-bold mb-5 flex items-center gap-2">
+                <Clock className="w-5 h-5 text-primary" aria-hidden />
+                Business hours
+              </h2>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+                <div className="space-y-1.5">
+                  <label htmlFor="opens" className="text-sm font-medium text-muted-foreground">Opens at</label>
+                  <input id="opens" type="time" value={settings.businessHoursStart} onChange={(e) => updateSetting('businessHoursStart', e.target.value)} className="field-input" />
+                </div>
+                <div className="space-y-1.5">
+                  <label htmlFor="closes" className="text-sm font-medium text-muted-foreground">Closes at</label>
+                  <input id="closes" type="time" value={settings.businessHoursEnd} onChange={(e) => updateSetting('businessHoursEnd', e.target.value)} className="field-input" />
+                </div>
+              </div>
+              <div className="mt-5 flex items-center justify-between gap-4 p-4 rounded-xl bg-surface/70 border border-border/50">
+                <div>
+                  <div className="font-medium">After-hours recovery</div>
+                  <div className="text-sm text-muted-foreground">Send recovery SMS outside business hours</div>
+                </div>
+                <Toggle
+                  checked={settings.afterHoursEnabled}
+                  onChange={() => updateSetting('afterHoursEnabled', !settings.afterHoursEnabled)}
+                  label="After-hours recovery"
+                />
+              </div>
+            </section>
+
+            <section className="glass-card rounded-2xl p-5 sm:p-6">
+              <h2 className="text-lg font-bold mb-5 flex items-center gap-2">
+                <Zap className="w-5 h-5 text-accent" aria-hidden />
+                Emergency escalation
+              </h2>
+              <div className="space-y-5">
+                <div className="space-y-1.5">
+                  <label htmlFor="emergency-phone" className="text-sm font-medium text-muted-foreground">Emergency phone</label>
+                  <input id="emergency-phone" type="tel" value={settings.emergencyPhone} onChange={(e) => updateSetting('emergencyPhone', e.target.value)} className="field-input font-mono" placeholder="+1 555 987 6543" />
+                </div>
+                <div className="flex items-center justify-between gap-4 p-4 rounded-xl bg-accent/10 border border-accent/25">
                   <div>
-                    <h1 className="text-xl font-bold text-[#E5DADA]">Settings</h1>
-                    <p className="text-sm text-[#E5DADA]/60">Configure your business</p>
+                    <div className="font-medium">Auto-escalate emergencies</div>
+                    <div className="text-sm text-muted-foreground">Immediately escalate emergency-classified leads</div>
                   </div>
+                  <Toggle
+                    checked={settings.autoEscalateEmergencies}
+                    onChange={() => updateSetting('autoEscalateEmergencies', !settings.autoEscalateEmergencies)}
+                    label="Auto-escalate emergencies"
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <label htmlFor="escalation-delay" className="text-sm font-medium text-muted-foreground">Escalation delay (minutes)</label>
+                  <input id="escalation-delay" type="number" min={1} max={60} value={settings.escalationDelayMinutes} onChange={(e) => updateSetting('escalationDelayMinutes', parseInt(e.target.value) || 5)} className="field-input w-32" />
+                  <p className="text-xs text-muted-foreground">Wait before escalating non-emergency high-priority leads</p>
                 </div>
               </div>
-
-              {/* Save Button */}
-              <button
-                onClick={handleSave}
-                disabled={isSaving}
-                className={cn(
-                  'flex items-center gap-2 px-5 py-2.5 rounded-xl font-semibold',
-                  'bg-gradient-to-r from-[#E59500] to-[#840032]',
-                  'text-white shadow-lg',
-                  'hover:shadow-[0_0_30px_rgba(229,149,0,0.3)]',
-                  'disabled:opacity-50 disabled:cursor-not-allowed',
-                  'transition-all duration-200'
-                )}
-              >
-                {isSaving ? (
-                  <Loader2 className="w-5 h-5 animate-spin" />
-                ) : saveSuccess ? (
-                  <Check className="w-5 h-5" />
-                ) : (
-                  <Save className="w-5 h-5" />
-                )}
-                {saveSuccess ? 'Saved!' : 'Save Changes'}
-              </button>
-            </div>
+            </section>
           </div>
-        </header>
+        )}
 
-        {/* Main Content */}
-        <main className="max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
-          {/* Tabs */}
-          <div className="glass-card rounded-2xl p-2 mb-6 flex gap-2">
-            {tabs.map((tab) => (
-              <button
-                key={tab.id}
-                onClick={() => setActiveTab(tab.id)}
-                className={cn(
-                  'flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-xl font-semibold transition-all duration-200',
-                  activeTab === tab.id
-                    ? 'bg-gradient-to-r from-[#E59500]/20 to-[#840032]/20 text-[#E5DADA] border border-[#E59500]/30'
-                    : 'text-[#E5DADA]/60 hover:text-[#E5DADA] hover:bg-[#E5DADA]/5'
-                )}
-              >
-                <tab.icon className="w-5 h-5" />
-                {tab.label}
-              </button>
-            ))}
-          </div>
-
-          {/* Business Settings Tab */}
-          {activeTab === 'business' && (
-            <div className="space-y-6 animate-fade-in">
-              {/* Business Info */}
-              <div className="glass-card rounded-2xl p-6">
-                <h2 className="text-lg font-bold text-[#E5DADA] mb-6 flex items-center gap-2">
-                  <Building2 className="w-5 h-5 text-[#E59500]" />
-                  Business Information
-                </h2>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium text-[#E5DADA]/70">Business Name</label>
-                    <input
-                      type="text"
-                      value={settings.name}
-                      onChange={(e) => updateSetting('name', e.target.value)}
-                      className="settings-input"
-                    />
-                  </div>
-
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium text-[#E5DADA]/70">Phone Number</label>
-                    <input
-                      type="tel"
-                      value={settings.phone}
-                      onChange={(e) => updateSetting('phone', e.target.value)}
-                      className="settings-input font-['JetBrains_Mono']"
-                    />
-                  </div>
-
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium text-[#E5DADA]/70">Industry</label>
-                    <select
-                      value={settings.vertical}
-                      onChange={(e) => updateSetting('vertical', e.target.value)}
-                      className="settings-input cursor-pointer"
-                    >
-                      {VERTICALS.map((v) => (
-                        <option key={v.value} value={v.value}>{v.label}</option>
-                      ))}
-                    </select>
-                  </div>
-
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium text-[#E5DADA]/70">Timezone</label>
-                    <select
-                      value={settings.timezone}
-                      onChange={(e) => updateSetting('timezone', e.target.value)}
-                      className="settings-input cursor-pointer"
-                    >
-                      {TIMEZONES.map((tz) => (
-                        <option key={tz.value} value={tz.value}>{tz.label}</option>
-                      ))}
-                    </select>
-                  </div>
-                </div>
-              </div>
-
-              {/* Business Hours */}
-              <div className="glass-card rounded-2xl p-6">
-                <h2 className="text-lg font-bold text-[#E5DADA] mb-6 flex items-center gap-2">
-                  <Clock className="w-5 h-5 text-[#E59500]" />
-                  Business Hours
-                </h2>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium text-[#E5DADA]/70">Opens At</label>
-                    <input
-                      type="time"
-                      value={settings.businessHoursStart}
-                      onChange={(e) => updateSetting('businessHoursStart', e.target.value)}
-                      className="settings-input"
-                    />
-                  </div>
-
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium text-[#E5DADA]/70">Closes At</label>
-                    <input
-                      type="time"
-                      value={settings.businessHoursEnd}
-                      onChange={(e) => updateSetting('businessHoursEnd', e.target.value)}
-                      className="settings-input"
-                    />
-                  </div>
-                </div>
-
-                <div className="mt-6 flex items-center justify-between p-4 rounded-xl bg-[#002642]/50 border border-[#E5DADA]/10">
+        {activeTab === 'notifications' && (
+          <div className="space-y-5 animate-fade-in" role="tabpanel">
+            <section className="glass-card rounded-2xl p-5 sm:p-6">
+              <h2 className="text-lg font-bold mb-5 flex items-center gap-2">
+                <Bell className="w-5 h-5 text-primary" aria-hidden />
+                Notification preferences
+              </h2>
+              <div className="space-y-3">
+                <div className="flex items-center justify-between gap-4 p-4 rounded-xl bg-surface/70 border border-border/50">
                   <div>
-                    <div className="font-medium text-[#E5DADA]">After-Hours Recovery</div>
-                    <div className="text-sm text-[#E5DADA]/60">Send recovery SMS outside business hours</div>
+                    <div className="font-medium">New lead notifications</div>
+                    <div className="text-sm text-muted-foreground">When a missed call is received</div>
                   </div>
-                  <button
-                    onClick={() => updateSetting('afterHoursEnabled', !settings.afterHoursEnabled)}
-                    className={cn(
-                      'relative w-14 h-8 rounded-full transition-colors duration-200',
-                      settings.afterHoursEnabled
-                        ? 'bg-gradient-to-r from-[#E59500] to-[#840032]'
-                        : 'bg-[#002642]'
-                    )}
-                  >
-                    <div
-                      className={cn(
-                        'absolute top-1 w-6 h-6 rounded-full bg-white shadow-lg transition-all duration-200',
-                        settings.afterHoursEnabled ? 'left-7' : 'left-1'
-                      )}
-                    />
-                  </button>
+                  <Toggle checked={settings.notifyOnNewLead} onChange={() => updateSetting('notifyOnNewLead', !settings.notifyOnNewLead)} label="New lead notifications" />
+                </div>
+                <div className="flex items-center justify-between gap-4 p-4 rounded-xl bg-accent/10 border border-accent/25">
+                  <div>
+                    <div className="font-medium flex items-center gap-2">
+                      <AlertTriangle className="w-4 h-4 text-accent" aria-hidden />
+                      Escalation notifications
+                    </div>
+                    <div className="text-sm text-muted-foreground">When a lead is escalated</div>
+                  </div>
+                  <Toggle checked={settings.notifyOnEscalation} onChange={() => updateSetting('notifyOnEscalation', !settings.notifyOnEscalation)} label="Escalation notifications" />
+                </div>
+                <div className="space-y-1.5 pt-2">
+                  <label htmlFor="notify-email" className="text-sm font-medium text-muted-foreground">Notification email</label>
+                  <input id="notify-email" type="email" value={settings.notifyEmail} onChange={(e) => updateSetting('notifyEmail', e.target.value)} className="field-input" placeholder="owner@business.com" />
                 </div>
               </div>
+            </section>
+          </div>
+        )}
 
-              {/* Emergency Settings */}
-              <div className="glass-card rounded-2xl p-6">
-                <h2 className="text-lg font-bold text-[#E5DADA] mb-6 flex items-center gap-2">
-                  <Zap className="w-5 h-5 text-[#840032]" />
-                  Emergency Escalation
-                </h2>
-
-                <div className="space-y-6">
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium text-[#E5DADA]/70">Emergency Phone (for escalations)</label>
-                    <input
-                      type="tel"
-                      value={settings.emergencyPhone}
-                      onChange={(e) => updateSetting('emergencyPhone', e.target.value)}
-                      className="settings-input font-['JetBrains_Mono']"
-                      placeholder="+1 555 987 6543"
-                    />
-                  </div>
-
-                  <div className="flex items-center justify-between p-4 rounded-xl bg-[#840032]/10 border border-[#840032]/30">
-                    <div>
-                      <div className="font-medium text-[#E5DADA]">Auto-Escalate Emergencies</div>
-                      <div className="text-sm text-[#E5DADA]/60">Immediately escalate emergency-classified leads</div>
-                    </div>
-                    <button
-                      onClick={() => updateSetting('autoEscalateEmergencies', !settings.autoEscalateEmergencies)}
-                      className={cn(
-                        'relative w-14 h-8 rounded-full transition-colors duration-200',
-                        settings.autoEscalateEmergencies
-                          ? 'bg-gradient-to-r from-[#E59500] to-[#840032]'
-                          : 'bg-[#002642]'
-                      )}
-                    >
-                      <div
-                        className={cn(
-                          'absolute top-1 w-6 h-6 rounded-full bg-white shadow-lg transition-all duration-200',
-                          settings.autoEscalateEmergencies ? 'left-7' : 'left-1'
-                        )}
-                      />
-                    </button>
-                  </div>
-
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium text-[#E5DADA]/70">Escalation Delay (minutes)</label>
-                    <input
-                      type="number"
-                      min="1"
-                      max="60"
-                      value={settings.escalationDelayMinutes}
-                      onChange={(e) => updateSetting('escalationDelayMinutes', parseInt(e.target.value) || 5)}
-                      className="settings-input w-32"
-                    />
-                    <p className="text-xs text-[#E5DADA]/50">
-                      Time to wait before escalating non-emergency high-priority leads
-                    </p>
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Notifications Tab */}
-          {activeTab === 'notifications' && (
-            <div className="space-y-6 animate-fade-in">
-              <div className="glass-card rounded-2xl p-6">
-                <h2 className="text-lg font-bold text-[#E5DADA] mb-6 flex items-center gap-2">
-                  <Bell className="w-5 h-5 text-[#E59500]" />
-                  Notification Preferences
-                </h2>
-
-                <div className="space-y-4">
-                  <div className="flex items-center justify-between p-4 rounded-xl bg-[#002642]/50 border border-[#E5DADA]/10">
-                    <div>
-                      <div className="font-medium text-[#E5DADA]">New Lead Notifications</div>
-                      <div className="text-sm text-[#E5DADA]/60">Get notified when a new missed call is received</div>
-                    </div>
-                    <button
-                      onClick={() => updateSetting('notifyOnNewLead', !settings.notifyOnNewLead)}
-                      className={cn(
-                        'relative w-14 h-8 rounded-full transition-colors duration-200',
-                        settings.notifyOnNewLead
-                          ? 'bg-gradient-to-r from-[#E59500] to-[#840032]'
-                          : 'bg-[#002642]'
-                      )}
-                    >
-                      <div
-                        className={cn(
-                          'absolute top-1 w-6 h-6 rounded-full bg-white shadow-lg transition-all duration-200',
-                          settings.notifyOnNewLead ? 'left-7' : 'left-1'
-                        )}
-                      />
-                    </button>
-                  </div>
-
-                  <div className="flex items-center justify-between p-4 rounded-xl bg-[#840032]/10 border border-[#840032]/30">
-                    <div>
-                      <div className="font-medium text-[#E5DADA] flex items-center gap-2">
-                        <AlertTriangle className="w-4 h-4 text-[#840032]" />
-                        Escalation Notifications
-                      </div>
-                      <div className="text-sm text-[#E5DADA]/60">Get notified when a lead is escalated</div>
-                    </div>
-                    <button
-                      onClick={() => updateSetting('notifyOnEscalation', !settings.notifyOnEscalation)}
-                      className={cn(
-                        'relative w-14 h-8 rounded-full transition-colors duration-200',
-                        settings.notifyOnEscalation
-                          ? 'bg-gradient-to-r from-[#E59500] to-[#840032]'
-                          : 'bg-[#002642]'
-                      )}
-                    >
-                      <div
-                        className={cn(
-                          'absolute top-1 w-6 h-6 rounded-full bg-white shadow-lg transition-all duration-200',
-                          settings.notifyOnEscalation ? 'left-7' : 'left-1'
-                        )}
-                      />
-                    </button>
-                  </div>
-
-                  <div className="space-y-2 pt-4">
-                    <label className="text-sm font-medium text-[#E5DADA]/70">Notification Email</label>
-                    <input
-                      type="email"
-                      value={settings.notifyEmail}
-                      onChange={(e) => updateSetting('notifyEmail', e.target.value)}
-                      className="settings-input"
-                      placeholder="owner@business.com"
-                    />
-                  </div>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* SMS Templates Tab */}
-          {activeTab === 'sms' && (
-            <div className="space-y-6 animate-fade-in">
-              <div className="glass-card rounded-2xl p-6">
-                <h2 className="text-lg font-bold text-[#E5DADA] mb-6 flex items-center gap-2">
-                  <MessageSquare className="w-5 h-5 text-[#E59500]" />
-                  Recovery SMS Template
-                </h2>
-
-                <div className="space-y-4">
-                  <div className="space-y-2">
-                    <label className="text-sm font-medium text-[#E5DADA]/70">Initial Outreach Message</label>
-                    <textarea
-                      value={settings.smsTemplate}
-                      onChange={(e) => updateSetting('smsTemplate', e.target.value)}
-                      rows={4}
-                      className="settings-input resize-none"
-                      placeholder="Enter your recovery SMS template..."
-                    />
-                    <p className="text-xs text-[#E5DADA]/50">
-                      Available variables: {'{business_name}'}, {'{caller_phone}'}
-                    </p>
-                  </div>
-
-                  {/* Template Preview */}
-                  <div className="p-4 rounded-xl bg-[#002642]/50 border border-[#E5DADA]/10">
-                    <div className="text-xs font-medium text-[#E5DADA]/60 uppercase tracking-wide mb-2">
-                      Preview
-                    </div>
-                    <div className="text-sm text-[#E5DADA]">
-                      {settings.smsTemplate.replace('{business_name}', settings.name)}
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* Character Count */}
-              <div className="glass-card rounded-2xl p-4">
-                <div className="flex items-center justify-between text-sm">
-                  <span className="text-[#E5DADA]/60">Character count</span>
-                  <span className={cn(
-                    'font-medium font-["JetBrains_Mono"]',
-                    settings.smsTemplate.length > 160 ? 'text-[#E59500]' : 'text-[#E5DADA]'
-                  )}>
-                    {settings.smsTemplate.length} / 160
-                  </span>
-                </div>
-                {settings.smsTemplate.length > 160 && (
-                  <p className="text-xs text-[#E59500] mt-2">
-                    Messages over 160 characters will be split into multiple SMS segments
+        {activeTab === 'sms' && (
+          <div className="space-y-5 animate-fade-in" role="tabpanel">
+            <section className="glass-card rounded-2xl p-5 sm:p-6">
+              <h2 className="text-lg font-bold mb-5 flex items-center gap-2">
+                <MessageSquare className="w-5 h-5 text-primary" aria-hidden />
+                Recovery SMS template
+              </h2>
+              <div className="space-y-4">
+                <div className="space-y-1.5">
+                  <label htmlFor="sms-template" className="text-sm font-medium text-muted-foreground">Initial outreach message</label>
+                  <textarea
+                    id="sms-template"
+                    value={settings.smsTemplate}
+                    onChange={(e) => updateSetting('smsTemplate', e.target.value)}
+                    rows={4}
+                    className="field-input resize-none"
+                    placeholder="Enter your recovery SMS template…"
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    Variables: {'{business_name}'}, {'{caller_phone}'}
                   </p>
-                )}
+                </div>
+                <div className="p-4 rounded-xl bg-surface/70 border border-border/50">
+                  <div className="text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">Preview</div>
+                  <div className="text-sm">{settings.smsTemplate.replace('{business_name}', settings.name)}</div>
+                </div>
               </div>
+            </section>
+            <div className="glass-card rounded-2xl p-4">
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-muted-foreground">Character count</span>
+                <span className={cn('font-medium font-mono', settings.smsTemplate.length > 160 ? 'text-primary' : 'text-foreground')}>
+                  {settings.smsTemplate.length} / 160
+                </span>
+              </div>
+              {settings.smsTemplate.length > 160 && (
+                <p className="text-xs text-primary mt-2">
+                  Messages over 160 characters will be split into multiple SMS segments
+                </p>
+              )}
             </div>
-          )}
-        </main>
+          </div>
+        )}
       </div>
-
-      <style jsx global>{`
-        .settings-input {
-          width: 100%;
-          padding: 0.75rem 1rem;
-          border-radius: 0.75rem;
-          background: rgba(0, 38, 66, 0.5);
-          border: 1px solid rgba(229, 218, 218, 0.1);
-          color: #E5DADA;
-          font-size: 0.875rem;
-          transition: all 0.2s;
-        }
-
-        .settings-input:focus {
-          outline: none;
-          border-color: rgba(229, 149, 0, 0.5);
-          box-shadow: 0 0 0 2px rgba(229, 149, 0, 0.1);
-        }
-
-        .settings-input::placeholder {
-          color: rgba(229, 218, 218, 0.4);
-        }
-
-        .settings-input option {
-          background: #002642;
-          color: #E5DADA;
-        }
-      `}</style>
-    </div>
+    </AppShell>
   );
 }
