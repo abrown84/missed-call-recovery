@@ -55,12 +55,13 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=xxx
 SUPABASE_SERVICE_ROLE_KEY=xxx
 TWILIO_ACCOUNT_SID=ACxxx
 TWILIO_AUTH_TOKEN=xxx
-ONE_GATEWAY_TOKEN=xxx
-ONE_GATEWAY_URL=http://127.0.0.1:18789
-ONE_GATEWAY_MODEL=gemini-3.8-flash
+# Optional — defaults to https://brwnindustries.com/labs/one-gateway + gemini-3.8-flash
+# ONE_GATEWAY_URL=https://brwnindustries.com/labs/one-gateway
+# ONE_GATEWAY_MODEL=gemini-3.8-flash
+# ONE_GATEWAY_TOKEN=xxx   # Authorization sent only if set
 ```
 
-**Vercel**: Add same vars in Project Settings → Environment Variables
+**Vercel**: Add same vars in Project Settings → Environment Variables. Gateway URL/model have production defaults; set `ONE_GATEWAY_TOKEN` only if the gateway requires auth.
 
 ### 3. Twilio Configuration
 In Twilio Console, configure your phone number:

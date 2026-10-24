@@ -15,7 +15,7 @@ type ChatMessage = {
 const DEFAULT_MODEL = 'gemini-3.8-flash';
 /** Floor for JSON classification so thinking / preamble doesn't truncate the payload. */
 const MIN_JSON_OUTPUT_TOKENS = 1024;
-const DEFAULT_GATEWAY_URL = 'http://127.0.0.1:18789';
+const DEFAULT_GATEWAY_URL = 'https://brwnindustries.com/labs/one-gateway';
 const DEFAULT_AGENT_ID = 'main';
 const DEFAULT_TIMEOUT_MS = 45_000;
 
@@ -62,13 +62,10 @@ function getGatewayUrl(): string {
   return `${url.protocol}//${url.host}${path}`;
 }
 
-function getToken(): string {
+/** Optional — Authorization is only sent when ONE_GATEWAY_TOKEN is set. */
+function getToken(): string | undefined {
   const token = process.env.ONE_GATEWAY_TOKEN?.trim();
-  if (!token) {
-    throw new Error(
-      'Missing gateway token. Set ONE_GATEWAY_TOKEN in your environment.'
-    );
-  }
+  if (!token) return undefined;
   if (/[\x00-\x1f\x7f]/.test(token)) {
     throw new Error('Invalid ONE_GATEWAY_TOKEN: contains control characters');
   }
@@ -172,13 +169,17 @@ async function callGateway(args: {
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json',
+      'x-openclaw-agent-id': agentId,
+    };
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
+    }
+
     const res = await fetch(`${baseUrl}/v1/chat/completions`, {
       method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
-        'x-openclaw-agent-id': agentId,
-      },
+      headers,
       body: JSON.stringify({
         model,
         messages: args.messages,
