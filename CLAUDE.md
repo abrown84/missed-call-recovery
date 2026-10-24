@@ -7,7 +7,7 @@ Automated inbound recovery system for service businesses. Detects missed calls v
 - **Framework**: Next.js 14 (App Router)
 - **Database**: Supabase (PostgreSQL + Auth)
 - **Telephony**: Twilio (Voice + SMS)
-- **AI**: Google Gemini Flash (urgency classification)
+- **AI**: One Gateway → model (default `gemini-3.8-flash`; urgency classification)
 - **Deployment**: Vercel
 - **Language**: TypeScript
 
@@ -30,7 +30,7 @@ src/
 │   ├── supabase-browser.ts      # Supabase client (browser)
 │   ├── supabase-server.ts       # Supabase client (server components)
 │   ├── twilio.ts                # Twilio client
-│   └── gemini.ts                # Gemini AI client
+│   └── gemini.ts                # One Gateway AI client (legacy geminiFlash shim)
 ├── services/
 │   ├── classification.ts        # AI urgency classification
 │   ├── sms.ts                   # SMS outreach
@@ -55,7 +55,9 @@ NEXT_PUBLIC_SUPABASE_ANON_KEY=xxx
 SUPABASE_SERVICE_ROLE_KEY=xxx
 TWILIO_ACCOUNT_SID=ACxxx
 TWILIO_AUTH_TOKEN=xxx
-GOOGLE_GEMINI_API_KEY=xxx
+ONE_GATEWAY_TOKEN=xxx
+ONE_GATEWAY_URL=http://127.0.0.1:18789
+ONE_GATEWAY_MODEL=gemini-3.8-flash
 ```
 
 **Vercel**: Add same vars in Project Settings → Environment Variables
@@ -105,7 +107,7 @@ Falls back to keyword matching if AI unavailable.
 
 ## Done
 - [x] Twilio webhooks (call status, SMS reply)
-- [x] AI urgency classification (Gemini Flash)
+- [x] AI urgency classification (One Gateway / gemini-3.8-flash)
 - [x] SMS outreach + escalation
 - [x] Dashboard UI (stats, leads, detail panel)
 - [x] Authentication (Supabase Auth)
