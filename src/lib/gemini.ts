@@ -39,8 +39,9 @@ type LegacyGenerateContentRequest = {
   generationConfig?: LegacyGenerationConfig;
 };
 
-function getGatewayUrl(): string {
-  const raw = process.env.ONE_GATEWAY_URL?.trim() || DEFAULT_GATEWAY_URL;
+/** Validate and normalize a One Gateway base URL (exported for unit tests). */
+export function resolveGatewayUrl(rawInput?: string): string {
+  const raw = rawInput?.trim() || DEFAULT_GATEWAY_URL;
   let url: URL;
   try {
     url = new URL(raw);
@@ -60,6 +61,10 @@ function getGatewayUrl(): string {
   }
   const path = url.pathname === '/' ? '' : url.pathname.replace(/\/+$/, '');
   return `${url.protocol}//${url.host}${path}`;
+}
+
+function getGatewayUrl(): string {
+  return resolveGatewayUrl(process.env.ONE_GATEWAY_URL);
 }
 
 /** Optional — Authorization is only sent when ONE_GATEWAY_TOKEN is set. */

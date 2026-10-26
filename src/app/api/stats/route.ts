@@ -1,25 +1,38 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { z } from 'zod';
 import { createServerClient } from '@/lib/supabase';
+import { requireApiUser } from '@/lib/auth-api';
 
-// Force dynamic rendering (no static generation)
 export const dynamic = 'force-dynamic';
 
+const querySchema = z.object({
+  businessId: z.string().uuid(),
+  period: z.enum(['day', 'week', 'month']).default('week'),
+});
+
 /**
- * GET /api/stats
- * Fetch dashboard statistics for a business
+ * GET /api/stats — authenticated
  */
 export async function GET(request: NextRequest) {
-  const { searchParams } = new URL(request.url);
-  const businessId = searchParams.get('businessId');
-  const period = searchParams.get('period') || 'week'; // day, week, month
+  const auth = await requireApiUser();
+  if (auth.error) return auth.error;
 
-  if (!businessId) {
-    return NextResponse.json({ error: 'businessId required' }, { status: 400 });
+  const { searchParams } = new URL(request.url);
+  const parsed = querySchema.safeParse({
+    businessId: searchParams.get('businessId') || undefined,
+    period: searchParams.get('period') || undefined,
+  });
+
+  if (!parsed.success) {
+    return NextResponse.json(
+      { error: 'Invalid query parameters', details: parsed.error.flatten() },
+      { status: 400 }
+    );
   }
 
+  const { businessId, period } = parsed.data;
   const supabase = createServerClient();
 
-  // Calculate date range
   const now = new Date();
   let startDate: Date;
   switch (period) {
@@ -36,28 +49,24 @@ export async function GET(request: NextRequest) {
 
   const startDateStr = startDate.toISOString();
 
-  // Fetch missed calls count
   const { count: missedCalls } = await supabase
     .from('missed_calls')
     .select('*', { count: 'exact', head: true })
     .eq('business_id', businessId)
     .gte('created_at', startDateStr);
 
-  // Fetch leads with status breakdown
   const { data: leads } = await supabase
     .from('leads')
     .select('status, urgency, estimated_value')
     .eq('business_id', businessId)
     .gte('created_at', startDateStr);
 
-  // Fetch SMS messages sent
   const { count: smsDelivered } = await supabase
     .from('sms_messages')
     .select('*', { count: 'exact', head: true })
     .eq('direction', 'outbound')
     .gte('sent_at', startDateStr);
 
-  // Calculate stats
   type LeadRow = { status: string; urgency: string | null; estimated_value: number | null };
   const leadsArray: LeadRow[] = leads || [];
   const responses = leadsArray.filter((l) => l.status !== 'pending').length;
@@ -67,7 +76,7 @@ export async function GET(request: NextRequest) {
   ).length;
   const estimatedRevenue = leadsArray
     .filter((l) => l.status === 'converted')
-    .reduce((sum, l) => sum + (l.estimated_value || 350), 0); // Default $350 per job
+    .reduce((sum, l) => sum + (l.estimated_value || 350), 0);
 
   const responseRate =
     missedCalls && missedCalls > 0 ? Math.round((responses / missedCalls) * 100) : 0;

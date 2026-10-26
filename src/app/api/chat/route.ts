@@ -1,13 +1,23 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { z } from 'zod';
 import { geminiFlash } from '@/lib/gemini';
 import { createServerClient } from '@/lib/supabase';
+import { requireApiUser } from '@/lib/auth-api';
 
 export const dynamic = 'force-dynamic';
 
-interface ChatMessage {
-  role: 'user' | 'assistant';
-  content: string;
-}
+const chatSchema = z.object({
+  messages: z
+    .array(
+      z.object({
+        role: z.enum(['user', 'assistant']),
+        content: z.string().min(1).max(4000),
+      })
+    )
+    .min(1)
+    .max(40),
+  businessId: z.string().uuid().optional(),
+});
 
 const SYSTEM_PROMPT = `You are an AI assistant for a Missed Call Recovery platform. You help service business owners (plumbers, HVAC techs, electricians) understand their leads and make decisions.
 
@@ -27,34 +37,49 @@ Respond in a helpful, conversational tone. Keep responses brief unless asked for
 
 export async function POST(request: NextRequest) {
   try {
-    const { messages, businessId } = await request.json() as {
-      messages: ChatMessage[];
-      businessId?: string;
-    };
+    const auth = await requireApiUser();
+    if (auth.error) return auth.error;
 
-    if (!messages || messages.length === 0) {
-      return NextResponse.json({ error: 'No messages provided' }, { status: 400 });
+    const json = await request.json().catch(() => null);
+    const parsed = chatSchema.safeParse(json);
+    if (!parsed.success) {
+      return NextResponse.json(
+        { error: 'Invalid request body', details: parsed.error.flatten() },
+        { status: 400 }
+      );
     }
 
-    // Fetch context data if businessId provided
+    const { messages, businessId } = parsed.data;
+
     let contextData = 'No business data available.';
     if (businessId) {
       contextData = await fetchBusinessContext(businessId);
     }
 
-    // Build the prompt with context
     const systemPrompt = SYSTEM_PROMPT.replace('{context}', contextData);
 
-    // Convert messages to Gemini format
     const geminiMessages = messages.map((msg) => ({
       role: msg.role === 'user' ? 'user' : 'model',
       parts: [{ text: msg.content }],
     }));
 
-    // Add system prompt as first user message (Gemini workaround)
     const fullMessages = [
-      { role: 'user', parts: [{ text: `System: ${systemPrompt}\n\nNow respond to the user.` }] },
-      { role: 'model', parts: [{ text: 'Understood. I\'m ready to help with your missed call recovery platform. What would you like to know?' }] },
+      {
+        role: 'user',
+        parts: [
+          {
+            text: `System: ${systemPrompt}\n\nNow respond to the user.`,
+          },
+        ],
+      },
+      {
+        role: 'model',
+        parts: [
+          {
+            text: "Understood. I'm ready to help with your missed call recovery platform. What would you like to know?",
+          },
+        ],
+      },
       ...geminiMessages,
     ];
 
@@ -73,7 +98,7 @@ export async function POST(request: NextRequest) {
       message: response,
     });
   } catch (error) {
-    console.error('Chat error:', error);
+    console.error('Chat error:', error instanceof Error ? error.message : 'unknown');
     return NextResponse.json(
       { error: 'Failed to generate response' },
       { status: 500 }
@@ -85,7 +110,6 @@ async function fetchBusinessContext(businessId: string): Promise<string> {
   try {
     const supabase = createServerClient();
 
-    // Fetch recent leads
     const { data: leads } = await supabase
       .from('leads')
       .select('status, urgency, issue, created_at')
@@ -97,7 +121,6 @@ async function fetchBusinessContext(businessId: string): Promise<string> {
       return 'No recent leads found.';
     }
 
-    // Summarize lead data
     const statusCounts: Record<string, number> = {};
     const urgencyCounts: Record<string, number> = {};
     const recentIssues: string[] = [];
@@ -108,19 +131,29 @@ async function fetchBusinessContext(businessId: string): Promise<string> {
         urgencyCounts[lead.urgency] = (urgencyCounts[lead.urgency] || 0) + 1;
       }
       if (lead.issue && recentIssues.length < 5) {
-        recentIssues.push(lead.issue);
+        // Issues may contain customer wording — keep short, no phones expected here.
+        recentIssues.push(String(lead.issue).slice(0, 120));
       }
     }
 
     return `
 Recent leads (last 20):
-- Status breakdown: ${Object.entries(statusCounts).map(([k, v]) => `${k}: ${v}`).join(', ')}
-- Urgency breakdown: ${Object.entries(urgencyCounts).map(([k, v]) => `${k}: ${v}`).join(', ') || 'None classified'}
+- Status breakdown: ${Object.entries(statusCounts)
+      .map(([k, v]) => `${k}: ${v}`)
+      .join(', ')}
+- Urgency breakdown: ${
+      Object.entries(urgencyCounts)
+        .map(([k, v]) => `${k}: ${v}`)
+        .join(', ') || 'None classified'
+    }
 - Recent issues: ${recentIssues.join('; ') || 'None recorded'}
 - Total: ${leads.length} leads
     `.trim();
   } catch (error) {
-    console.error('Failed to fetch context:', error);
+    console.error(
+      'Failed to fetch context:',
+      error instanceof Error ? error.message : 'unknown'
+    );
     return 'Unable to fetch business data.';
   }
 }

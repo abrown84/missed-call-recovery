@@ -1,5 +1,6 @@
 import { createServerClient } from '@/lib/supabase';
 import { sendSMS } from '@/lib/twilio';
+import { redactPhone } from '@/lib/pii';
 import type { Database } from '@/types/database';
 
 type Business = Database['public']['Tables']['businesses']['Row'];
@@ -50,9 +51,14 @@ export async function sendRecoverySMS(
       .update({ sms_outbound_sid: message.sid })
       .eq('id', leadId);
 
-    console.log(`Recovery SMS sent to ${callerPhone}, SID: ${message.sid}`);
+    console.log(
+      `Recovery SMS sent to ${redactPhone(callerPhone)}, SID: ${message.sid}`
+    );
   } catch (error) {
-    console.error('Failed to send recovery SMS:', error);
+    console.error(
+      'Failed to send recovery SMS:',
+      error instanceof Error ? error.message : 'unknown'
+    );
     throw error;
   }
 }
@@ -79,9 +85,14 @@ export async function sendFollowUpSMS(
       status: message.status,
     });
 
-    console.log(`Follow-up SMS sent to ${callerPhone}, SID: ${message.sid}`);
+    console.log(
+      `Follow-up SMS sent to ${redactPhone(callerPhone)}, SID: ${message.sid}`
+    );
   } catch (error) {
-    console.error('Failed to send follow-up SMS:', error);
+    console.error(
+      'Failed to send follow-up SMS:',
+      error instanceof Error ? error.message : 'unknown'
+    );
     throw error;
   }
 }

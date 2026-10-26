@@ -8,9 +8,81 @@ import type { ClassificationResult, UrgencyLevel } from '@/types';
  */
 
 // Stop/spam patterns (check first, skip AI)
-const SPAM_PATTERNS = [
+export const SPAM_PATTERNS = [
   /\b(stop|unsubscribe|remove me|wrong number)\b/i,
 ];
+
+export const EMERGENCY_PATTERNS = [
+  /\b(emergency|urgent|asap|immediately|right now|help)\b/i,
+  /\b(danger|dangerous|unsafe|hazard)\b/i,
+  /\b(can'?t wait|need.*now|please hurry)\b/i,
+];
+
+export const LOW_URGENCY_PATTERNS = [
+  /\b(quote|estimate|pricing|cost)\b/i,
+  /\b(next week|whenever|no rush|when.*available)\b/i,
+  /\b(just asking|information|wondering)\b/i,
+];
+
+/** Pure opt-out / spam detection used before AI classification. */
+export function isOptOutMessage(messageText: string): boolean {
+  const text = messageText.toLowerCase();
+  return SPAM_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+/**
+ * Score a message using built-in patterns + optional keyword weights.
+ * Pure function — safe to unit test without DB or AI.
+ */
+export function scoreUrgencyKeywords(
+  messageText: string,
+  keywordWeights: Array<{ keyword: string; weight: number }> = []
+): { score: number; matchedKeywords: string[]; urgency: UrgencyLevel; confidence: number } {
+  const text = messageText.toLowerCase();
+  const matchedKeywords: string[] = [];
+  let score = 0;
+
+  for (const pattern of EMERGENCY_PATTERNS) {
+    const match = text.match(pattern);
+    if (match) {
+      score += 8;
+      matchedKeywords.push(match[0]);
+    }
+  }
+
+  for (const pattern of LOW_URGENCY_PATTERNS) {
+    if (pattern.test(text)) {
+      score -= 5;
+    }
+  }
+
+  for (const { keyword, weight } of keywordWeights) {
+    const regex = new RegExp(`\\b${escapeRegex(keyword)}\\b`, 'i');
+    if (regex.test(text)) {
+      score += weight;
+      matchedKeywords.push(keyword);
+    }
+  }
+
+  let urgency: UrgencyLevel;
+  let confidence: number;
+
+  if (score >= 15) {
+    urgency = 'emergency';
+    confidence = Math.min(score / 20, 1);
+  } else if (score >= 8) {
+    urgency = 'high';
+    confidence = Math.min(score / 15, 0.9);
+  } else if (score >= 3) {
+    urgency = 'normal';
+    confidence = 0.7;
+  } else {
+    urgency = 'low';
+    confidence = 0.6;
+  }
+
+  return { score, matchedKeywords, urgency, confidence };
+}
 
 /**
  * Main classification function - uses AI with keyword fallback
@@ -19,18 +91,14 @@ export async function classifyUrgency(
   messageText: string,
   vertical: string
 ): Promise<ClassificationResult> {
-  const text = messageText.toLowerCase();
-
   // Check for spam/stop first (no need for AI)
-  for (const pattern of SPAM_PATTERNS) {
-    if (pattern.test(text)) {
-      return {
-        urgency: 'low',
-        confidence: 1,
-        keywords: ['stop'],
-        issue: 'Opt-out request',
-      };
-    }
+  if (isOptOutMessage(messageText)) {
+    return {
+      urgency: 'low',
+      confidence: 1,
+      keywords: ['stop'],
+      issue: 'Opt-out request',
+    };
   }
 
   // Try AI classification first
@@ -132,79 +200,23 @@ async function classifyWithKeywords(
   vertical: string
 ): Promise<ClassificationResult> {
   const supabase = createServerClient();
-  const text = messageText.toLowerCase();
-  const matchedKeywords: string[] = [];
-  let score = 0;
 
-  // Base emergency patterns
-  const emergencyPatterns = [
-    /\b(emergency|urgent|asap|immediately|right now|help)\b/i,
-    /\b(danger|dangerous|unsafe|hazard)\b/i,
-    /\b(can'?t wait|need.*now|please hurry)\b/i,
-  ];
-
-  const lowUrgencyPatterns = [
-    /\b(quote|estimate|pricing|cost)\b/i,
-    /\b(next week|whenever|no rush|when.*available)\b/i,
-    /\b(just asking|information|wondering)\b/i,
-  ];
-
-  for (const pattern of emergencyPatterns) {
-    const match = text.match(pattern);
-    if (match) {
-      score += 8;
-      matchedKeywords.push(match[0]);
-    }
-  }
-
-  for (const pattern of lowUrgencyPatterns) {
-    if (pattern.test(text)) {
-      score -= 5;
-    }
-  }
-
-  // Fetch vertical-specific keywords
   const { data: keywords } = await supabase
     .from('emergency_keywords')
     .select('keyword, weight')
     .in('vertical', [vertical, 'general']);
 
-  if (keywords) {
-    for (const { keyword, weight } of keywords) {
-      const regex = new RegExp(`\\b${escapeRegex(keyword)}\\b`, 'i');
-      if (regex.test(text)) {
-        score += weight;
-        matchedKeywords.push(keyword);
-      }
-    }
-  }
-
-  let urgency: UrgencyLevel;
-  let confidence: number;
-
-  if (score >= 15) {
-    urgency = 'emergency';
-    confidence = Math.min(score / 20, 1);
-  } else if (score >= 8) {
-    urgency = 'high';
-    confidence = Math.min(score / 15, 0.9);
-  } else if (score >= 3) {
-    urgency = 'normal';
-    confidence = 0.7;
-  } else {
-    urgency = 'low';
-    confidence = 0.6;
-  }
+  const scored = scoreUrgencyKeywords(messageText, keywords || []);
 
   return {
-    urgency,
-    confidence,
-    keywords: matchedKeywords,
+    urgency: scored.urgency,
+    confidence: scored.confidence,
+    keywords: scored.matchedKeywords,
     issue: extractIssue(messageText),
   };
 }
 
-function extractIssue(text: string): string {
+export function extractIssue(text: string): string {
   const firstSentence = text.split(/[.!?]/)[0];
   if (firstSentence.length <= 100) {
     return firstSentence.trim();
@@ -212,6 +224,6 @@ function extractIssue(text: string): string {
   return text.slice(0, 100).trim() + '...';
 }
 
-function escapeRegex(string: string): string {
+export function escapeRegex(string: string): string {
   return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }

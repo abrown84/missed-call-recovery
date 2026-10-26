@@ -1,27 +1,38 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { processDueCampaigns } from '@/services/campaigns';
+import { timingSafeEqual } from 'crypto';
 
 export const dynamic = 'force-dynamic';
 
+function authorizeCron(request: NextRequest): boolean {
+  const cronSecret = process.env.CRON_SECRET?.trim();
+  if (!cronSecret) {
+    console.error('CRON_SECRET is not configured; rejecting cron request');
+    return false;
+  }
+
+  const authHeader = request.headers.get('authorization') || '';
+  const expected = `Bearer ${cronSecret}`;
+
+  try {
+    const a = Buffer.from(authHeader);
+    const b = Buffer.from(expected);
+    if (a.length !== b.length) return false;
+    return timingSafeEqual(a, b);
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Vercel Cron Endpoint - Campaign Processor
- * Runs daily to send scheduled campaign messages
- *
- * Configure in vercel.json:
- * { "crons": [{ "path": "/api/cron/campaigns", "schedule": "0 9 * * *" }] }
+ * Requires Authorization: Bearer $CRON_SECRET
  */
 export async function GET(request: NextRequest) {
   try {
-    // Verify cron secret (optional but recommended)
-    const authHeader = request.headers.get('authorization');
-    const cronSecret = process.env.CRON_SECRET;
-
-    if (cronSecret && authHeader !== `Bearer ${cronSecret}`) {
-      console.warn('Unauthorized cron request');
+    if (!authorizeCron(request)) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
-
-    console.log('Starting campaign processor...');
 
     const result = await processDueCampaigns();
 
@@ -31,18 +42,20 @@ export async function GET(request: NextRequest) {
       ...result,
     });
   } catch (error) {
-    console.error('Cron job error:', error);
+    console.error(
+      'Cron job error:',
+      error instanceof Error ? error.message : 'unknown'
+    );
     return NextResponse.json(
       {
         success: false,
-        error: error instanceof Error ? error.message : 'Unknown error',
+        error: 'Campaign processor failed',
       },
       { status: 500 }
     );
   }
 }
 
-// Allow POST as well for manual testing
 export async function POST(request: NextRequest) {
   return GET(request);
 }

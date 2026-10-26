@@ -1,22 +1,48 @@
 import twilio from 'twilio';
+import type { Twilio } from 'twilio';
 
-const accountSid = process.env.TWILIO_ACCOUNT_SID!;
-const authToken = process.env.TWILIO_AUTH_TOKEN!;
+let cachedClient: Twilio | null = null;
 
-export const twilioClient = twilio(accountSid, authToken);
+function getAuthToken(): string {
+  const token = process.env.TWILIO_AUTH_TOKEN?.trim();
+  if (!token) {
+    throw new Error('TWILIO_AUTH_TOKEN is not configured');
+  }
+  return token;
+}
 
-// Validate Twilio webhook signatures
+function getAccountSid(): string {
+  const sid = process.env.TWILIO_ACCOUNT_SID?.trim();
+  if (!sid) {
+    throw new Error('TWILIO_ACCOUNT_SID is not configured');
+  }
+  return sid;
+}
+
+/** Lazy Twilio client — avoids crashing the build when env vars are absent. */
+export function getTwilioClient(): Twilio {
+  if (cachedClient) return cachedClient;
+  cachedClient = twilio(getAccountSid(), getAuthToken());
+  return cachedClient;
+}
+
+/** @deprecated Prefer getTwilioClient() — kept for call-site compatibility. */
+export const twilioClient = new Proxy({} as Twilio, {
+  get(_target, prop, receiver) {
+    return Reflect.get(getTwilioClient() as object, prop, receiver);
+  },
+});
+
 export function validateTwilioSignature(
   signature: string,
   url: string,
   params: Record<string, string>
 ): boolean {
-  return twilio.validateRequest(authToken, signature, url, params);
+  return twilio.validateRequest(getAuthToken(), signature, url, params);
 }
 
-// Send SMS
 export async function sendSMS(to: string, from: string, body: string) {
-  const message = await twilioClient.messages.create({
+  const message = await getTwilioClient().messages.create({
     to,
     from,
     body,
