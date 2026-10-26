@@ -491,7 +491,7 @@ export default function Dashboard() {
                 emptyDescription={
                   searchQuery || activeFilterCount
                     ? 'Try adjusting your search or filters.'
-                    : 'Missed calls will appear here automatically once Twilio webhooks are connected.'
+                    : 'Missed calls will appear here automatically once the BRWN device posts missed-call events.'
                 }
               />
             </>

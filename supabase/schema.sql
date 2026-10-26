@@ -13,7 +13,8 @@ CREATE TYPE vertical_type AS ENUM ('plumbing', 'hvac', 'electrical', 'locksmith'
 CREATE TABLE businesses (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   name TEXT NOT NULL,
-  phone TEXT NOT NULL UNIQUE,  -- Twilio number
+  phone TEXT NOT NULL UNIQUE,  -- Business phone (BRWN device SIM / line)
+
   vertical vertical_type DEFAULT 'general',
   timezone TEXT DEFAULT 'America/New_York',
   business_hours_start TIME DEFAULT '08:00',
@@ -32,7 +33,7 @@ CREATE TABLE missed_calls (
   caller_phone TEXT NOT NULL,
   called_at TIMESTAMPTZ DEFAULT NOW(),
   ring_duration INTEGER DEFAULT 0,  -- seconds
-  call_sid TEXT NOT NULL UNIQUE,    -- Twilio Call SID
+  call_sid TEXT NOT NULL UNIQUE,    -- Device call id (unique per missed call)
   created_at TIMESTAMPTZ DEFAULT NOW()
 );
 

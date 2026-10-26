@@ -93,7 +93,7 @@ Tracks leads in campaigns
 
 ### **1. Lead Created (Missed Call)**
 ```
-Webhook: /api/webhooks/twilio/call-status
+Webhook: /api/webhooks/brwn/missed-call
   ↓
 Create lead in database
   ↓
@@ -112,14 +112,14 @@ Query enrollments where next_send_at <= NOW()
   ↓
 For each enrollment:
   - Get template for current step
-  - Send SMS via Twilio
+  - Queue SMS via BRWN relay
   - Record in sms_messages
   - Advance to next step OR mark completed
 ```
 
 ### **3. Customer Responds**
 ```
-Webhook: /api/webhooks/twilio/sms-reply
+Webhook: /api/webhooks/brwn/inbound
   ↓
 Record inbound SMS
   ↓
@@ -139,7 +139,7 @@ No more follow-ups sent
 #### `enrollLeadInCampaign(leadId: string): Promise<void>`
 Auto-enrolls lead in appropriate campaign based on urgency.
 
-**Called by**: Twilio call-status webhook after lead creation
+**Called by**: BRWN missed-call webhook after lead creation
 
 **Logic:**
 1. Fetch lead with urgency level
@@ -158,7 +158,7 @@ Sends SMS for current campaign step and advances sequence.
 1. Fetch enrollment + lead + business + campaign
 2. Get template for current step
 3. Personalize template with business name
-4. Send SMS via Twilio
+4. Queue SMS via BRWN relay
 5. Record in sms_messages
 6. Update enrollment (next step or completed)
 
@@ -317,13 +317,12 @@ curl http://localhost:3000/api/cron/campaigns -X POST
 
 ### **Test Auto-Enrollment**
 
-1. Simulate missed call via Twilio webhook:
+1. Simulate missed call via BRWN device webhook:
 ```bash
-curl -X POST http://localhost:3000/api/webhooks/twilio/call-status \
-  -d "CallSid=TEST123" \
-  -d "CallStatus=no-answer" \
-  -d "From=+15551234567" \
-  -d "To=+15559999999"
+curl -X POST http://localhost:3000/api/webhooks/brwn/missed-call \
+  -H "Authorization: Bearer $BRWN_WEBHOOK_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"callerPhone":"+15551234567","businessPhone":"+15559999999","callId":"TEST123","ringDurationSeconds":12}'
 ```
 
 2. Check database:
@@ -359,13 +358,12 @@ curl http://localhost:3000/api/cron/campaigns -X POST
 
 ### **Test Auto-Pause**
 
-1. Simulate customer reply:
+1. Simulate customer reply (relay inbound webhook):
 ```bash
-curl -X POST http://localhost:3000/api/webhooks/twilio/sms-reply \
-  -d "MessageSid=MSG123" \
-  -d "From=+15551234567" \
-  -d "To=+15559999999" \
-  -d "Body=Yes I need help with my heater"
+curl -X POST http://localhost:3000/api/webhooks/brwn/inbound \
+  -H "Authorization: Bearer $BRWN_WEBHOOK_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"from":"+15551234567","to":"+15559999999","body":"Yes I need help with my heater","messageId":"MSG123"}'
 ```
 
 2. Check enrollment status:
@@ -461,7 +459,7 @@ SELECT status FROM campaign_enrollments WHERE lead_id = '...';
 - **Rate Limiting**: 200ms delay between SMS sends in processDueCampaigns()
 - **Batch Size**: Max 100 enrollments processed per cron run
 - **Indexes**: Optimized queries with next_send_at index
-- **Twilio Costs**: ~$0.0079 per SMS (3-5 touches per lead = $0.02-$0.04)
+- **SMS Costs**: Carrier rates via the BRWN device SIM (no Twilio per-message fee)
 
 ---
 
@@ -493,6 +491,6 @@ CAMPAIGNS.md                              # This file
 
 ```
 src/types/database.ts                            # Added campaign table types
-src/app/api/webhooks/twilio/call-status/route.ts  # Added auto-enrollment
-src/app/api/webhooks/twilio/sms-reply/route.ts    # Added auto-pause
+src/app/api/webhooks/brwn/missed-call/route.ts    # Auto-enrollment on miss
+src/app/api/webhooks/brwn/inbound/route.ts        # Auto-pause on reply
 ```

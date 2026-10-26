@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { createServerClient } from '@/lib/supabase';
 import { requireApiUser } from '@/lib/auth-api';
-import { sendSMS } from '@/lib/twilio';
+import { getMessagingAdapter } from '@/lib/messaging';
 import { redactId, redactPhone } from '@/lib/pii';
 
 export const dynamic = 'force-dynamic';
@@ -149,7 +149,11 @@ async function handleManualEscalation(
     `Escalated by user - call back ASAP!`,
   ].join('\n');
 
-  await sendSMS(escalationPhone, business.phone, message);
+  await getMessagingAdapter().sendMessage({
+    to: escalationPhone,
+    body: message,
+    auto: true,
+  });
 
   console.log(
     `Lead ${redactId(lead.id)} manually escalated to ${redactPhone(escalationPhone)}`

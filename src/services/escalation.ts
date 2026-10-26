@@ -1,5 +1,5 @@
 import { createServerClient } from '@/lib/supabase';
-import { sendSMS } from '@/lib/twilio';
+import { getMessagingAdapter } from '@/lib/messaging';
 import { redactId, redactPhone } from '@/lib/pii';
 import type { ClassificationResult } from '@/types';
 import type { Database } from '@/types/database';
@@ -43,12 +43,12 @@ export async function escalateLead(
   );
 
   try {
-    // Send escalation SMS to business owner/dispatcher
-    await sendSMS(
-      escalationPhone,
-      business.phone,
-      escalationMessage
-    );
+    await getMessagingAdapter().sendMessage({
+      to: escalationPhone,
+      body: escalationMessage,
+      auto: true,
+    });
+
 
     // Update lead status
     await supabase

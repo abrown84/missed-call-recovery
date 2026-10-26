@@ -47,7 +47,7 @@ export function LeadsTable({
   leads,
   onSelectLead,
   emptyTitle = 'No leads yet',
-  emptyDescription = 'Missed calls will appear here automatically once Twilio webhooks are connected.',
+  emptyDescription = 'Missed calls will appear here automatically once the BRWN device posts missed-call events.',
 }: LeadsTableProps) {
   const router = useRouter();
 
