@@ -1,33 +1,56 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { z } from 'zod';
 import { createServerClient } from '@/lib/supabase';
+import { requireApiUser } from '@/lib/auth-api';
 import { sendSMS } from '@/lib/twilio';
+import { redactId, redactPhone } from '@/lib/pii';
 
 export const dynamic = 'force-dynamic';
 
-interface UpdateLeadRequest {
-  status?: 'pending' | 'responded' | 'qualified' | 'escalated' | 'converted' | 'lost' | 'spam';
-  estimated_value?: number;
-}
+const updateSchema = z.object({
+  status: z.enum([
+    'pending',
+    'responded',
+    'qualified',
+    'escalated',
+    'converted',
+    'lost',
+    'spam',
+  ]),
+  estimated_value: z.number().finite().min(0).max(1_000_000).optional(),
+});
+
+const idSchema = z.string().uuid();
 
 /**
- * PATCH /api/leads/[id]
- * Update lead status and trigger related actions
+ * PATCH /api/leads/[id] — authenticated
  */
 export async function PATCH(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const { id } = params;
-    const body = (await request.json()) as UpdateLeadRequest;
+    const auth = await requireApiUser();
+    if (auth.error) return auth.error;
 
-    if (!body.status) {
-      return NextResponse.json({ error: 'Status is required' }, { status: 400 });
+    const { id: rawId } = await params;
+    const idParsed = idSchema.safeParse(rawId);
+    if (!idParsed.success) {
+      return NextResponse.json({ error: 'Invalid lead id' }, { status: 400 });
+    }
+    const id = idParsed.data;
+
+    const json = await request.json().catch(() => null);
+    const body = updateSchema.safeParse(json);
+    if (!body.success) {
+      return NextResponse.json(
+        { error: 'Invalid request body', details: body.error.flatten() },
+        { status: 400 }
+      );
     }
 
     const supabase = createServerClient();
 
-    // Fetch the lead and business details
     const { data: lead, error: leadError } = await supabase
       .from('leads')
       .select('*, missed_calls(*)')
@@ -38,7 +61,6 @@ export async function PATCH(
       return NextResponse.json({ error: 'Lead not found' }, { status: 404 });
     }
 
-    // Fetch business details for escalation
     const { data: business, error: businessError } = await supabase
       .from('businesses')
       .select('*')
@@ -49,25 +71,22 @@ export async function PATCH(
       return NextResponse.json({ error: 'Business not found' }, { status: 404 });
     }
 
-    // Prepare update payload
-    const updates: Record<string, any> = {
-      status: body.status,
+    const updates: Record<string, unknown> = {
+      status: body.data.status,
       updated_at: new Date().toISOString(),
     };
 
-    // Set timestamps based on status
-    if (body.status === 'converted') {
+    if (body.data.status === 'converted') {
       updates.converted_at = new Date().toISOString();
-      if (body.estimated_value) {
-        updates.estimated_value = body.estimated_value;
+      if (body.data.estimated_value != null) {
+        updates.estimated_value = body.data.estimated_value;
       }
     }
 
-    if (body.status === 'escalated') {
+    if (body.data.status === 'escalated') {
       updates.escalated_at = new Date().toISOString();
     }
 
-    // Update the lead
     const { data: updatedLead, error: updateError } = await supabase
       .from('leads')
       .update(updates)
@@ -76,17 +95,18 @@ export async function PATCH(
       .single();
 
     if (updateError) {
-      console.error('Failed to update lead:', updateError);
+      console.error('Failed to update lead:', updateError.message);
       return NextResponse.json({ error: 'Failed to update lead' }, { status: 500 });
     }
 
-    // Handle escalation - send SMS to business owner
-    if (body.status === 'escalated') {
+    if (body.data.status === 'escalated') {
       try {
         await handleManualEscalation(lead, business);
       } catch (escalationError) {
-        console.error('Escalation SMS failed:', escalationError);
-        // Don't fail the request if SMS fails, lead is already updated
+        console.error(
+          'Escalation SMS failed:',
+          escalationError instanceof Error ? escalationError.message : 'unknown'
+        );
       }
     }
 
@@ -95,21 +115,29 @@ export async function PATCH(
       data: updatedLead,
     });
   } catch (error) {
-    console.error('Lead update error:', error);
-    return NextResponse.json(
-      { error: 'Internal server error' },
-      { status: 500 }
+    console.error(
+      'Lead update error:',
+      error instanceof Error ? error.message : 'unknown'
     );
+    return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }
 
-/**
- * Handle manual escalation triggered from dashboard
- */
-async function handleManualEscalation(lead: any, business: any): Promise<void> {
+async function handleManualEscalation(
+  lead: {
+    id: string;
+    caller_phone: string;
+    urgency: string | null;
+    issue: string | null;
+    sms_response_text: string | null;
+  },
+  business: {
+    phone: string;
+    emergency_phone: string | null;
+  }
+): Promise<void> {
   const escalationPhone = business.emergency_phone || business.phone;
 
-  // Build escalation message
   const urgencyEmoji = lead.urgency === 'emergency' ? '🚨' : '⚠️';
   const message = [
     `${urgencyEmoji} MANUAL ESCALATION`,
@@ -121,8 +149,9 @@ async function handleManualEscalation(lead: any, business: any): Promise<void> {
     `Escalated by user - call back ASAP!`,
   ].join('\n');
 
-  // Send escalation SMS
   await sendSMS(escalationPhone, business.phone, message);
 
-  console.log(`Lead ${lead.id} manually escalated to ${escalationPhone}`);
+  console.log(
+    `Lead ${redactId(lead.id)} manually escalated to ${redactPhone(escalationPhone)}`
+  );
 }

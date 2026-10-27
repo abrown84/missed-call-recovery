@@ -65,14 +65,11 @@ CREATE TRIGGER campaign_enrollments_updated_at
   BEFORE UPDATE ON campaign_enrollments
   FOR EACH ROW EXECUTE FUNCTION update_updated_at();
 
--- RLS policies
+-- RLS: enable and leave deny-by-default (service role bypasses RLS).
+-- Do not add USING (true) policies — see 002_secure_rls.sql.
 ALTER TABLE campaigns ENABLE ROW LEVEL SECURITY;
 ALTER TABLE campaign_steps ENABLE ROW LEVEL SECURITY;
 ALTER TABLE campaign_enrollments ENABLE ROW LEVEL SECURITY;
-
-CREATE POLICY "Service role full access" ON campaigns FOR ALL USING (true);
-CREATE POLICY "Service role full access" ON campaign_steps FOR ALL USING (true);
-CREATE POLICY "Service role full access" ON campaign_enrollments FOR ALL USING (true);
 
 -- Seed default campaigns
 INSERT INTO campaigns (name, description, vertical, urgency_filter, auto_enroll) VALUES

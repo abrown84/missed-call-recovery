@@ -1,29 +1,38 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { createServerClient } from '@/lib/supabase';
+import { validateTwilioWebhook } from '@/lib/twilio-webhook';
+import { redactPhone } from '@/lib/pii';
 import { classifyUrgency } from '@/services/classification';
 import { escalateLead } from '@/services/escalation';
 import { pauseCampaignForLead } from '@/services/campaigns';
-import type { TwilioSMSPayload } from '@/types';
 
-// Force dynamic rendering (no static generation)
 export const dynamic = 'force-dynamic';
 
 /**
  * Twilio SMS Reply Webhook
- * Triggered when a customer replies to our recovery SMS
- *
- * Configure this URL in Twilio: /api/webhooks/twilio/sms-reply
+ * Configure: /api/webhooks/twilio/sms-reply
  */
 export async function POST(request: NextRequest) {
   try {
-    const formData = await request.formData();
-    const payload = Object.fromEntries(formData) as unknown as TwilioSMSPayload;
+    const params = await validateTwilioWebhook(request);
+    if (!params) {
+      return NextResponse.json({ error: 'Invalid signature' }, { status: 403 });
+    }
 
-    const { MessageSid, From, To, Body } = payload;
+    const MessageSid = params.MessageSid;
+    const From = params.From;
+    const To = params.To;
+    const Body = params.Body ?? '';
+
+    if (!MessageSid || !From || !To) {
+      return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
+    }
+
+    // Cap inbound body length to limit abuse / storage cost
+    const body = Body.slice(0, 1600);
 
     const supabase = createServerClient();
 
-    // Find the business by their Twilio number
     const { data: business, error: bizError } = await supabase
       .from('businesses')
       .select('*')
@@ -31,11 +40,10 @@ export async function POST(request: NextRequest) {
       .single();
 
     if (bizError || !business) {
-      console.error('Business not found for number:', To);
+      console.error('Business not found for number:', redactPhone(To));
       return NextResponse.json({ error: 'Business not found' }, { status: 404 });
     }
 
-    // Find the most recent pending lead for this caller
     const { data: lead, error: leadError } = await supabase
       .from('leads')
       .select('*')
@@ -47,50 +55,46 @@ export async function POST(request: NextRequest) {
       .single();
 
     if (leadError || !lead) {
-      console.error('No pending lead found for:', From);
-      // Still log the message even if no lead found
+      console.error('No pending lead found for:', redactPhone(From));
       return NextResponse.json({ status: 'no_lead_found' });
     }
 
-    // Record the inbound SMS
     await supabase.from('sms_messages').insert({
       lead_id: lead.id,
       direction: 'inbound',
-      body: Body,
+      body,
       message_sid: MessageSid,
       status: 'received',
     });
 
-    // Classify urgency based on response
-    const classification = await classifyUrgency(Body, business.vertical);
+    const classification = await classifyUrgency(body, business.vertical);
 
-    // Update the lead with classification
     const { error: updateError } = await supabase
       .from('leads')
       .update({
         status: 'qualified',
         urgency: classification.urgency,
         issue: classification.issue,
-        sms_response_text: Body,
+        sms_response_text: body,
         classified_at: new Date().toISOString(),
       })
       .eq('id', lead.id);
 
     if (updateError) {
-      console.error('Failed to update lead:', updateError);
+      console.error('Failed to update lead:', updateError.message);
     }
 
-    // Pause any active campaigns since lead has responded
     pauseCampaignForLead(lead.id).catch((err) => {
-      console.error('Failed to pause campaign:', err);
+      console.error(
+        'Failed to pause campaign:',
+        err instanceof Error ? err.message : 'unknown'
+      );
     });
 
-    // Emergency leads get immediate escalation
     if (classification.urgency === 'emergency' || classification.urgency === 'high') {
       await escalateLead(lead.id, business, classification);
     }
 
-    // Return TwiML response (empty = no auto-reply)
     return new NextResponse(
       '<?xml version="1.0" encoding="UTF-8"?><Response></Response>',
       {
@@ -98,7 +102,10 @@ export async function POST(request: NextRequest) {
       }
     );
   } catch (error) {
-    console.error('SMS webhook error:', error);
+    console.error(
+      'SMS webhook error:',
+      error instanceof Error ? error.message : 'unknown'
+    );
     return NextResponse.json({ error: 'Internal server error' }, { status: 500 });
   }
 }

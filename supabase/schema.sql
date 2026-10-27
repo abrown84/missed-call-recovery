@@ -148,13 +148,14 @@ INSERT INTO emergency_keywords (vertical, keyword, weight) VALUES
   ('general', 'help', 6);
 
 -- Row Level Security (RLS)
+-- IMPORTANT: Do NOT add USING (true) policies — that opens tables to the anon key.
+-- The service role key used by API routes bypasses RLS. Authenticated dashboard
+-- access goes through Next.js API routes that use the service role after session checks.
 ALTER TABLE businesses ENABLE ROW LEVEL SECURITY;
 ALTER TABLE missed_calls ENABLE ROW LEVEL SECURITY;
 ALTER TABLE leads ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sms_messages ENABLE ROW LEVEL SECURITY;
+ALTER TABLE emergency_keywords ENABLE ROW LEVEL SECURITY;
 
--- Service role can access everything (for API routes)
-CREATE POLICY "Service role full access" ON businesses FOR ALL USING (true);
-CREATE POLICY "Service role full access" ON missed_calls FOR ALL USING (true);
-CREATE POLICY "Service role full access" ON leads FOR ALL USING (true);
-CREATE POLICY "Service role full access" ON sms_messages FOR ALL USING (true);
+-- Deny-by-default for anon/authenticated clients (no permissive policies).
+-- Service role bypasses RLS for server-side webhooks and authenticated API handlers.

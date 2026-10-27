@@ -1,5 +1,6 @@
 import { createServerClient } from '@/lib/supabase';
 import { sendSMS } from '@/lib/twilio';
+import { redactId, redactPhone } from '@/lib/pii';
 import type { ClassificationResult } from '@/types';
 import type { Database } from '@/types/database';
 
@@ -58,9 +59,14 @@ export async function escalateLead(
       })
       .eq('id', leadId);
 
-    console.log(`Lead ${leadId} escalated to ${escalationPhone}`);
+    console.log(
+      `Lead ${redactId(leadId)} escalated to ${redactPhone(escalationPhone)}`
+    );
   } catch (err) {
-    console.error('Escalation failed:', err);
+    console.error(
+      'Escalation failed:',
+      err instanceof Error ? err.message : 'unknown'
+    );
     throw err;
   }
 }
