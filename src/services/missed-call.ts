@@ -1,7 +1,6 @@
 import { createServerClient } from '@/lib/supabase';
 import { redactPhone } from '@/lib/pii';
 import { sendRecoverySMS } from '@/services/sms';
-import { enrollLeadInCampaign } from '@/services/campaigns';
 
 export interface MissedCallEvent {
   /** Caller's phone (E.164 preferred). */
@@ -19,8 +18,9 @@ export interface MissedCallResult {
 }
 
 /**
- * Record a missed call, create a lead, enqueue recovery SMS + campaign enrollment.
- * Called from the authenticated BRWN missed-call webhook (device detects the miss).
+ * Record a missed call, create a lead, enqueue recovery SMS.
+ * Campaign enrollment happens AFTER urgency classification on the first
+ * inbound reply (see processInboundSms) so Emergency / High sequences match.
  */
 export async function processMissedCall(
   event: MissedCallEvent
@@ -91,16 +91,10 @@ export async function processMissedCall(
     throw new MissedCallError('Failed to create lead', 500);
   }
 
+  // Instant first text only — do NOT enroll here (urgency is still null).
   sendRecoverySMS(lead.id, business, event.callerPhone).catch((err) => {
     console.error(
       'SMS send failed:',
-      err instanceof Error ? err.message : 'unknown'
-    );
-  });
-
-  enrollLeadInCampaign(lead.id).catch((err) => {
-    console.error(
-      'Campaign enrollment failed:',
       err instanceof Error ? err.message : 'unknown'
     );
   });

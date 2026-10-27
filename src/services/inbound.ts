@@ -1,8 +1,15 @@
 import { createServerClient } from '@/lib/supabase';
 import { redactPhone } from '@/lib/pii';
-import { classifyUrgency } from '@/services/classification';
+import { classifyUrgency, isOptOutMessage } from '@/services/classification';
 import { escalateLead } from '@/services/escalation';
-import { pauseCampaignForLead } from '@/services/campaigns';
+import {
+  enrollLeadInCampaign,
+  leadHasActiveEnrollment,
+  pauseCampaignForLead,
+} from '@/services/campaigns';
+import type { Database } from '@/types/database';
+
+type Lead = Database['public']['Tables']['leads']['Row'];
 
 export interface InboundSmsEvent {
   from: string;
@@ -13,11 +20,19 @@ export interface InboundSmsEvent {
 }
 
 export type InboundResult =
-  | { status: 'processed'; leadId: string; urgency: string }
+  | {
+      status: 'processed';
+      leadId: string;
+      urgency: string;
+      enrolledCampaign?: string;
+    }
   | { status: 'no_lead_found' };
 
 /**
  * Handle an inbound customer SMS (forwarded from the BRWN relay webhook).
+ *
+ * Urgency is classified first; then the lead is enrolled in the matching
+ * campaign (Emergency / High / Standard). Later replies pause the campaign.
  */
 export async function processInboundSms(
   event: InboundSmsEvent
@@ -42,7 +57,9 @@ export async function processInboundSms(
     throw new InboundError('Business not found', 404);
   }
 
-  const { data: lead, error: leadError } = await supabase
+  // Prefer an open pending lead; otherwise a recently qualified one that may
+  // still be in an active campaign (so a later reply can pause follow-ups).
+  const { data: pendingLead } = await supabase
     .from('leads')
     .select('*')
     .eq('business_id', business.id)
@@ -50,10 +67,25 @@ export async function processInboundSms(
     .eq('status', 'pending')
     .order('created_at', { ascending: false })
     .limit(1)
-    .single();
+    .maybeSingle();
 
-  if (leadError || !lead) {
-    console.error('No pending lead found for:', redactPhone(event.from));
+  let lead: Lead | null = pendingLead;
+
+  if (!lead) {
+    const { data: openLead } = await supabase
+      .from('leads')
+      .select('*')
+      .eq('business_id', business.id)
+      .eq('caller_phone', event.from)
+      .in('status', ['qualified', 'escalated'])
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    lead = openLead;
+  }
+
+  if (!lead) {
+    console.error('No open lead found for:', redactPhone(event.from));
     return { status: 'no_lead_found' };
   }
 
@@ -82,14 +114,50 @@ export async function processInboundSms(
     console.error('Failed to update lead:', updateError.message);
   }
 
-  pauseCampaignForLead(lead.id).catch((err) => {
-    console.error(
-      'Failed to pause campaign:',
-      err instanceof Error ? err.message : 'unknown'
-    );
-  });
+  // Opt-out: stop outreach, do not enroll.
+  if (isOptOutMessage(body)) {
+    await pauseCampaignForLead(lead.id).catch((err) => {
+      console.error(
+        'Failed to pause campaign on opt-out:',
+        err instanceof Error ? err.message : 'unknown'
+      );
+    });
+    return {
+      status: 'processed',
+      leadId: lead.id,
+      urgency: classification.urgency,
+    };
+  }
 
-  if (classification.urgency === 'emergency' || classification.urgency === 'high') {
+  // Later replies while a campaign is running → pause.
+  // First classified reply → enroll now that urgency is known.
+  const alreadyEnrolled = await leadHasActiveEnrollment(lead.id);
+  let enrolledCampaign: string | undefined;
+
+  if (alreadyEnrolled) {
+    await pauseCampaignForLead(lead.id).catch((err) => {
+      console.error(
+        'Failed to pause campaign:',
+        err instanceof Error ? err.message : 'unknown'
+      );
+    });
+  } else {
+    const enrollment = await enrollLeadInCampaign(lead.id).catch((err) => {
+      console.error(
+        'Campaign enrollment failed:',
+        err instanceof Error ? err.message : 'unknown'
+      );
+      return null;
+    });
+    if (enrollment?.enrolled) {
+      enrolledCampaign = enrollment.campaignName;
+    }
+  }
+
+  if (
+    classification.urgency === 'emergency' ||
+    classification.urgency === 'high'
+  ) {
     await escalateLead(lead.id, business, classification);
   }
 
@@ -97,6 +165,7 @@ export async function processInboundSms(
     status: 'processed',
     leadId: lead.id,
     urgency: classification.urgency,
+    enrolledCampaign,
   };
 }
 

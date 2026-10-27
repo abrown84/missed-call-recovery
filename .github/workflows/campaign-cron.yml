@@ -1,0 +1,62 @@
+# Follow-up sender every 5 minutes.
+#
+# Why GitHub Actions (not vercel.json */5):
+# Vercel Hobby only allows once-daily cron; */5 in vercel.json fails deploy.
+# This workflow keeps send latency ≤ ~5 minutes on Hobby. If the project is
+# upgraded to Vercel Pro, vercel.json can also use */5 as a second trigger —
+# processDueCampaigns claims enrollments so double-runs are safe.
+#
+# Required repo secrets:
+#   CRON_APP_URL  — staging or production origin, e.g. https://app.example.com
+#                   (do NOT point at customer-facing prod until ready; prefer staging)
+#   CRON_SECRET   — same value as the app's CRON_SECRET env var
+#
+# Never texts real leads from CI: the app must use MESSAGING_PROVIDER=dry-run
+# on staging, or a designated test number only.
+
+name: Campaign follow-up cron
+
+on:
+  schedule:
+    # Every 5 minutes (UTC)
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+jobs:
+  process-due-campaigns:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require secrets
+        id: check
+        env:
+          CRON_APP_URL: ${{ secrets.CRON_APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          if [ -z "$CRON_APP_URL" ] || [ -z "$CRON_SECRET" ]; then
+            echo "missing=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Skipping: set repo secrets CRON_APP_URL and CRON_SECRET to enable the 5-minute campaign cron."
+            exit 0
+          fi
+          echo "missing=false" >> "$GITHUB_OUTPUT"
+
+      - name: Process due campaign SMS
+        if: steps.check.outputs.missing == 'false'
+        env:
+          CRON_APP_URL: ${{ secrets.CRON_APP_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          set -euo pipefail
+          url="${CRON_APP_URL%/}/api/cron/campaigns"
+          echo "POST $url at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          http_code=$(curl -sS -o /tmp/cron-body.json -w '%{http_code}' \
+            -X POST "$url" \
+            -H "Authorization: Bearer ${CRON_SECRET}" \
+            -H "Content-Type: application/json")
+          echo "HTTP $http_code"
+          cat /tmp/cron-body.json || true
+          echo
+          if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
+            echo "Cron endpoint failed with HTTP $http_code"
+            exit 1
+          fi

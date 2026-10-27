@@ -10,8 +10,9 @@ Automated multi-touch SMS follow-up campaigns that dramatically increase respons
 ✅ **Urgency-Based Sequences** - Different cadences for emergency, high, and normal priority leads
 ✅ **Smart Templates** - Context-aware SMS templates for each step
 ✅ **Auto-Pause** - Campaigns pause when customer responds
-✅ **Scheduled Delivery** - Vercel cron processes follow-ups every 5 minutes
+✅ **Scheduled Delivery** - Follow-ups processed every 5 minutes (GitHub Actions cron; see below)
 ✅ **Rate Limiting** - Built-in delays to respect SMS best practices
+✅ **Idempotent sends** - Recovery SMS + campaign step 1 never double-fire; cron claims enrollments
 
 ---
 
@@ -95,39 +96,42 @@ Tracks leads in campaigns
 ```
 Webhook: /api/webhooks/brwn/missed-call
   ↓
-Create lead in database
+Create lead in database (urgency still null)
   ↓
-enrollLeadInCampaign(leadId)
+sendRecoverySMS  ← instant first text only
   ↓
-Match campaign by urgency
-  ↓
-Create enrollment with next_send_at timestamp
+Do NOT enroll yet (urgency unknown → would always hit Standard)
 ```
 
-### **2. Cron Job Processes Follow-ups**
-```
-Every 5 minutes: /api/cron/campaigns
-  ↓
-Query enrollments where next_send_at <= NOW()
-  ↓
-For each enrollment:
-  - Get template for current step
-  - Queue SMS via BRWN relay
-  - Record in sms_messages
-  - Advance to next step OR mark completed
-```
-
-### **3. Customer Responds**
+### **2. Customer Responds → Classify → Enroll**
 ```
 Webhook: /api/webhooks/brwn/inbound
   ↓
 Record inbound SMS
   ↓
-pauseCampaignForLead(leadId)
+classifyUrgency (One Gateway / keywords)
   ↓
-Set enrollment status = 'paused'
+Update lead.urgency
   ↓
-No more follow-ups sent
+enrollLeadInCampaign(leadId)  ← now matches Emergency / High / Standard
+  ↓
+Skip delay-0 initial step if recovery SMS already sent (no duplicate first text)
+  ↓
+Emergency/high → escalate; later replies → pauseCampaignForLead
+```
+
+### **3. Cron Job Processes Follow-ups**
+```
+Every 5 minutes: POST /api/cron/campaigns  (GitHub Actions; see Setup)
+  ↓
+Query enrollments where next_send_at <= NOW()
+  ↓
+Claim each enrollment (clear next_send_at) so concurrent runs cannot double-send
+  ↓
+For each claimed enrollment:
+  - Skip if campaign:{enrollmentId}:step:{n} already in sms_messages
+  - Queue SMS via BRWN relay (or dry-run on staging)
+  - Advance to next step OR mark completed
 ```
 
 ---
@@ -136,16 +140,16 @@ No more follow-ups sent
 
 ### **Campaign Service** (`src/services/campaigns.ts`)
 
-#### `enrollLeadInCampaign(leadId: string): Promise<void>`
+#### `enrollLeadInCampaign(leadId: string): Promise<EnrollmentResult>`
 Auto-enrolls lead in appropriate campaign based on urgency.
 
-**Called by**: BRWN missed-call webhook after lead creation
+**Called by**: BRWN inbound webhook **after** urgency classification (not on missed call)
 
 **Logic:**
-1. Fetch lead with urgency level
-2. Find active campaign matching urgency
-3. Calculate first step's next_send_at
-4. Create enrollment record
+1. Fetch lead with urgency level (must already be set)
+2. Find active campaign matching urgency (else Standard / null filter)
+3. If recovery SMS already sent, skip delay-0 initial step
+4. Create enrollment with next_send_at for the first *remaining* step
 
 ---
 
@@ -273,19 +277,24 @@ This creates:
 - Indexes for performance
 - Seeded campaigns with default sequences
 
-### **2. Configure Vercel Cron**
+### **2. Configure 5-minute follow-up cron**
 
-`vercel.json` already configured:
-```json
-{
-  "crons": [{
-    "path": "/api/cron/campaigns",
-    "schedule": "*/5 * * * *"
-  }]
-}
-```
+**Why not `*/5 * * * *` in `vercel.json`?**
+Vercel Hobby only allows once-per-day cron; a `*/5` expression **fails the deploy**.
+The daily entry in `vercel.json` (`0 9 * * *`) is kept as a Hobby-safe safety net.
 
-Runs every 5 minutes in production.
+**Chosen mechanism:** GitHub Actions workflow `.github/workflows/campaign-cron.yml`
+runs every 5 minutes and `POST`s `/api/cron/campaigns` with `CRON_SECRET`.
+That keeps send latency within minutes of `next_send_at` without requiring Vercel Pro.
+`processDueCampaigns` claims enrollments before send, so overlapping triggers are safe.
+
+If the project is upgraded to **Vercel Pro**, you may also set
+`"schedule": "*/5 * * * *"` in `vercel.json` (per-minute precision). Prefer
+staging URL + `MESSAGING_PROVIDER=dry-run` while validating.
+
+**Repo secrets for the Actions cron:**
+- `CRON_APP_URL` — staging (preferred) or production origin
+- `CRON_SECRET` — same value as the app env var
 
 ### **3. Deploy to Vercel**
 
@@ -315,9 +324,9 @@ curl http://localhost:3000/api/cron/campaigns -X POST
 
 ## Testing Campaign Flow
 
-### **Test Auto-Enrollment**
+### **Test Auto-Enrollment (after urgency)**
 
-1. Simulate missed call via BRWN device webhook:
+1. Simulate missed call (creates lead + recovery SMS; **no** enrollment yet):
 ```bash
 curl -X POST http://localhost:3000/api/webhooks/brwn/missed-call \
   -H "Authorization: Bearer $BRWN_WEBHOOK_SECRET" \
@@ -325,13 +334,26 @@ curl -X POST http://localhost:3000/api/webhooks/brwn/missed-call \
   -d '{"callerPhone":"+15551234567","businessPhone":"+15559999999","callId":"TEST123","ringDurationSeconds":12}'
 ```
 
-2. Check database:
-```sql
-SELECT * FROM campaign_enrollments
-WHERE lead_id = (SELECT id FROM leads ORDER BY created_at DESC LIMIT 1);
+2. Simulate urgent reply (classifies + enrolls):
+```bash
+curl -X POST http://localhost:3000/api/webhooks/brwn/inbound \
+  -H "Authorization: Bearer $BRWN_WEBHOOK_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"from":"+15551234567","to":"+15559999999","body":"Emergency flood in basement","messageId":"MSG123"}'
 ```
 
-Should see enrollment with `status = 'active'` and `next_send_at` set.
+3. Check database:
+```sql
+SELECT c.name, ce.status, ce.current_step, ce.next_send_at, l.urgency
+FROM campaign_enrollments ce
+JOIN campaigns c ON c.id = ce.campaign_id
+JOIN leads l ON l.id = ce.lead_id
+ORDER BY ce.enrolled_at DESC
+LIMIT 5;
+```
+
+Should see **Emergency Follow-up** (not Standard) with `current_step = 2` (initial skipped)
+and `next_send_at` about +1 hour.
 
 ---
 
