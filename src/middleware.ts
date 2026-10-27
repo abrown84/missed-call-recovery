@@ -64,7 +64,7 @@ export const config = {
     /*
      * Match all request paths except:
      * - _next/static, _next/image, favicon
-     * - api routes (Twilio webhooks + cron stay public; each route enforces its own auth)
+     * - api routes (BRWN webhooks + cron stay public; each route enforces its own auth)
      * - static assets
      */
     '/((?!_next/static|_next/image|favicon.ico|api/|.*\\.(?:svg|png|jpg|jpeg|gif|webp|ico)$).*)',

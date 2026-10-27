@@ -24,7 +24,8 @@ export type Vertical =
 export interface Business {
   id: string;
   name: string;
-  phone: string;           // Twilio number
+  phone: string;           // Business phone (BRWN device SIM / line)
+
   vertical: Vertical;
   timezone: string;
   businessHoursStart: string; // "08:00"
@@ -41,7 +42,8 @@ export interface MissedCall {
   callerPhone: string;
   calledAt: Date;
   ringDuration: number;     // seconds
-  callSid: string;          // Twilio Call SID
+  callSid: string;          // Device call id (unique per missed call)
+
   createdAt: Date;
 }
 
@@ -80,23 +82,21 @@ export interface ClassificationResult {
   issue?: string;
 }
 
-// Twilio webhook payloads
-export interface TwilioCallStatusPayload {
-  CallSid: string;
-  CallStatus: 'queued' | 'ringing' | 'in-progress' | 'completed' | 'busy' | 'failed' | 'no-answer';
-  From: string;
-  To: string;
-  Direction: string;
-  CallDuration?: string;
-  Timestamp?: string;
+/** Authenticated missed-call event from the BRWN device. */
+export interface BrwnMissedCallPayload {
+  callerPhone: string;
+  businessPhone: string;
+  callId: string;
+  ringDurationSeconds?: number;
 }
 
-export interface TwilioSMSPayload {
-  MessageSid: string;
-  From: string;
-  To: string;
-  Body: string;
-  NumMedia?: string;
+/** Inbound SMS forwarded from the BRWN relay webhook. */
+export interface BrwnInboundPayload {
+  from: string;
+  body: string;
+  to?: string;
+  businessPhone?: string;
+  messageId?: string;
 }
 
 // API response types

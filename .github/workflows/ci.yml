@@ -16,8 +16,10 @@ jobs:
       NEXT_PUBLIC_SUPABASE_URL: https://example.supabase.co
       NEXT_PUBLIC_SUPABASE_ANON_KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.placeholder
       SUPABASE_SERVICE_ROLE_KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.service-role-placeholder
-      TWILIO_ACCOUNT_SID: ACaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
-      TWILIO_AUTH_TOKEN: test_auth_token_not_real
+      BRWN_RELAY_URL: https://relay.example.com
+      BRWN_RELAY_SENDER_TOKEN: ci-sender-token-not-real
+      BRWN_WEBHOOK_SECRET: ci-webhook-secret-not-real
+      BRWN_DEFAULT_BUSINESS_PHONE: '+15555550100'
       NEXT_PUBLIC_APP_URL: http://localhost:3000
       CRON_SECRET: ci-cron-secret-not-real
 

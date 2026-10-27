@@ -1,5 +1,5 @@
 import { createServerClient } from '@/lib/supabase';
-import { sendSMS } from '@/lib/twilio';
+import { getMessagingAdapter } from '@/lib/messaging';
 import { redactPhone } from '@/lib/pii';
 import type { Database } from '@/types/database';
 
@@ -7,10 +7,9 @@ type Business = Database['public']['Tables']['businesses']['Row'];
 
 /**
  * SMS Outreach Service
- * Sends recovery SMS to missed callers within seconds
+ * Sends recovery SMS via the active messaging adapter (BRWN relay by default).
  */
 
-// Default SMS templates by vertical
 const SMS_TEMPLATES: Record<string, string> = {
   plumbing: `Hi, this is {business}. We noticed we missed your call. What plumbing issue can we help you with today? Reply here or call us back!`,
   hvac: `Hi, this is {business}. Sorry we missed your call! Are you having a heating/cooling issue? Reply with details and we'll get back to you ASAP.`,
@@ -25,34 +24,34 @@ export async function sendRecoverySMS(
 ): Promise<void> {
   const supabase = createServerClient();
 
-  // Get SMS template (from business settings or default)
-  const customTemplate = (business.settings as Record<string, unknown>)?.smsTemplate as string | undefined;
-  const template = customTemplate || SMS_TEMPLATES[business.vertical] || SMS_TEMPLATES.general;
-
-  // Personalize the message
+  const customTemplate = (business.settings as Record<string, unknown>)
+    ?.smsTemplate as string | undefined;
+  const template =
+    customTemplate || SMS_TEMPLATES[business.vertical] || SMS_TEMPLATES.general;
   const messageBody = template.replace('{business}', business.name);
 
   try {
-    // Send via Twilio
-    const message = await sendSMS(callerPhone, business.phone, messageBody);
+    const message = await getMessagingAdapter().sendMessage({
+      to: callerPhone,
+      body: messageBody,
+      auto: true,
+    });
 
-    // Record the outbound SMS
     await supabase.from('sms_messages').insert({
       lead_id: leadId,
       direction: 'outbound',
       body: messageBody,
-      message_sid: message.sid,
+      message_sid: message.id,
       status: message.status,
     });
 
-    // Update lead with outbound SID
     await supabase
       .from('leads')
-      .update({ sms_outbound_sid: message.sid })
+      .update({ sms_outbound_sid: message.id })
       .eq('id', leadId);
 
     console.log(
-      `Recovery SMS sent to ${redactPhone(callerPhone)}, SID: ${message.sid}`
+      `Recovery SMS queued to ${redactPhone(callerPhone)}, id: ${message.id}`
     );
   } catch (error) {
     console.error(
@@ -71,22 +70,27 @@ export async function sendFollowUpSMS(
 ): Promise<void> {
   const supabase = createServerClient();
 
-  const messageBody = customMessage ||
+  const messageBody =
+    customMessage ||
     `Hi, just following up from ${business.name}. Still need help? Reply here or give us a call!`;
 
   try {
-    const message = await sendSMS(callerPhone, business.phone, messageBody);
+    const message = await getMessagingAdapter().sendMessage({
+      to: callerPhone,
+      body: messageBody,
+      auto: true,
+    });
 
     await supabase.from('sms_messages').insert({
       lead_id: leadId,
       direction: 'outbound',
       body: messageBody,
-      message_sid: message.sid,
+      message_sid: message.id,
       status: message.status,
     });
 
     console.log(
-      `Follow-up SMS sent to ${redactPhone(callerPhone)}, SID: ${message.sid}`
+      `Follow-up SMS queued to ${redactPhone(callerPhone)}, id: ${message.id}`
     );
   } catch (error) {
     console.error(

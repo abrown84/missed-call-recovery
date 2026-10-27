@@ -1,5 +1,5 @@
 import { createServerClient } from '@/lib/supabase';
-import { sendSMS } from '@/lib/twilio';
+import { getMessagingAdapter } from '@/lib/messaging';
 import { getTemplate } from '@/lib/templates';
 import type { Database } from '@/types/database';
 
@@ -135,15 +135,18 @@ export async function sendCampaignSMS(
       issue: lead.issue || '',
     });
 
-    // Send SMS
-    const message = await sendSMS(lead.caller_phone, business.phone, messageBody);
+    const message = await getMessagingAdapter().sendMessage({
+      to: lead.caller_phone,
+      body: messageBody,
+      auto: true,
+    });
 
     // Record SMS
     await supabase.from('sms_messages').insert({
       lead_id: lead.id,
       direction: 'outbound',
       body: messageBody,
-      message_sid: message.sid,
+      message_sid: message.id,
       status: message.status,
     });
 
