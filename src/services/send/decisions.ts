@@ -27,6 +27,26 @@ export type QuietHoursInput =
     }
   | { allowed: false; unresolved: true; reason: string; zones: string[] };
 
+/** Customer-facing kinds that persist sms_messages rows. */
+export function isCustomerSmsKind(
+  kind: SendKind
+): kind is 'recovery' | 'campaign' {
+  return kind === 'recovery' || kind === 'campaign';
+}
+
+/** Whether the I/O shell must resolve recovery before campaign step 1. */
+export function shouldResolveRecoveryGate(input: {
+  kind: SendKind;
+  stepNumber?: number;
+  skipRecoveryGate?: boolean;
+}): boolean {
+  return (
+    input.kind === 'campaign' &&
+    input.stepNumber === 1 &&
+    !input.skipRecoveryGate
+  );
+}
+
 /** Pre-send gate after E.164 is known (suppression/opt-out/recovery/quiet). */
 export function decideCustomerFacingGates(input: {
   kind: SendKind;
@@ -38,7 +58,7 @@ export function decideCustomerFacingGates(input: {
   recovery?: RecoveryResolvedOutcome;
   quiet?: QuietHoursInput;
 }): SendOutcome | null {
-  if (input.kind !== 'recovery' && input.kind !== 'campaign') return null;
+  if (!isCustomerSmsKind(input.kind)) return null;
 
   if (input.suppressed) {
     return { kind: 'blocked', reason: 'suppressed' };
@@ -47,11 +67,7 @@ export function decideCustomerFacingGates(input: {
     return { kind: 'blocked', reason: 'opted_out' };
   }
 
-  if (
-    input.kind === 'campaign' &&
-    input.stepNumber === 1 &&
-    !input.skipRecoveryGate
-  ) {
+  if (shouldResolveRecoveryGate(input)) {
     if (input.recovery === 'pending') {
       return { kind: 'blocked', reason: 'recovery_pending' };
     }

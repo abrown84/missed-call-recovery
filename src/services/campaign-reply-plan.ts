@@ -60,7 +60,9 @@ export function mapSwitchResultToReplyAction(input: {
   campaignName?: string;
   targetCampaignName: string;
 }): { action: string; campaignName?: string } {
-  if (!input.enrolled && (input.reason ?? '').startsWith('deferred')) {
+  // Stryker disable next-line StringLiteral: empty coalesce — see EQUIVALENT.md reply-plan-reason-empty-coalesce
+  const reason = input.reason ?? '';
+  if (!input.enrolled && reason.startsWith('deferred')) {
     return { action: 'defer_switch', campaignName: input.targetCampaignName };
   }
   return {

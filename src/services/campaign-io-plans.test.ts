@@ -18,7 +18,9 @@ import {
   reconcileCompletePayload,
   releaseClaimPayload,
   requeueStepPayload,
+  rowFound,
   sortCampaignSteps,
+  staleBeforeIso,
   stepsOrEmpty,
   switchUpdatePayload,
 } from './campaign-io-plans';
@@ -224,5 +226,24 @@ describe('campaign-io-plans', () => {
       ),
       { numRuns: 40 }
     );
+  });
+});
+
+describe('rowFound / staleBeforeIso', () => {
+  it('rowFound requires row AND !error (not OR)', () => {
+    expect(rowFound({ id: 1 }, null)).toBe(true);
+    expect(rowFound(null, null)).toBe(false);
+    expect(rowFound({ id: 1 }, { message: 'x' })).toBe(false);
+    expect(rowFound(null, { message: 'x' })).toBe(false);
+    // || mutant: Boolean(row) || !error → true when error is null even if row null
+    expect(rowFound(undefined, null)).toBe(false);
+  });
+
+  it('staleBeforeIso subtracts (not adds) staleMs', () => {
+    const now = Date.parse('2026-06-15T12:00:00.000Z');
+    const staleMs = 60_000;
+    const iso = staleBeforeIso(now, staleMs);
+    expect(iso).toBe(new Date(now - staleMs).toISOString());
+    expect(iso).not.toBe(new Date(now + staleMs).toISOString());
   });
 });

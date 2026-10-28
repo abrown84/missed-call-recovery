@@ -5,10 +5,52 @@ import {
   decideDuplicateSid,
   interpretCampaignSendOutcome,
   interpretRecoverySendOutcome,
+  isCustomerSmsKind,
   mapRelaySendResult,
   resolveIdempotencySid,
+  shouldResolveRecoveryGate,
 } from './decisions';
 import type { SendOutcome } from './types';
+
+describe('isCustomerSmsKind / shouldResolveRecoveryGate', () => {
+  it('customer kinds are recovery|campaign only', () => {
+    expect(isCustomerSmsKind('recovery')).toBe(true);
+    expect(isCustomerSmsKind('campaign')).toBe(true);
+    expect(isCustomerSmsKind('manual')).toBe(false);
+    expect(isCustomerSmsKind('escalation')).toBe(false);
+  });
+
+  it('recovery gate only for campaign step 1 without skip', () => {
+    expect(
+      shouldResolveRecoveryGate({
+        kind: 'campaign',
+        stepNumber: 1,
+        skipRecoveryGate: false,
+      })
+    ).toBe(true);
+    expect(
+      shouldResolveRecoveryGate({
+        kind: 'campaign',
+        stepNumber: 1,
+        skipRecoveryGate: true,
+      })
+    ).toBe(false);
+    expect(
+      shouldResolveRecoveryGate({ kind: 'campaign', stepNumber: 2 })
+    ).toBe(false);
+    expect(
+      shouldResolveRecoveryGate({ kind: 'recovery', stepNumber: 1 })
+    ).toBe(false);
+    // OR mutant: campaign && step1 || !skip → true when skip is false even for recovery
+    expect(
+      shouldResolveRecoveryGate({
+        kind: 'recovery',
+        stepNumber: 99,
+        skipRecoveryGate: false,
+      })
+    ).toBe(false);
+  });
+});
 
 describe('decideCustomerFacingGates', () => {
   it('null for escalation/manual', () => {

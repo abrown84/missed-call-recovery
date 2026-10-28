@@ -533,9 +533,16 @@ describe('processDeferredRecoveriesWithDeps', () => {
 
   it('missing business increments errors and does not send', async () => {
     const send = vi.fn();
+    const log = { calls: [] as Array<{ level: string; args: unknown[] }> };
+    const logger = {
+      log: (...args: unknown[]) => log.calls.push({ level: 'log', args }),
+      warn: (...args: unknown[]) => log.calls.push({ level: 'warn', args }),
+      error: (...args: unknown[]) => log.calls.push({ level: 'error', args }),
+    };
     const r = await processDeferredRecoveriesWithDeps(
       deps({
         sendMessage: send,
+        log: logger,
         dbImpl: makeDb({
           deferredRows: [
             {
@@ -552,13 +559,24 @@ describe('processDeferredRecoveriesWithDeps', () => {
     );
     expect(r.errors).toBe(1);
     expect(send).not.toHaveBeenCalled();
+    // Must take the explicit !business branch (not the catch) — kills empty-block mutants.
+    expect(log.calls.some((c) => c.args[0] === 'deferred_row_failed')).toBe(
+      false
+    );
   });
 
   it('null lead increments errors and does not send', async () => {
     const send = vi.fn();
+    const log = { calls: [] as Array<{ level: string; args: unknown[] }> };
+    const logger = {
+      log: (...args: unknown[]) => log.calls.push({ level: 'log', args }),
+      warn: (...args: unknown[]) => log.calls.push({ level: 'warn', args }),
+      error: (...args: unknown[]) => log.calls.push({ level: 'error', args }),
+    };
     const r = await processDeferredRecoveriesWithDeps(
       deps({
         sendMessage: send,
+        log: logger,
         dbImpl: makeDb({
           deferredRows: [
             {
@@ -575,6 +593,10 @@ describe('processDeferredRecoveriesWithDeps', () => {
     );
     expect(r.errors).toBe(1);
     expect(send).not.toHaveBeenCalled();
+    // Explicit !lead continue — not catch — kills empty-block / force-false mutants.
+    expect(log.calls.some((c) => c.args[0] === 'deferred_row_failed')).toBe(
+      false
+    );
   });
 
   it('ignore (never_sent) leaves counters unchanged and does not abandon', async () => {
@@ -595,9 +617,16 @@ describe('processDeferredRecoveriesWithDeps', () => {
       ],
       lead,
     });
+    const log = { calls: [] as Array<{ level: string; args: unknown[] }> };
+    const logger = {
+      log: (...args: unknown[]) => log.calls.push({ level: 'log', args }),
+      warn: (...args: unknown[]) => log.calls.push({ level: 'warn', args }),
+      error: (...args: unknown[]) => log.calls.push({ level: 'error', args }),
+    };
     const r = await processDeferredRecoveriesWithDeps(
       deps({
         dbImpl: db,
+        log: logger,
         sendMessage: async () =>
           ({ kind: 'never_sent', sid: 's', requeued: true }) as SendOutcome,
       })
@@ -610,6 +639,7 @@ describe('processDeferredRecoveriesWithDeps', () => {
           (c.args[0] as { status?: string })?.status === SMS_STATUS.abandonedDone
       )
     ).toBe(false);
+    expect(log.calls.some((c) => c.args[0] === 'deferred_ignored')).toBe(true);
   });
 
   it('re_defer persists exact leadId/body/nextSendAt (not empty payload)', async () => {

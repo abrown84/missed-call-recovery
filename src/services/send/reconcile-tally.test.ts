@@ -3,12 +3,34 @@ import * as fc from 'fast-check';
 import { SMS_STATUS } from '@/services/db-strings';
 import {
   abandonedSid,
+  coalesceLookupOutcome,
+  coalesceReconcileAttempts,
   decideReconcileAlert,
   emptyReconcileCounts,
   noteReconcileOutcome,
   noteReconcileRowStatus,
   signalFromLookupOutcome,
 } from './reconcile-tally';
+
+describe('coalesce helpers', () => {
+  it('coalesceReconcileAttempts uses 0 for null/undefined (not && 0)', () => {
+    expect(coalesceReconcileAttempts(3)).toBe(3);
+    expect(coalesceReconcileAttempts(null)).toBe(0);
+    expect(coalesceReconcileAttempts(undefined)).toBe(0);
+    // attempts && 0 would yield 0 for any truthy attempts
+    expect(coalesceReconcileAttempts(7)).toBe(7);
+  });
+
+  it('coalesceLookupOutcome prefers explicit outcome over classify', () => {
+    expect(
+      coalesceLookupOutcome({ outcome: 'sent', status: 'queued', found: true })
+    ).toBe('sent');
+    // missing outcome → classify body (found:false → never_sent typically)
+    const classified = coalesceLookupOutcome({ found: false });
+    expect(typeof classified).toBe('string');
+    expect(classified.length).toBeGreaterThan(0);
+  });
+});
 
 describe('reconcile-tally', () => {
   it('notes unknown vs sending status exactly once each', () => {

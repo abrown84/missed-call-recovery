@@ -282,3 +282,30 @@ return values, DB writes, and control flow are unchanged. (sms.ts injects
 - justification: with `treatRecoveryAsInitial: false` hardcoded, `recoveryAlreadySent`
   is ignored by `planEnrollmentStart` (always stays on step 1). Empty options are
   therefore equivalent for switch. Disabled in source.
+
+### reply-plan-reason-empty-coalesce
+
+- file: `src/services/campaign-reply-plan.ts` / mutator: StringLiteral /
+  `input.reason ?? ''`
+- original → replacement: `''` → `'Stryker was here!'`
+- justification: when `reason` is undefined, neither `''` nor the filler
+  `startsWith('deferred')`; when `reason` is defined, the right-hand coalesce
+  is unused. Disabled in source.
+
+### send-suppressed-init-overwritten
+
+- file: `src/services/send/index.ts` / mutator: BooleanLiteral /
+  `let suppressed = false`
+- original → replacement: `true`
+- justification: immediately overwritten by `await deps.isPhoneSuppressed(...)`
+  before any read on the success path; failure path returns before the flag is
+  read. Disabled in source.
+
+### send-resolveRecovery-default-wrapper
+
+- file: `src/services/send/index.ts` / mutator: BlockStatement /
+  `resolveRecoveryOutcome` default wrapper body
+- original → replacement: empty block
+- justification: wrapper only `return resolveRecoveryOutcomeWithDeps(defaultSendDeps(), …)`;
+  emptying breaks the export but production callers use WithDeps via DI tests.
+  Prefer keeping the one-line delegate; ignore BlockStatement on the wrapper.

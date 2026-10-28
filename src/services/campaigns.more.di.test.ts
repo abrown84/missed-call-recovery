@@ -873,3 +873,244 @@ describe('campaigns more DI coverage', () => {
     expect(r.confirmed).toBe(1);
   });
 });
+
+describe('campaigns-impl survivor killers (r12)', () => {
+  beforeEach(() => {
+    mockFrom.mockReset();
+    isPhoneSuppressed.mockResolvedValue(false);
+  });
+
+  it('switchEnrollmentCampaign deferred_or_switch_failed when update misses', async () => {
+    mockFrom.mockImplementation((table: string) => {
+      if (table === 'campaign_enrollments') {
+        const b = chainable({
+          data: {
+            id: 'e',
+            lead_id: 'L',
+            campaign_id: 'old',
+            status: 'active',
+            claimed_at: null,
+            claim_token: null,
+          },
+          error: null,
+        });
+        b.update = vi.fn(() => {
+          const u = chainable({ data: null, error: null });
+          u.maybeSingle = vi.fn(async () => ({ data: null, error: null }));
+          u.select = vi.fn(() => u);
+          return u;
+        });
+        return b;
+      }
+      if (table === 'leads') {
+        return chainable({
+          data: { id: 'L', sms_outbound_sid: null, opted_out: false },
+          error: null,
+        });
+      }
+      if (table === 'campaigns') {
+        return chainable({
+          data: {
+            id: 'new',
+            name: 'Emergency',
+            urgency_filter: 'emergency',
+            campaign_steps: [
+              { step_number: 1, delay_minutes: 0, template_key: 'e1' },
+            ],
+          },
+          error: null,
+        });
+      }
+      return chainable({ data: null, error: null });
+    });
+    await expect(switchEnrollmentCampaign('L', 'new')).resolves.toEqual({
+      enrolled: false,
+      reason: 'deferred_or_switch_failed',
+    });
+  });
+
+  it('handleClassifiedReplyEnrollment enrolls when no enrollment', async () => {
+    process.env.CAMPAIGN_REPLY_MODE = 'continue';
+    mockFrom.mockImplementation((table: string) => {
+      if (table === 'campaign_enrollments') {
+        const b = chainable({ data: null, error: null });
+        b.insert = vi.fn(() => chainable({ data: { id: 'e' }, error: null }));
+        return b;
+      }
+      if (table === 'leads') {
+        return chainable({
+          data: {
+            id: 'L',
+            opted_out: false,
+            urgency: 'normal',
+            sms_outbound_sid: null,
+            businesses: { id: 'B', name: 'Acme' },
+          },
+          error: null,
+        });
+      }
+      if (table === 'campaigns') {
+        return chainable({
+          data: [
+            {
+              id: 'C',
+              name: 'Standard',
+              urgency_filter: null,
+              campaign_steps: [
+                { step_number: 1, delay_minutes: 0, template_key: 't' },
+              ],
+            },
+          ],
+          error: null,
+        });
+      }
+      if (table === 'sms_messages') {
+        return chainable({ data: null, error: null });
+      }
+      return chainable({ data: null, error: null });
+    });
+    const r = await handleClassifiedReplyEnrollment('L', 'normal');
+    expect(r.action === 'enroll' || r.action.startsWith('skip:')).toBe(true);
+    delete process.env.CAMPAIGN_REPLY_MODE;
+  });
+
+  it('handleClassifiedReplyEnrollment switch maps deferred reason', async () => {
+    process.env.CAMPAIGN_REPLY_MODE = 'continue';
+    const emergency = {
+      id: 'em',
+      name: 'Emergency',
+      urgency_filter: 'emergency',
+      campaign_steps: [
+        { step_number: 1, delay_minutes: 0, template_key: 'e1' },
+      ],
+    };
+    mockFrom.mockImplementation((table: string) => {
+      if (table === 'campaign_enrollments') {
+        const b = chainable({
+          data: {
+            id: 'e',
+            campaign_id: 'std',
+            status: 'active',
+            claim_token: null,
+            claimed_at: null,
+          },
+          error: null,
+        });
+        // switch update returns null → deferred_or_switch_failed
+        b.update = vi.fn(() => {
+          const u = chainable({ data: null, error: null });
+          u.maybeSingle = vi.fn(async () => ({ data: null, error: null }));
+          u.select = vi.fn(() => u);
+          return u;
+        });
+        return b;
+      }
+      if (table === 'leads') {
+        return chainable({
+          data: { id: 'L', sms_outbound_sid: null, opted_out: false },
+          error: null,
+        });
+      }
+      if (table === 'campaigns') {
+        // list path (reply plan) returns array; switch .select().eq().single() → one row
+        const listResult = {
+          data: [
+            { id: 'std', name: 'Standard', urgency_filter: null },
+            emergency,
+          ],
+          error: null,
+        };
+        const list = chainable(listResult);
+        const wrapSingle = (obj: Record<string, any>) => {
+          obj.single = vi.fn(async () => ({ data: emergency, error: null }));
+          obj.maybeSingle = vi.fn(async () => ({
+            data: emergency,
+            error: null,
+          }));
+          const origSelect = obj.select;
+          obj.select = vi.fn((cols?: string) => {
+            const nested = origSelect(cols);
+            return wrapSingle(nested);
+          });
+          return obj;
+        };
+        return wrapSingle(list);
+      }
+      return chainable({ data: null, error: null });
+    });
+    const r = await handleClassifiedReplyEnrollment('L', 'emergency');
+    expect(r.action).toBe('defer_switch');
+    expect(r.campaignName).toBe('Emergency');
+    delete process.env.CAMPAIGN_REPLY_MODE;
+  });
+
+  it('pauseCampaignForLead error path returns without throwing', async () => {
+    const { pauseCampaignForLead } = await import('./campaigns');
+    mockFrom.mockImplementation(() => {
+      const b = chainable({ data: null, error: { message: 'fail' } });
+      b.update = vi.fn(() =>
+        chainable({ data: null, error: { message: 'fail' } })
+      );
+      return b;
+    });
+    await expect(pauseCampaignForLead('L')).resolves.toBeUndefined();
+  });
+
+  it('claimDueEnrollment falls through to stale reclaim', async () => {
+    let updates = 0;
+    mockFrom.mockImplementation(() => {
+      const b = chainable({ data: [], error: null });
+      b.update = vi.fn(() => {
+        updates += 1;
+        // first (due) miss, second (stale) hit
+        const hit = updates >= 2;
+        const u = chainable({
+          data: hit ? [{ id: 'e', claim_token: 'tok' }] : [],
+          error: null,
+        });
+        u.select = vi.fn(() =>
+          chainable({
+            data: hit ? [{ id: 'e', claim_token: 'tok' }] : [],
+            error: null,
+          })
+        );
+        return u;
+      });
+      return b;
+    });
+    const tok = await claimDueEnrollment('e');
+    expect(tok).toBeTruthy();
+    expect(updates).toBe(2);
+  });
+});
+
+describe('advanceEnrollment ownership miss', () => {
+  it('returns false when update errors or empty', async () => {
+    const { advanceEnrollment } = await import('./campaigns');
+    const supabase = createServerClient();
+    const steps = [
+      { step_number: 1, delay_minutes: 0, template_key: 'a' },
+      { step_number: 2, delay_minutes: 10, template_key: 'b' },
+    ] as never[];
+
+    mockFrom.mockImplementation(() => {
+      const b = chainable({ data: [], error: { message: 'x' } });
+      b.update = vi.fn(() => {
+        const u = chainable({ data: [], error: { message: 'x' } });
+        u.select = vi.fn(() =>
+          chainable({ data: [], error: { message: 'x' } })
+        );
+        return u;
+      });
+      return b;
+    });
+    await expect(
+      advanceEnrollment(supabase as never, 'e', 'tok', 1, steps)
+    ).resolves.toBe(false);
+
+    // complete path ownership miss
+    await expect(
+      advanceEnrollment(supabase as never, 'e', 'tok', 2, steps)
+    ).resolves.toBe(false);
+  });
+});

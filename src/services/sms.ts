@@ -297,6 +297,7 @@ export async function processDeferredRecoveriesWithDeps(
           break;
         case 'ignore':
           // never_sent / unexpected — leave deferred row for a later pass
+          deps.log.log('deferred_ignored', row.id);
           break;
       }
     } catch (err) {

@@ -1363,3 +1363,585 @@ describe('send/index gate + dispatch survivor killers', () => {
     expect(send).toHaveBeenCalled();
   });
 });
+
+describe('send/index payload + hook survivor killers (r12)', () => {
+  beforeEach(() => {
+    resetRelayKeySupportConfirmed();
+    markRelayKeySupportConfirmed();
+  });
+
+  it('duplicate confirm_existing returns keySupportedAtSend false', async () => {
+    const sid = 'mlf:recovery:Ldup2';
+    const db = makeDb({
+      leads: { opted_out: false },
+      insertError: { code: '23505', message: 'dup' },
+      smsBySid: new Map([[sid, { status: 'delivered' }]]),
+    });
+    const o = await sendMessageWithDeps(baseDeps({ dbImpl: db }), {
+      kind: KIND_RECOVERY,
+      leadId: 'Ldup2',
+      businessId: 'B',
+      to: '+12135550100',
+      body: 'hi',
+      idempotencyKey: sid,
+      skipQuietHours: true,
+    });
+    expect(o).toMatchObject({
+      kind: 'sent',
+      keySupportedAtSend: false,
+      providerStatus: 'delivered',
+    });
+  });
+
+  it('claim_deferred writes smsClaimDeferredPayload before relay', async () => {
+    const sid = 'mlf:recovery:Ldef2';
+    const send = vi.fn(async () => ({
+      id: 'm',
+      status: 'queued',
+      keyEchoed: true,
+    }));
+    const db = makeDb({
+      leads: { opted_out: false },
+      insertError: { code: '23505', message: 'dup' },
+      smsBySid: new Map([[sid, { status: 'deferred' }]]),
+    });
+    await sendMessageWithDeps(
+      baseDeps({
+        dbImpl: db,
+        adapter: () => ({ name: 'm', sendMessage: send }) as never,
+      }),
+      {
+        kind: KIND_RECOVERY,
+        leadId: 'Ldef2',
+        businessId: 'B',
+        to: '+12135550100',
+        body: 'body-x',
+        idempotencyKey: sid,
+        skipQuietHours: true,
+      }
+    );
+    const upd = db.calls.find(
+      (c) =>
+        c.table === TABLE.smsMessages &&
+        c.op === 'update' &&
+        (c.args[0] as { body?: string })?.body === 'body-x'
+    );
+    expect(upd?.args[0]).toMatchObject({
+      status: SMS_STATUS.sending,
+      body: 'body-x',
+      next_retry_at: null,
+    });
+    expect(send).toHaveBeenCalled();
+  });
+
+  it('suppression non-SuppressionLookupError rethrows', async () => {
+    await expect(
+      sendMessageWithDeps(
+        baseDeps({
+          dbImpl: makeDb({ leads: { opted_out: false } }),
+          isPhoneSuppressed: async () => {
+            throw new Error('network');
+          },
+        }),
+        {
+          kind: KIND_RECOVERY,
+          leadId: 'L',
+          businessId: 'B',
+          to: '+12135550100',
+          body: 'hi',
+          skipQuietHours: true,
+        }
+      )
+    ).rejects.toThrow('network');
+  });
+
+  it('manual sent does not update sms_messages', async () => {
+    const db = makeDb({});
+    const o = await sendMessageWithDeps(
+      baseDeps({
+        dbImpl: db,
+        adapter: () =>
+          ({
+            name: 'm',
+            sendMessage: async () => ({
+              id: 'm',
+              status: 'queued',
+              keyEchoed: true,
+            }),
+          }) as never,
+      }),
+      {
+        kind: 'manual',
+        leadId: 'L',
+        businessId: 'B',
+        to: '+12135550100',
+        body: 'hi',
+      }
+    );
+    expect(o.kind).toBe('sent');
+    expect(
+      db.calls.some((c) => c.table === TABLE.smsMessages && c.op === 'update')
+    ).toBe(false);
+  });
+
+  it('recovery confirm writes lead outbound sid; campaign does not', async () => {
+    const mk = async (kind: 'recovery' | 'campaign') => {
+      const db = makeDb({ leads: { opted_out: false } });
+      await sendMessageWithDeps(
+        baseDeps({
+          dbImpl: db,
+          adapter: () =>
+            ({
+              name: 'm',
+              sendMessage: async () => ({
+                id: 'm',
+                status: 'queued',
+                keyEchoed: true,
+              }),
+            }) as never,
+        }),
+        {
+          kind,
+          leadId: 'L',
+          businessId: 'B',
+          to: '+12135550100',
+          body: 'hi',
+          skipQuietHours: true,
+          skipRecoveryGate: true,
+          enrollmentId: 'E',
+          campaignId: 'C',
+          stepNumber: 2,
+        }
+      );
+      return db;
+    };
+    const rec = await mk('recovery');
+    expect(
+      rec.calls.some(
+        (c) =>
+          c.table === TABLE.leads &&
+          c.op === 'update' &&
+          (c.args[0] as { sms_outbound_sid?: string }).sms_outbound_sid
+      )
+    ).toBe(true);
+    const camp = await mk('campaign');
+    expect(
+      camp.calls.some(
+        (c) =>
+          c.table === TABLE.leads &&
+          c.op === 'update' &&
+          (c.args[0] as { sms_outbound_sid?: string }).sms_outbound_sid
+      )
+    ).toBe(false);
+  });
+
+  it('relay throw parks sms with attempts + next_retry_at', async () => {
+    const db = makeDb({ leads: { opted_out: false } });
+    const o = await sendMessageWithDeps(
+      baseDeps({
+        dbImpl: db,
+        adapter: () =>
+          ({
+            name: 'm',
+            sendMessage: async () => {
+              throw new Error('boom');
+            },
+          }) as never,
+      }),
+      {
+        kind: KIND_RECOVERY,
+        leadId: 'L',
+        businessId: 'B',
+        to: '+12135550100',
+        body: 'hi',
+        skipQuietHours: true,
+      }
+    );
+    expect(o.kind).toBe('ambiguous');
+    const park = db.calls.find(
+      (c) =>
+        c.table === TABLE.smsMessages &&
+        c.op === 'update' &&
+        (c.args[0] as { status?: string }).status === SMS_STATUS.unknown
+    );
+    expect(park?.args[0]).toMatchObject({
+      status: SMS_STATUS.unknown,
+      reconcile_attempts: expect.any(Number),
+      next_retry_at: expect.any(String),
+    });
+  });
+
+  it('unexpected_decision from transitionSend → needs_review', async () => {
+    const machine = await import('./machine');
+    const spy = vi
+      .spyOn(machine, 'transitionSend')
+      .mockReturnValue({ action: 'totally_unknown' } as never);
+    try {
+      const db = makeDb({ leads: { opted_out: false } });
+      const o = await sendMessageWithDeps(
+        baseDeps({
+          dbImpl: db,
+          adapter: () =>
+            ({
+              name: 'm',
+              sendMessage: async () => ({
+                id: 'm',
+                status: 'queued',
+                keyEchoed: true,
+              }),
+            }) as never,
+        }),
+        {
+          kind: KIND_RECOVERY,
+          leadId: 'L',
+          businessId: 'B',
+          to: '+12135550100',
+          body: 'hi',
+          skipQuietHours: true,
+        }
+      );
+      expect(o).toMatchObject({
+        kind: 'needs_review',
+        reason: 'unexpected_decision',
+      });
+      expect(
+        db.calls.some(
+          (c) =>
+            c.table === TABLE.smsMessages &&
+            c.op === 'update' &&
+            (c.args[0] as { status?: string }).status === SMS_STATUS.unknown
+        )
+      ).toBe(false);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('reconcileOne never_sent / needs_review / park payloads', async () => {
+    const row = {
+      id: '1',
+      lead_id: 'L',
+      message_sid: 'mlf:recovery:L',
+      status: 'unknown',
+      reconcile_attempts: null as number | null,
+      key_supported_at_send: true,
+    };
+
+    const dbNs = makeDb({});
+    const ns = await reconcileOneWithDeps(
+      baseDeps({
+        dbImpl: dbNs,
+        adapter: () =>
+          ({
+            name: 'm',
+            lookupByIdempotencyKey: async () => ({
+              outcome: 'never_sent',
+              found: false,
+            }),
+          }) as never,
+      }),
+      row
+    );
+    expect(ns).toMatchObject({ kind: 'never_sent', requeued: true });
+    expect(
+      dbNs.calls.some(
+        (c) =>
+          c.op === 'update' &&
+          (c.args[0] as { status?: string }).status ===
+            SMS_STATUS.abandonedRetry &&
+          String((c.args[0] as { message_sid?: string }).message_sid).includes(
+            ':abandoned:'
+          )
+      )
+    ).toBe(true);
+
+    const dbNr = makeDb({});
+    const nr = await reconcileOneWithDeps(
+      baseDeps({
+        dbImpl: dbNr,
+        adapter: () =>
+          ({
+            name: 'm',
+            lookupByIdempotencyKey: async () => ({
+              outcome: 'failed',
+              status: 'failed',
+              found: true,
+            }),
+          }) as never,
+      }),
+      { ...row, reconcile_attempts: 0 }
+    );
+    expect(nr.kind).toBe('needs_review');
+    expect(
+      dbNr.calls.some(
+        (c) =>
+          c.op === 'update' &&
+          (c.args[0] as { status?: string; next_retry_at?: unknown })
+            .status === SMS_STATUS.needsReview &&
+          (c.args[0] as { next_retry_at?: unknown }).next_retry_at === null
+      )
+    ).toBe(true);
+
+    const dbPark = makeDb({});
+    const park = await reconcileOneWithDeps(
+      baseDeps({
+        dbImpl: dbPark,
+        adapter: () =>
+          ({
+            name: 'm',
+            lookupByIdempotencyKey: async () => ({
+              outcome: 'unknown',
+              found: true,
+            }),
+          }) as never,
+      }),
+      { ...row, reconcile_attempts: null }
+    );
+    expect(park.kind).toBe('ambiguous');
+    expect(
+      dbPark.calls.some(
+        (c) =>
+          c.op === 'update' &&
+          (c.args[0] as { reconcile_attempts?: number }).reconcile_attempts ===
+            1 &&
+          typeof (c.args[0] as { next_retry_at?: string }).next_retry_at ===
+            'string'
+      )
+    ).toBe(true);
+  });
+
+  it('lookup without outcome uses classifyRelayLookupResponse', async () => {
+    const db = makeDb({});
+    const o = await reconcileOneWithDeps(
+      baseDeps({
+        dbImpl: db,
+        adapter: () =>
+          ({
+            name: 'm',
+            lookupByIdempotencyKey: async () => ({
+              found: true,
+              status: 'delivered',
+            }),
+          }) as never,
+      }),
+      {
+        id: '1',
+        lead_id: 'L',
+        message_sid: 'mlf:campaign:E:C:step:1',
+        status: 'unknown',
+        reconcile_attempts: 0,
+        key_supported_at_send: true,
+      }
+    );
+    // classify of found+delivered → sent → resolved
+    expect(o.kind).toBe('resolved');
+  });
+
+  it('reconcile unexpected_decision from transitionSend', async () => {
+    const machine = await import('./machine');
+    const spy = vi
+      .spyOn(machine, 'transitionSend')
+      .mockReturnValue({ action: 'totally_unknown' } as never);
+    try {
+      const o = await reconcileOneWithDeps(
+        baseDeps({
+          adapter: () =>
+            ({
+              name: 'm',
+              lookupByIdempotencyKey: async () => ({
+                outcome: 'sent',
+                status: 'delivered',
+                found: true,
+              }),
+            }) as never,
+        }),
+        {
+          id: '1',
+          lead_id: 'L',
+          message_sid: 'mlf:campaign:E:C:step:1',
+          status: 'unknown',
+          reconcile_attempts: 0,
+          key_supported_at_send: true,
+        }
+      );
+      expect(o).toMatchObject({
+        kind: 'needs_review',
+        reason: 'unexpected_decision',
+      });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('warnLookupUnsupported called iff checkLookupSupport present', async () => {
+    const warn = vi.fn(async () => ({ supported: true }));
+    await reconcileAmbiguousSmsWithDeps(
+      baseDeps({
+        dbImpl: makeDb({ smsList: [] }),
+        warnLookupUnsupported: warn,
+        adapter: () =>
+          ({
+            name: 'm',
+            lookupByIdempotencyKey: async () => ({
+              outcome: 'sent',
+              found: true,
+            }),
+            checkLookupSupport: async () => ({ supported: true }),
+          }) as never,
+      })
+    );
+    expect(warn).toHaveBeenCalledTimes(1);
+
+    warn.mockClear();
+    await reconcileAmbiguousSmsWithDeps(
+      baseDeps({
+        dbImpl: makeDb({ smsList: [] }),
+        warnLookupUnsupported: warn,
+        adapter: () =>
+          ({
+            name: 'm',
+            lookupByIdempotencyKey: async () => ({
+              outcome: 'sent',
+              found: true,
+            }),
+          }) as never,
+      })
+    );
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('stuck cutoff uses now − STUCK_SENDING_MS and ascending order', async () => {
+    const db = makeDb({ smsList: [] });
+    const clock = new Date('2026-06-15T15:00:00.000Z');
+    await reconcileAmbiguousSmsWithDeps(
+      baseDeps({
+        dbImpl: db,
+        clock: () => clock,
+        adapter: () =>
+          ({
+            name: 'm',
+            lookupByIdempotencyKey: async () => ({
+              outcome: 'sent',
+              found: true,
+            }),
+          }) as never,
+      })
+    );
+    const { STUCK_SENDING_MS } = await import('@/services/campaign-logic');
+    const orCall = db.calls.find((c) => c.op === 'or');
+    expect(orCall).toBeTruthy();
+    const filter = String(orCall?.args[0] ?? '');
+    const expectedCutoff = new Date(
+      clock.getTime() - STUCK_SENDING_MS
+    ).toISOString();
+    expect(filter).toContain(expectedCutoff);
+    expect(filter).not.toContain(
+      new Date(clock.getTime() + STUCK_SENDING_MS).toISOString()
+    );
+    const order = db.calls.find((c) => c.op === 'order');
+    expect(order?.args[0]).toBe(COL.sentAt);
+    expect(order?.args[1]).toMatchObject({ ascending: true });
+  });
+
+  it('null smsList rows does not throw; never_sent clears recovery only', async () => {
+    const dbNull = makeDb({});
+    // force then() to return null data
+    const orig = dbNull.from;
+    dbNull.from = ((name: string) => {
+      const t = orig(name);
+      if (name === TABLE.smsMessages) {
+        const api = t as Record<string, unknown>;
+        const chain: Record<string, unknown> = {};
+        for (const m of [
+          'select',
+          'in',
+          'or',
+          'order',
+          'limit',
+          'eq',
+          'update',
+        ]) {
+          chain[m] = (...args: unknown[]) => {
+            dbNull.calls.push({ table: name, op: m, args });
+            return chain;
+          };
+        }
+        chain.then = (
+          resolve: (v: unknown) => unknown,
+          reject?: (e: unknown) => unknown
+        ) =>
+          Promise.resolve({ data: null, error: null }).then(resolve, reject);
+        return chain;
+      }
+      return t;
+    }) as typeof dbNull.from;
+
+    const r = await reconcileAmbiguousSmsWithDeps(
+      baseDeps({
+        dbImpl: dbNull,
+        adapter: () =>
+          ({
+            name: 'm',
+            lookupByIdempotencyKey: async () => ({
+              outcome: 'sent',
+              found: true,
+            }),
+          }) as never,
+      })
+    );
+    expect(r.confirmed).toBe(0);
+
+    const dbRec = makeDb({
+      smsList: [
+        {
+          id: '1',
+          lead_id: 'L1',
+          message_sid: 'mlf:recovery:L1',
+          status: 'unknown',
+          reconcile_attempts: 0,
+          key_supported_at_send: true,
+        },
+        {
+          id: '2',
+          lead_id: 'L2',
+          message_sid: 'mlf:campaign:E:C:step:1',
+          status: 'unknown',
+          reconcile_attempts: 0,
+          key_supported_at_send: true,
+        },
+      ],
+    });
+    let i = 0;
+    await reconcileAmbiguousSmsWithDeps(
+      baseDeps({
+        dbImpl: dbRec,
+        adapter: () =>
+          ({
+            name: 'm',
+            lookupByIdempotencyKey: async () => {
+              i += 1;
+              return { outcome: 'never_sent', found: false };
+            },
+          }) as never,
+      })
+    );
+    const leadClears = dbRec.calls.filter(
+      (c) =>
+        c.table === TABLE.leads &&
+        c.op === 'update' &&
+        (c.args[0] as { sms_outbound_sid?: unknown }).sms_outbound_sid === null
+    );
+    expect(leadClears).toHaveLength(1);
+  });
+
+  it('resolveRecovery absent when lead has no sms_outbound_sid key', async () => {
+    const db = makeDb({ leads: {} });
+    expect(
+      await resolveRecoveryOutcomeWithDeps(
+        baseDeps({ dbImpl: db }),
+        db as never,
+        'L'
+      )
+    ).toBe('absent');
+  });
+});

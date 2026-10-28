@@ -3,6 +3,7 @@
  * Keeps Arithmetic/Conditional/Equality mutants out of send/index I/O.
  */
 
+import { classifyRelayLookupResponse } from '@/services/sms-sid';
 import type { RelayLookupSignal } from './machine';
 import { RELAY_SIGNAL, SMS_STATUS } from '@/services/db-strings';
 
@@ -91,4 +92,27 @@ export function signalFromLookupOutcome(
 
 export function abandonedSid(originalSid: string, nowMs: number): string {
   return `${originalSid}:abandoned:${nowMs}`;
+}
+
+/** Nullish coalesce for reconcile_attempts — keeps ?? mutants out of I/O. */
+export function coalesceReconcileAttempts(
+  attempts: number | null | undefined
+): number {
+  return attempts ?? 0;
+}
+
+/**
+ * Prefer explicit relay outcome; otherwise classify the raw lookup body.
+ * Pure so LogicalOperator survivors leave send/index.
+ */
+export function coalesceLookupOutcome(lookup: {
+  outcome?: string;
+  status?: unknown;
+  found?: boolean;
+}): string {
+  if (lookup.outcome) return lookup.outcome;
+  return classifyRelayLookupResponse({
+    httpStatus: 200,
+    body: lookup,
+  });
 }

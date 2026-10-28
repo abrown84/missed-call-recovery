@@ -3,6 +3,16 @@
  * Keeps ObjectLiteral / Arithmetic / sort mutants out of campaigns-impl.
  */
 
+/** Row present AND no error — shared enroll/switch leadFound predicate. */
+export function rowFound(row: unknown, error: unknown): boolean {
+  return Boolean(row) && !error;
+}
+
+/** Stale-claim cutoff ISO (now − CLAIM_STALE_MS). */
+export function staleBeforeIso(nowMs: number, staleMs: number): string {
+  return new Date(nowMs - staleMs).toISOString();
+}
+
 export type StepLike = { step_number: number; delay_minutes?: number };
 
 export function sortCampaignSteps<T extends StepLike>(steps: T[]): T[] {
