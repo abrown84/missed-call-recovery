@@ -329,6 +329,14 @@ export async function processInboundSmsWithDeps(
       // Stryker restore StringLiteral,CallExpression,BlockStatement
       ownerNotified = false;
     }
+    // Fail closed when owner was not notified — HTTP 5xx so BRWN relay retries
+    // the inbound webhook (see route comment + CLAUDE.md).
+    if (!ownerNotified) {
+      throw new InboundError(
+        'Owner possible-opt-out notify failed after retries',
+        502
+      );
+    }
   }
 
   await supabase.from(TABLE.smsMessages).insert(

@@ -1,7 +1,12 @@
 /**
  * Static NANP area-code → IANA zone map data.
- * Not under Stryker mutate (pure data; table-driven tests + mut.py #13).
- * Lookups go through zonesForAreaCode() in quiet-hours-zones.ts.
+ *
+ * Why not under Stryker mutate (QC r10): ~800 ObjectLiteral/StringLiteral
+ * static mutants dominate CI (~90% of runtime) while golden-file pin +
+ * mut.py #13 already kill load-bearing map regressions. Lookups are mutated
+ * via zonesForAreaCode() in quiet-hours-zones.ts.
+ *
+ * Canonical pin: test/fixtures/nanp-area-code-zones.json (diffed in tests).
  */
 export const AREA_CODE_ZONES: Record<string, string[]> = {
   // Florida (Eastern except panhandle 850 → Central)
@@ -201,7 +206,8 @@ export const AREA_CODE_ZONES: Record<string, string[]> = {
   '617': ['America/New_York'],
   '618': ['America/Chicago'],
   '619': ['America/Los_Angeles'],
-  '620': ['America/Chicago'],
+  // KS 620: mostly Central; Greeley/Hamilton counties Mountain — require both.
+  '620': ['America/Chicago', 'America/Denver'],
   '623': ['America/Phoenix'],
   '626': ['America/Los_Angeles'],
   '628': ['America/Los_Angeles'],
@@ -222,7 +228,8 @@ export const AREA_CODE_ZONES: Record<string, string[]> = {
   '678': ['America/New_York'],
   '681': ['America/New_York'],
   '682': ['America/Chicago'],
-  '701': ['America/Chicago'],
+  // ND 701: mostly Central; southwest counties Mountain — require both.
+  '701': ['America/Chicago', 'America/Denver'],
   '702': ['America/Los_Angeles'],
   '703': ['America/New_York'],
   '704': ['America/New_York'],
@@ -260,7 +267,8 @@ export const AREA_CODE_ZONES: Record<string, string[]> = {
   '775': ['America/Los_Angeles'],
   '779': ['America/Chicago'],
   '781': ['America/New_York'],
-  '785': ['America/Chicago'],
+  // KS 785: mostly Central; Sherman/Wallace counties Mountain — require both.
+  '785': ['America/Chicago', 'America/Denver'],
   '801': ['America/Denver'],
   '802': ['America/New_York'],
   '803': ['America/New_York'],
@@ -339,6 +347,12 @@ export const AREA_CODE_ZONES: Record<string, string[]> = {
   '787': ['America/Puerto_Rico'],
   '939': ['America/Puerto_Rico'],
   '671': ['Pacific/Guam'],
+  // Northern Mariana Islands (NANP 670) — Chamorro Time (UTC+10, no DST).
+  // Source: IANA tzdb `Pacific/Saipan`; NANP NPA 670 assignment (CNMI).
+  '670': ['Pacific/Saipan'],
+  // American Samoa (NANP 684) — Samoa Standard Time (UTC-11, no DST).
+  // Source: IANA tzdb `Pacific/Pago_Pago`; NANP NPA 684 assignment.
+  '684': ['Pacific/Pago_Pago'],
 };
 
 export const FL_AREA = new Set([

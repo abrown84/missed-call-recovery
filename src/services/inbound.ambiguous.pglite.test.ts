@@ -265,7 +265,7 @@ describe('ambiguous inbound (DI — pause / notify contracts)', () => {
     ).rejects.toThrow('pause failed');
   });
 
-  it('ownerNotified reflects notify return value (false while pause succeeds)', async () => {
+  it('notify false after pause → InboundError 502 (fail-closed for BRWN retry)', async () => {
     const lead = {
       id: 'lead-notify-false',
       created_at: FIXED.toISOString(),
@@ -293,16 +293,15 @@ describe('ambiguous inbound (DI — pause / notify contracts)', () => {
       notifyPossibleOptOut: vi.fn(async () => false),
     });
 
-    const result = await processInboundSmsWithDeps(
-      deps,
-      ambiguousEvent('Can you stop by at 3?')
-    );
-
-    expect(result).toMatchObject({
-      status: 'ambiguous_opt_out',
-      campaignPaused: true,
-      ownerNotified: false,
-      enrollmentAction: 'paused_ambiguous',
+    await expect(
+      processInboundSmsWithDeps(
+        deps,
+        ambiguousEvent('Can you stop by at 3?')
+      )
+    ).rejects.toMatchObject({
+      name: 'InboundError',
+      status: 502,
+      message: expect.stringMatching(/notify failed/i),
     });
   });
 

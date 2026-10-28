@@ -1,7 +1,9 @@
 /**
- * Table-driven NANP area-code → IANA zone assertions (QC r9).
- * Pins every map entry + critical dual-zone / territory fixes.
+ * Full-map pin against reviewed golden fixture (QC r10).
+ * Swapping any code's zone (e.g. 702 → New_York) must fail.
  */
+import { readFileSync } from 'fs';
+import { join } from 'path';
 import { describe, expect, it } from 'vitest';
 import { isValidTimeZone } from './quiet-hours';
 import {
@@ -11,70 +13,73 @@ import {
   zonesForAreaCode,
 } from './quiet-hours-zones';
 
-/** Key codes with pinned expected zones (typo / swap regressions must fail). */
-const PINNED: Record<string, string[]> = {
-  '212': ['America/New_York'],
-  '213': ['America/Los_Angeles'],
-  '305': ['America/New_York'],
-  '312': ['America/Chicago'],
-  '405': ['America/Chicago'],
-  '503': ['America/Los_Angeles'],
-  '541': ['America/Los_Angeles', 'America/Denver'],
-  '605': ['America/Chicago', 'America/Denver'],
-  '671': ['Pacific/Guam'],
-  '787': ['America/Puerto_Rico'],
-  '808': ['Pacific/Honolulu'],
-  '850': ['America/New_York', 'America/Chicago'],
-  '907': ['America/Anchorage'],
-  '931': ['America/Chicago', 'America/New_York'],
-  '939': ['America/Puerto_Rico'],
-};
+const GOLDEN_PATH = join(
+  process.cwd(),
+  'test/fixtures/nanp-area-code-zones.json'
+);
 
-describe('quiet-hours-zones full map (table-driven)', () => {
+function loadGolden(): Record<string, string[]> {
+  return JSON.parse(readFileSync(GOLDEN_PATH, 'utf8')) as Record<
+    string,
+    string[]
+  >;
+}
+
+describe('quiet-hours-zones full map (golden pin)', () => {
+  const golden = loadGolden();
   const entries = Object.entries(AREA_CODE_ZONES);
 
-  it('map has a substantial NANP sample', () => {
-    expect(entries.length).toBeGreaterThan(100);
+  it('runtime map matches golden fixture entry-for-entry (324+)', () => {
+    expect(Object.keys(AREA_CODE_ZONES).sort()).toEqual(
+      Object.keys(golden).sort()
+    );
+    expect(AREA_CODE_ZONES).toEqual(golden);
+    expect(entries.length).toBeGreaterThanOrEqual(324);
   });
 
-  it.each(entries)(
-    'area %s is non-empty with valid IANA zones',
-    (ac, zones) => {
+  it.each(Object.entries(golden))(
+    'golden %s → %j (Intl-valid)',
+    (ac, expected) => {
       expect(ac).toMatch(/^\d{3}$/);
-      expect(zones.length, ac).toBeGreaterThan(0);
-      for (const z of zones) {
-        expect(z.length, `${ac}:${z}`).toBeGreaterThan(0);
+      expect(AREA_CODE_ZONES[ac]).toEqual(expected);
+      expect(zonesForAreaCode(ac)).toEqual(expected);
+      for (const z of expected) {
         expect(isValidTimeZone(z), `${ac}:${z}`).toBe(true);
-        // Also exercise Intl directly (same contract as isValidTimeZone).
         expect(() =>
           Intl.DateTimeFormat('en-US', { timeZone: z }).format(new Date())
         ).not.toThrow();
       }
-      expect(zonesForAreaCode(ac)).toEqual(zones);
     }
   );
 
-  it.each(Object.entries(PINNED))(
-    'pinned %s → %j',
-    (ac, expected) => {
-      expect(AREA_CODE_ZONES[ac]).toEqual(expected);
-      expect(zonesForAreaCode(ac)).toEqual(expected);
-    }
-  );
-
-  it('rejects swapping 212 to a wrong zone (typo guard)', () => {
-    expect(AREA_CODE_ZONES['212']).not.toEqual(['America/Los_Angeles']);
-    expect(AREA_CODE_ZONES['212']).not.toEqual(['America/Chicago']);
-    expect(zonesForAreaCode('212')).toEqual(['America/New_York']);
+  it('rejects swapping 702 Las Vegas to New_York (typo guard)', () => {
+    expect(AREA_CODE_ZONES['702']).toEqual(['America/Los_Angeles']);
+    expect(AREA_CODE_ZONES['702']).not.toEqual(['America/New_York']);
+    // Simulate the QC failure mode: a wrong golden would fail deep-equal above;
+    // also assert the live map is not the swapped value.
+    const swapped = { ...AREA_CODE_ZONES, '702': ['America/New_York'] };
+    expect(swapped).not.toEqual(golden);
   });
 
-  it('QC r9 dual-zone / territory fixes', () => {
+  it('QC r9/r10 dual-zone and territory pins', () => {
     expect(zonesForAreaCode('605')).toEqual([
       'America/Chicago',
       'America/Denver',
     ]);
     expect(zonesForAreaCode('541')).toEqual([
       'America/Los_Angeles',
+      'America/Denver',
+    ]);
+    expect(zonesForAreaCode('620')).toEqual([
+      'America/Chicago',
+      'America/Denver',
+    ]);
+    expect(zonesForAreaCode('701')).toEqual([
+      'America/Chicago',
+      'America/Denver',
+    ]);
+    expect(zonesForAreaCode('785')).toEqual([
+      'America/Chicago',
       'America/Denver',
     ]);
     expect(zonesForAreaCode('931')).toEqual([
@@ -84,6 +89,8 @@ describe('quiet-hours-zones full map (table-driven)', () => {
     expect(zonesForAreaCode('787')).toEqual(['America/Puerto_Rico']);
     expect(zonesForAreaCode('939')).toEqual(['America/Puerto_Rico']);
     expect(zonesForAreaCode('671')).toEqual(['Pacific/Guam']);
+    expect(zonesForAreaCode('670')).toEqual(['Pacific/Saipan']);
+    expect(zonesForAreaCode('684')).toEqual(['Pacific/Pago_Pago']);
   });
 
   it('zonesForAreaCode returns undefined for unmapped codes', () => {

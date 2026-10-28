@@ -1,6 +1,16 @@
-import { describe, it, expect, vi, afterEach } from 'vitest';
-import { shouldEscalate } from './escalation';
+import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
+import {
+  notifyPossibleOptOut,
+  OWNER_NOTIFY_MAX_ATTEMPTS,
+  shouldEscalate,
+} from './escalation';
 import type { Database } from '@/types/database';
+
+vi.mock('@/services/send', () => ({
+  sendMessage: vi.fn(),
+}));
+
+import { sendMessage } from '@/services/send';
 
 type Business = Database['public']['Tables']['businesses']['Row'];
 
@@ -21,6 +31,64 @@ function makeBusiness(overrides: Partial<Business> = {}): Business {
     ...overrides,
   };
 }
+
+describe('notifyPossibleOptOut (QC r10 retry+ALERT)', () => {
+  const send = vi.mocked(sendMessage);
+
+  beforeEach(() => {
+    send.mockReset();
+  });
+
+  it('returns true on first sent without retrying', async () => {
+    send.mockResolvedValueOnce({
+      kind: 'sent',
+      sid: 's',
+      messageId: 's',
+      providerStatus: 'queued',
+      keySupportedAtSend: true,
+    });
+    await expect(
+      notifyPossibleOptOut('lead-1', makeBusiness(), 'maybe stop?', 'ambiguous')
+    ).resolves.toBe(true);
+    expect(send).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries up to OWNER_NOTIFY_MAX_ATTEMPTS then ALERT + false', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    send.mockResolvedValue({
+      kind: 'blocked',
+      reason: 'sends_disabled',
+    } as never);
+
+    await expect(
+      notifyPossibleOptOut('lead-2', makeBusiness(), 'stop by?', 'ambiguous')
+    ).resolves.toBe(false);
+
+    expect(send).toHaveBeenCalledTimes(OWNER_NOTIFY_MAX_ATTEMPTS);
+    expect(
+      errSpy.mock.calls.some((c) =>
+        String(c[0]).includes('ALERT: possible-opt-out owner notify exhausted')
+      )
+    ).toBe(true);
+    errSpy.mockRestore();
+  });
+
+  it('succeeds on a later attempt within the cap', async () => {
+    send
+      .mockResolvedValueOnce({ kind: 'blocked', reason: 'sends_disabled' } as never)
+      .mockResolvedValueOnce({
+        kind: 'sent',
+        sid: 's',
+        messageId: 's',
+        providerStatus: 'queued',
+        keySupportedAtSend: true,
+      });
+    await expect(
+      notifyPossibleOptOut('lead-3', makeBusiness(), 'can you stop?', 'ambiguous')
+    ).resolves.toBe(true);
+    expect(send).toHaveBeenCalledTimes(2);
+  });
+});
 
 describe('shouldEscalate', () => {
   afterEach(() => {

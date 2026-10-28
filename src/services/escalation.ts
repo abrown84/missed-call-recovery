@@ -88,12 +88,17 @@ function buildEscalationMessage(
   ].join('\n');
 }
 
+/** Cap retries for owner possible-opt-out SMS (QC r10). */
+export const OWNER_NOTIFY_MAX_ATTEMPTS = 3;
+
 /**
  * Notify the business owner that a reply may be an opt-out (ambiguous keyword
  * in a longer sentence). Does not change lead status to escalated — that is
  * reserved for classified high/emergency urgency.
- */
-/**
+ *
+ * Retries up to OWNER_NOTIFY_MAX_ATTEMPTS. On exhaustion logs an ALERT and
+ * returns false so inbound can fail closed (HTTP 5xx → BRWN relay retry).
+ *
  * @returns true when the owner SMS was accepted (sent or ambiguous/parked).
  */
 export async function notifyPossibleOptOut(
@@ -111,29 +116,48 @@ export async function notifyPossibleOptOut(
     'Review before sending more texts.',
   ].join('\n');
 
-  const outcome = await sendMessage({
-    kind: 'escalation',
-    leadId,
-    businessId: business.id,
-    to: escalationPhone,
-    body: message,
-    businessTimezone: business.timezone,
-    skipQuietHours: true,
-    auto: true,
-  });
+  let lastKind = 'unknown';
+  let lastReason = '';
 
-  if (outcome.kind !== 'sent' && outcome.kind !== 'ambiguous') {
+  for (let attempt = 1; attempt <= OWNER_NOTIFY_MAX_ATTEMPTS; attempt++) {
+    const outcome = await sendMessage({
+      kind: 'escalation',
+      leadId,
+      businessId: business.id,
+      to: escalationPhone,
+      body: message,
+      businessTimezone: business.timezone,
+      skipQuietHours: true,
+      auto: true,
+    });
+
+    if (outcome.kind === 'sent' || outcome.kind === 'ambiguous') {
+      console.log(
+        `Possible opt-out notified for lead ${redactId(leadId)} → ${redactPhone(escalationPhone)} (attempt ${attempt})`
+      );
+      return true;
+    }
+
+    lastKind = outcome.kind;
+    lastReason = 'reason' in outcome ? String(outcome.reason) : '';
     console.error(
-      'Possible-opt-out notify failed:',
-      outcome.kind,
-      'reason' in outcome ? outcome.reason : ''
+      `Possible-opt-out notify failed (attempt ${attempt}/${OWNER_NOTIFY_MAX_ATTEMPTS}):`,
+      lastKind,
+      lastReason
     );
-    return false;
   }
-  console.log(
-    `Possible opt-out notified for lead ${redactId(leadId)} → ${redactPhone(escalationPhone)}`
+
+  console.error(
+    'ALERT: possible-opt-out owner notify exhausted retries',
+    JSON.stringify({
+      leadId: redactId(leadId),
+      reason,
+      lastKind,
+      lastReason,
+      attempts: OWNER_NOTIFY_MAX_ATTEMPTS,
+    })
   );
-  return true;
+  return false;
 }
 
 export function shouldEscalate(

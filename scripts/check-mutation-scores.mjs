@@ -16,11 +16,14 @@ import { join } from 'path';
 
 const REPORT = join(process.cwd(), 'reports/mutation/mutation.json');
 const MIN = Number(process.env.MUTATION_MIN ?? '90');
-// Per-file cap (campaign-runtime log-only disables ~195 sit under this).
-const MAX_IGNORED_PER_FILE = Number(process.env.MUTATION_MAX_IGNORED ?? '220');
-// Global ignored budget across all TARGETS (QC r9 P2).
+// Per-file cap — campaign-runtime log-only ~195; QC r10 tightens to ~200.
+const MAX_IGNORED_PER_FILE = Number(process.env.MUTATION_MAX_IGNORED ?? '200');
+// Global ignored budget (QC r10: ~320, ratchet vs committed baseline).
 const MAX_IGNORED_TOTAL = Number(
-  process.env.MUTATION_MAX_IGNORED_TOTAL ?? '400'
+  process.env.MUTATION_MAX_IGNORED_TOTAL ?? '320'
+);
+const BASELINE_IGNORED = Number(
+  process.env.MUTATION_IGNORED_BASELINE ?? '305'
 );
 const MIN_SUPPRESSED = Number(process.env.MUTATION_MIN_SUPPRESSED ?? '0');
 const TARGETS = [
@@ -169,6 +172,14 @@ if (totalIgnored > MAX_IGNORED_TOTAL) {
   failed = true;
 }
 
+// Ratchet: ignored count must not grow above the last committed baseline.
+if (totalIgnored > BASELINE_IGNORED) {
+  console.error(
+    `FAIL totalIgnored=${totalIgnored} exceeds MUTATION_IGNORED_BASELINE=${BASELINE_IGNORED} (ratchet)`
+  );
+  failed = true;
+}
+
 if (MIN_SUPPRESSED > 0 && suppressed < MIN_SUPPRESSED) {
   console.error(
     `\nSuppressed-as-survived ${suppressed.toFixed(2)}% < floor ${MIN_SUPPRESSED}%`
@@ -178,8 +189,10 @@ if (MIN_SUPPRESSED > 0 && suppressed < MIN_SUPPRESSED) {
 
 if (failed) {
   console.error(
-    `\nMutation gate failed: need ≥${MIN}% per module; no 0-tested+ignored; ignored≤${MAX_IGNORED_PER_FILE}/file; totalIgnored≤${MAX_IGNORED_TOTAL}.`
+    `\nMutation gate failed: need ≥${MIN}% per module; no 0-tested+ignored; ignored≤${MAX_IGNORED_PER_FILE}/file; totalIgnored≤${MAX_IGNORED_TOTAL}; ratchet≤${BASELINE_IGNORED}.`
   );
   process.exit(1);
 }
-console.log(`\nAll targeted modules ≥${MIN}%.`);
+console.log(
+  `\nAll targeted modules ≥${MIN}%. Ignored=${totalIgnored} (cap ${MAX_IGNORED_TOTAL}, ratchet ${BASELINE_IGNORED}).`
+);

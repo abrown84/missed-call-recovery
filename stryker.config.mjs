@@ -41,11 +41,12 @@ const config = {
     'src/services/missed-call-io-plans.ts',
     'src/services/reconcile-logic.ts',
     'src/services/quiet-hours.ts',
-    // QC r9: back under mutate — zonesForAreaCode() + table-driven tests.
-    // Static map mutants are expensive; CI mutation timeout is 90m.
+    // zonesForAreaCode() under mutate. quiet-hours-zones-data.ts is NOT:
+    // ~800 static ObjectLiteral mutants dominate CI; golden fixture pin +
+    // mut.py #13 cover the map (see data file header / QC r10).
     'src/services/quiet-hours-zones.ts',
   ],
-  // QC r8/r9: test static mutants (opt-out-data CONFUSABLES, zone map, etc.)
+  // QC r8/r10: test static mutants in opt-out-data (CONFUSABLES), not the NANP map.
   ignoreStatic: false,
   thresholds: {
     high: 90,

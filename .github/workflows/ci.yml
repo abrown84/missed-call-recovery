@@ -10,6 +10,22 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
+    services:
+      # QC r10: two-connection deferred-claim race (sendMessageWithDeps).
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: race
+          POSTGRES_PASSWORD: race
+          POSTGRES_DB: race_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U race -d race_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
     env:
       # Placeholder env so Next can compile without real credentials.
       # No secrets — values are fake and only used for build/typecheck.
@@ -22,6 +38,7 @@ jobs:
       BRWN_DEFAULT_BUSINESS_PHONE: '+15555550100'
       NEXT_PUBLIC_APP_URL: http://localhost:3000
       CRON_SECRET: ci-cron-secret-not-real
+      RACE_DATABASE_URL: postgres://race:race@localhost:5432/race_test
 
     steps:
       - name: Checkout
