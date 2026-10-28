@@ -1257,4 +1257,109 @@ describe('send/index gate + dispatch survivor killers', () => {
       expect(o.detail && o.detail.length).toBeGreaterThan(0);
     }
   });
+
+  it('insertError non-unique throws with message', async () => {
+    const db = makeDb({
+      leads: { opted_out: false },
+      insertError: { code: '42P01', message: 'relation missing' },
+    });
+    await expect(
+      sendMessageWithDeps(baseDeps({ dbImpl: db }), {
+        kind: KIND_RECOVERY,
+        leadId: 'L',
+        businessId: 'B',
+        to: '+12135550100',
+        body: 'hi',
+        skipQuietHours: true,
+      })
+    ).rejects.toThrow(/relation missing/);
+  });
+
+  it('campaign needs_review updates sms only (not lead outbound)', async () => {
+    const db = makeDb({ leads: { opted_out: false } });
+    const o = await sendMessageWithDeps(
+      baseDeps({
+        dbImpl: db,
+        adapter: () =>
+          ({
+            name: 'm',
+            sendMessage: async () => {
+              throw new Error('relay boom');
+            },
+            checkLookupSupport: async () => ({ supported: true }),
+          }) as never,
+        // Force caps so transition can park/review from error signal
+        capsConfirmed: () => true,
+      }),
+      {
+        kind: KIND_CAMPAIGN,
+        leadId: 'L',
+        businessId: 'B',
+        to: '+12135550100',
+        body: 'hi',
+        skipQuietHours: true,
+        skipRecoveryGate: true,
+        enrollmentId: 'E',
+        campaignId: 'C',
+        stepNumber: 2,
+      }
+    );
+    expect(['needs_review', 'ambiguous']).toContain(o.kind);
+    expect(
+      db.calls.some(
+        (c) =>
+          c.table === TABLE.leads &&
+          c.op === 'update' &&
+          (c.args[0] as { sms_outbound_sid?: string })?.sms_outbound_sid
+      )
+    ).toBe(false);
+  });
+
+  it('resolveRecovery follows lead.sms_outbound_sid when recovery sid absent', async () => {
+    const smsBySid = new Map([
+      ['alt-sid', { status: 'delivered' }],
+    ]);
+    const db = makeDb({
+      leads: { sms_outbound_sid: 'alt-sid' },
+      smsBySid,
+    });
+    // recoveryMessageSid(L) won't be in map → falls through to lead sid
+    const outcome = await resolveRecoveryOutcomeWithDeps(
+      baseDeps({ dbImpl: db }),
+      db as never,
+      'L'
+    );
+    expect(outcome).toBe('resolved_sent');
+  });
+
+  it('manual kind skips sms_messages insert (kind guard)', async () => {
+    const db = makeDb({});
+    const send = vi.fn(async () => ({
+      id: 'm',
+      status: 'queued',
+      keyEchoed: true,
+    }));
+    await sendMessageWithDeps(
+      baseDeps({
+        dbImpl: db,
+        adapter: () =>
+          ({
+            name: 'm',
+            sendMessage: send,
+            checkLookupSupport: async () => ({ supported: true }),
+          }) as never,
+      }),
+      {
+        kind: 'manual' as never,
+        leadId: 'L',
+        businessId: 'B',
+        to: '+12135550100',
+        body: 'hi',
+      }
+    );
+    expect(
+      db.calls.some((c) => c.table === TABLE.smsMessages && c.op === 'insert')
+    ).toBe(false);
+    expect(send).toHaveBeenCalled();
+  });
 });
