@@ -179,7 +179,14 @@ async function runDryRunDb() {
     process.exit(0);
   }
 
-  const client = new Client({ connectionString: url, ssl: { rejectUnauthorized: false } });
+  // SSL: set STAGING_PG_SSL=0/false to disable; STAGING_PG_SSL_REJECT_UNAUTHORIZED=1
+  // to verify certs (default: encrypt but allow self-signed for staging).
+  const sslEnv = (process.env.STAGING_PG_SSL ?? '1').trim().toLowerCase();
+  const sslDisabled = sslEnv === '0' || sslEnv === 'false' || sslEnv === 'off';
+  const rejectUnauthorized =
+    (process.env.STAGING_PG_SSL_REJECT_UNAUTHORIZED ?? '0').trim() === '1';
+  const ssl = sslDisabled ? false : { rejectUnauthorized };
+  const client = new Client({ connectionString: url, ssl });
   await client.connect();
   try {
     const suppressions = await client.query(

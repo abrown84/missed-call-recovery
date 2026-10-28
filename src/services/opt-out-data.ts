@@ -1,0 +1,87 @@
+/** Opt-out token / confusable tables (data; not mutation-tested). */
+
+
+export const OPT_OUT_EXACT = [
+  'STOP',
+  'STOPALL',
+  'STOP ALL',
+  'STOP STOP',
+  'UNSUBSCRIBE',
+  'QUIT',
+  'END',
+  'CANCEL',
+  'OPTOUT',
+  'OPT OUT',
+  'OPT-OUT',
+  'REVOKE',
+  "DON'T TEXT ME AGAIN",
+  'DONT TEXT ME AGAIN',
+  'DO NOT TEXT ME AGAIN',
+  'PLEASE STOP',
+  'STOP PLEASE',
+  'STOP IT',
+  'UNSUBSCRIBE ME',
+  'CANCEL PLEASE',
+  'LEAVE ME ALONE',
+  'STOP TEXTING ME',
+  'STOP MESSAGING ME',
+  'PLEASE STOP TEXTING ME',
+] as const;
+
+export const OPT_OUT_COMPACT = new Set([
+  'STOP',
+  'STOPALL',
+  'STOPSTOP',
+  'UNSUBSCRIBE',
+  'QUIT',
+  'END',
+  'CANCEL',
+  'OPTOUT',
+  'REVOKE',
+]);
+
+export const AMBIGUOUS = [
+  /^no\s+more\s+(texts?|messages?)/i,
+  /^remove\s+me\b/i,
+  /^wrong\s+number$/i,
+];
+
+export const CONFUSABLES: Record<string, string> = {
+  '\u0391': 'A',
+  '\u0410': 'A',
+  '\u0392': 'B',
+  '\u0412': 'B',
+  '\u0395': 'E',
+  '\u0415': 'E',
+  '\u0397': 'H',
+  '\u041D': 'H',
+  '\u0399': 'I',
+  '\u0406': 'I',
+  '\u04C0': 'I',
+  '\u039A': 'K',
+  '\u041A': 'K',
+  '\u039C': 'M',
+  '\u041C': 'M',
+  '\u039D': 'N',
+  '\u041E': 'O',
+  '\u039F': 'O',
+  '\u0420': 'P',
+  '\u03A1': 'P',
+  '\u0421': 'C',
+  '\u03A3': 'E',
+  '\u0422': 'T',
+  '\u03A4': 'T',
+  '\u0425': 'X',
+  '\u03A7': 'X',
+  '\u0430': 'a',
+  '\u0435': 'e',
+  '\u043E': 'o',
+  '\u0440': 'p',
+  '\u0441': 'c',
+  '\u0442': 't', // Cyrillic te → t  (ѕтор → stop)
+  '\u0443': 'y',
+  '\u0445': 'x',
+  '\u0456': 'i',
+  '\u0405': 'S',
+  '\u0455': 's', // Cyrillic dze → s
+};

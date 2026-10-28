@@ -19,10 +19,13 @@ describe('getTemplate', () => {
     expect(body).toContain(OPT_OUT_FOOTER);
   });
 
-  it('fits one GSM-7 segment for typical business names', () => {
+  it('appends STOP footer; originals kept (Alex must approve any rewrite)', () => {
+    // QC r5 H: do not silently rewrite customer copy for GSM-7. Segment
+    // count may be >1 for emergency templates with emoji + STOP footer.
     for (const key of Object.keys(ALL_TEMPLATES)) {
       const body = getTemplate(key, { business: 'Acme', name: '', issue: '' });
-      expect(smsSegmentCount(body), key).toBe(1);
+      expect(body).toContain(OPT_OUT_FOOTER);
+      expect(smsSegmentCount(body), key).toBeGreaterThanOrEqual(1);
     }
   });
 

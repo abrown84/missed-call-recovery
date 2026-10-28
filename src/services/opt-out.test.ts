@@ -61,4 +61,12 @@ describe('opt-out whole-message NFKC + confusable', () => {
   it('exposes FCC STOP footer', () => {
     expect(OPT_OUT_FOOTER).toBe('Reply STOP to opt out.');
   });
+
+  it('QC r5 F: Cyrillic стор, spaced STOP, STOP STOP', () => {
+    expect(isDefiniteOptOut('ѕтор')).toBe(true);
+    expect(isDefiniteOptOut('S T O P')).toBe(true);
+    expect(isDefiniteOptOut('STOP STOP')).toBe(true);
+    expect(isDefiniteOptOut('please stop texting me')).toBe(true);
+  });
 });
+

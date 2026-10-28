@@ -1,14 +1,13 @@
 import { createServerClient } from '@/lib/supabase';
-import { getMessagingAdapter } from '@/lib/messaging';
 import { redactId, redactPhone } from '@/lib/pii';
+import { sendMessage } from '@/services/send';
 import type { ClassificationResult } from '@/types';
 import type { Database } from '@/types/database';
 
 type Business = Database['public']['Tables']['businesses']['Row'];
 
 /**
- * Lead Escalation Service
- * Routes high-urgency and emergency leads to the appropriate party
+ * Lead Escalation Service — routes via the single send module (no direct relay).
  */
 
 export async function escalateLead(
@@ -18,7 +17,6 @@ export async function escalateLead(
 ): Promise<void> {
   const supabase = createServerClient();
 
-  // Get the lead details
   const { data: lead, error } = await supabase
     .from('leads')
     .select('*, missed_calls(*)')
@@ -30,10 +28,7 @@ export async function escalateLead(
     return;
   }
 
-  // Determine escalation target
   const escalationPhone = business.emergency_phone || business.phone;
-
-  // Build escalation message
   const urgencyEmoji = classification.urgency === 'emergency' ? '🚨' : '⚠️';
   const escalationMessage = buildEscalationMessage(
     urgencyEmoji,
@@ -42,33 +37,39 @@ export async function escalateLead(
     lead.sms_response_text || 'No response text'
   );
 
-  try {
-    await getMessagingAdapter().sendMessage({
-      to: escalationPhone,
-      body: escalationMessage,
-      auto: true,
-    });
+  const outcome = await sendMessage({
+    kind: 'escalation',
+    leadId,
+    businessId: business.id,
+    to: escalationPhone,
+    body: escalationMessage,
+    businessTimezone: business.timezone,
+    skipQuietHours: true,
+    auto: true,
+  });
 
-
-    // Update lead status
-    await supabase
-      .from('leads')
-      .update({
-        status: 'escalated',
-        escalated_at: new Date().toISOString(),
-      })
-      .eq('id', leadId);
-
-    console.log(
-      `Lead ${redactId(leadId)} escalated to ${redactPhone(escalationPhone)}`
-    );
-  } catch (err) {
+  if (outcome.kind !== 'sent' && outcome.kind !== 'ambiguous') {
     console.error(
-      'Escalation failed:',
-      err instanceof Error ? err.message : 'unknown'
+      'Escalation blocked/failed:',
+      outcome.kind,
+      'reason' in outcome ? outcome.reason : ''
     );
-    throw err;
+    if (outcome.kind === 'needs_review' || outcome.kind === 'blocked') {
+      throw new Error(`Escalation ${outcome.kind}`);
+    }
   }
+
+  await supabase
+    .from('leads')
+    .update({
+      status: 'escalated',
+      escalated_at: new Date().toISOString(),
+    })
+    .eq('id', leadId);
+
+  console.log(
+    `Lead ${redactId(leadId)} escalated to ${redactPhone(escalationPhone)}`
+  );
 }
 
 function buildEscalationMessage(
@@ -77,35 +78,27 @@ function buildEscalationMessage(
   callerPhone: string,
   responseText: string
 ): string {
-  const lines = [
+  return [
     `${emoji} ${classification.urgency.toUpperCase()} LEAD`,
     `Phone: ${callerPhone}`,
     `Issue: ${classification.issue || 'Not specified'}`,
     `Keywords: ${classification.keywords.join(', ') || 'None'}`,
     `Response: "${responseText.slice(0, 100)}"`,
     `Call back ASAP!`,
-  ];
-
-  return lines.join('\n');
+  ].join('\n');
 }
 
-/**
- * Check if we should escalate based on time and business hours
- */
 export function shouldEscalate(
   business: Business,
   urgency: ClassificationResult['urgency']
 ): boolean {
-  // Always escalate emergencies
   if (urgency === 'emergency') return true;
 
-  // High urgency during business hours
   if (urgency === 'high') {
     const now = new Date();
     const currentHour = now.getHours();
     const startHour = parseInt(business.business_hours_start.split(':')[0]);
     const endHour = parseInt(business.business_hours_end.split(':')[0]);
-
     const isDuringBusinessHours = currentHour >= startHour && currentHour < endHour;
     return isDuringBusinessHours || business.after_hours_enabled;
   }

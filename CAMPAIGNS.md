@@ -94,9 +94,11 @@ Tracks leads in campaigns
 
 | Variable | Default | Meaning |
 |----------|---------|---------|
+| `SENDS_ENABLED` | `true` | App-side kill switch. `false`/`0`/`off` blocks **every** outbound path (recovery, campaign, escalation, manual). Prefer this for freezes over dry-run. |
 | `CAMPAIGN_REPLY_MODE` | `pause` | After a classified reply on the **matching** campaign: `pause` stops follow-ups; `continue` keeps the sequence running. |
 | `UNKNOWN_SMS_ALERT_THRESHOLD` | `5` | Cron alerts when ambiguous (`unknown` + stuck `sending`) rows in a reconcile pass meet/exceed this count. |
-| `MESSAGING_PROVIDER` | `brwn-relay` | Set `dry-run` on staging to log sends without hitting the relay. |
+| `MESSAGING_PROVIDER` | `brwn-relay` | `dry-run` is **test-only** (forbidden in production runtime). Fakes capabilities + key echo; idempotency store is **in-memory only**. |
+| `ONE_GATEWAY_URL` | *(required outside prod)* | Unset outside production → fail closed (no external call). Production should set explicitly. |
 
 ### BRWN Text relay version
 
@@ -106,6 +108,7 @@ Tracks leads in campaigns
 - `POST /api/messages` JSON: `to`, `body`, `auto`, optional `idempotencyKey` (body field, not a header). Keys are always prefixed `mlf:…`. Success echoes `idempotencyKey`. Duplicate key → `200 { id, status, duplicate: true, idempotencyKey }`. Key reused with different recipient/body → **`409 { error: 'idempotency_conflict', idempotencyKey }`** → **needs_review** (never success).
 - `GET /api/messages?idempotencyKey=<key>` → `{ found: false }` or `{ found: true, id, toLast4, status, error, created, updated, attempts, auto }` (`toLast4`, not `to`).
 - Rate limit: **`429 { error: 'recent_send' }`**. Keyed 429 → **unknown (park)**, not a hard error.
+- Freeze: **`503 { error: 'maintenance' }`** → park (ambiguous), **never** counted as failure.
 - Older relays lack `/api/capabilities` or return 405 on GET lookup → cron logs a loud alert; parked rows stay visible.
 
 **`key_supported_at_send` is set only when both are true for that row:**
@@ -114,21 +117,47 @@ Tracks leads in campaigns
 
 Trust `found:false` / `never_sent` **only** for those rows. Everything else → `needs_review` (never auto-requeue).
 
+### Parked retry cadence
+
+Ambiguous (`unknown` / stuck `sending`) rows retry with exponential backoff:
+
+- delay = `min(5min × 2^attempts, 6h)`
+- after **5** reconcile attempts → `needs_review` (stop auto-retry)
+
+Justification: 5 minutes absorbs brief relay blips; doubling avoids stampeding a recovering node; 6h cap keeps overnight parks from waiting a full day; 5 attempts ≈ ~2.5h of active retry before human review.
+
 ### Relay upgrade / rollback freeze (required)
 
 A send that timed out on **&lt; 1.7.6** (no key / no capabilities) can look like `{ found: false }` after an upgrade — auto-requeue would double-text. Same risk on rollback.
 
 **Before any relay upgrade or rollback:**
 
-1. **Send freeze** — set `MESSAGING_PROVIDER=dry-run` on the app (and/or pause the GHA campaign cron + stop accepting missed-call recovery sends) so no new live SMS go out.
-2. **Drain parked rows** — keep running cron / `reconcileAmbiguousSms` until `sms_messages` has no actionable `unknown` / stuck `sending` backlog (or move leftovers to `needs_review` by hand). Do not cut over while ambiguous rows remain.
-3. Deploy / roll the relay to the target version (**>= 1.7.6** for upgrades).
-4. Confirm `GET /api/capabilities` (sender Bearer) returns `{ …, idempotency: true }` on the target version.
-5. Resume live sends (`MESSAGING_PROVIDER=brwn-relay`) only after the capabilities probe succeeds. New rows that also get a key echo receive `key_supported_at_send=true`; older rows without that flag never auto-requeue on `found:false`.
+1. **Send freeze** — set `SENDS_ENABLED=false` (preferred) and/or pause the GHA campaign cron. Do **not** rely on dry-run for production freezes (it fakes caps/echo).
+2. **Drain parked rows** — keep running cron / reconcile until no actionable `unknown` / stuck `sending` backlog (or move leftovers to `needs_review` by hand).
+3. Deploy / roll the relay to the target version (**>= 1.7.6** for upgrades). Relay `503 maintenance` during cutover parks sends safely.
+4. Confirm `GET /api/capabilities` returns `{ …, idempotency: true }` on the target version.
+5. Resume with `SENDS_ENABLED=true`. New rows that also get a key echo receive `key_supported_at_send=true`.
 
-**Rollback of the relay** (e.g. 1.7.6 → older): freeze + drain first. After rollback, capabilities will not report `idempotency:true`; any subsequent `found:false` on pre-rollback keys goes to `needs_review` (safe). Do not re-enable auto-requeue until back on >= 1.7.6 with a fresh freeze/drain.
+**Rollback of the relay** (e.g. 1.7.6 → older): freeze + drain first. After rollback, capabilities will not report `idempotency:true`; any subsequent `found:false` on pre-rollback keys goes to `needs_review` (safe).
 
-**Code rollback after migration 003 rollback:** reverting app code without a send freeze can text people who opted out (suppressions archived but live table may be empty). Always freeze sends, restore `sms_suppressions` from `sms_suppressions_archive_003` if needed, then unfreeze.
+**Code rollback after migration 003 rollback:** freeze sends, restore `sms_suppressions` from `sms_suppressions_archive_003` if needed, then unfreeze. Migration 003 **never** merge-deletes businesses — phone collisions abort via `003_phone_collision_abort.sql`.
+
+### Behavior changes (QC r5) — disclose / Alex flags
+
+| Change | Detail |
+|--------|--------|
+| Single send module | All relay I/O goes through `src/services/send` (`sendMessage` / reconcile). |
+| Enrollment gated on urgency | Missed-call no longer enrolls; `enrollLeadInCampaign` returns `urgency_unset` until classification sets urgency. **Non-responders no longer auto-enroll into Standard** — Alex: confirm desired non-responder path. |
+| Recovery under quiet hours | Recovery SMS now respects TCPA quiet hours (same window as campaigns). **Alex flag:** 47 CFR 64.1200(c)(1) limits *telephone solicitations* to 8:00–21:00 (FL/OK end 20:00) local. A direct reply to an inbound missed call may be informational rather than a solicitation — confirm whether recovery may send outside the window. |
+| 850 dual zones | FL panhandle 850 → Eastern **and** Central; both must be open. |
+| Unmapped area codes | Unresolved (no send, `needs_human_review`); **never** fall back to business timezone. |
+| E.164 on every send | Raw nationals (e.g. `2125550101`) are normalized before the relay (avoids false 409). |
+| Business merge removed | 003 no longer merge-deletes businesses; collisions abort with a listing. |
+| Templates | Original customer copy restored; only STOP footer is appended. GSM-7 multi-segment OK until Alex approves rewrites. |
+| `needs_human_review` | Lead flag for ambiguous opt-out / unresolved timezone. |
+| dry-run | **Test-only**; fakes caps+echo; in-memory idempotency store (not durable). |
+| PGlite | DevDependency for migration integration tests (`schema.sql`→001→002→003). |
+| `ONE_GATEWAY_URL` | Unset anywhere → fail closed (no live gateway call). Production must set it explicitly. |
 
 ---
 
@@ -140,13 +169,13 @@ Webhook: /api/webhooks/brwn/missed-call
   ↓
 Create lead (skip recovery if phone is SMS-suppressed / opted out)
   ↓
-sendRecoverySMS  ← insert-before-send, sid=mlf:recovery:{leadId}
+sendMessage(kind=recovery) via single send module
+  (quiet hours apply; E.164 normalize; SENDS_ENABLED gate)
   ↓
-enrollLeadInCampaign → Standard; skip step 1 only when recovery is *confirmed*
-  (pending/unknown recovery → park enrollment until reconcile)
+Do NOT enroll yet — urgency is still null
 ```
 
-### **2. Customer Responds → Classify → Switch or Pause**
+### **2. Customer Responds → Classify → Enroll / Switch or Pause**
 ```
 Webhook: /api/webhooks/brwn/inbound  (leads older than 7 days ignored)
   ↓
@@ -154,7 +183,8 @@ STOP / opt-out (whole-message NFKC + confusable fold) FIRST
   ↓
 Ambiguous opt-out → persist needs_human_review + pause (no auto-suppress)
   ↓
-classifyUrgency → handleClassifiedReplyEnrollment (CAMPAIGN_REPLY_MODE)
+classifyUrgency → handleClassifiedReplyEnrollment
+  (enrollLeadInCampaign requires urgency set; may switch Standard→Emergency)
 ```
 
 ### **3. Cron Job Processes Follow-ups**
@@ -196,7 +226,7 @@ Contract tests: `brwn-relay.test.ts` / `sms-sid.test.ts` / `qc-r4*.test.ts`.
 
 ## Quiet hours & opt-out
 
-- **Quiet hours:** 08:00–21:00 lead-local (FL/OK end 20:00). Area-code map includes FL 239/448/645/656/689/728 and OK 572; 850 is Central. Ambiguous/unknown zones require **every** candidate + business window open; otherwise do not send.
+- **Quiet hours:** 08:00–21:00 lead-local (FL/OK end 20:00). Area-code map includes FL 239/448/645/656/689/728 and OK 572; **850 is Eastern AND Central** (both must be open). Unmapped codes are unresolved (no business-TZ fallback).
 - **Opt-out:** whole-message after NFKC, zero-width strip, confusable fold (`STOP?`, emoji, Greek/Cyrillic look-alikes, “unsubscribe me”, “leave me alone”, …). Ambiguous → persisted `needs_human_review`.
 - Templates trimmed so body + `Reply STOP to opt out.` fit one GSM-7 segment where possible.
 

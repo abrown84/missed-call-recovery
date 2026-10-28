@@ -131,6 +131,19 @@ export class BrwnRelayAdapter implements MessagingAdapter {
         throw new Error('BRWN relay rate-limited send (recent_send)');
       }
 
+      if (res.status === 503) {
+        // Freeze: { error: 'maintenance' } — park, never count as failure.
+        const obj = json as { error?: string };
+        console.warn(
+          `BRWN relay 503 maintenance on send (${input.idempotencyKey ?? 'unkeyed'}); parking`
+        );
+        return {
+          id: `maintenance:${input.idempotencyKey ?? 'none'}`,
+          status: 'maintenance',
+          ambiguous: true,
+        };
+      }
+
       if (res.status === 409) {
         // { error: 'idempotency_conflict', idempotencyKey }
         const obj = json as { error?: string; idempotencyKey?: string };

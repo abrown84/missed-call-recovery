@@ -2,7 +2,6 @@ import { createServerClient } from '@/lib/supabase';
 import { redactPhone } from '@/lib/pii';
 import { normalizeToE164 } from '@/lib/phone';
 import { sendRecoverySMS } from '@/services/sms';
-import { enrollLeadInCampaign } from '@/services/campaigns';
 import {
   SuppressionLookupError,
   isPhoneSuppressed,
@@ -130,12 +129,9 @@ export async function processMissedCall(
     );
   }
 
-  enrollLeadInCampaign(lead.id).catch((err) => {
-    console.error(
-      'Campaign enrollment failed:',
-      err instanceof Error ? err.message : 'unknown'
-    );
-  });
+  // Do NOT enroll here — urgency is still null until classification.
+  // enrollLeadInCampaign gates on urgency; handleClassifiedReplyEnrollment
+  // enrolls/switches after the customer replies and urgency is set.
 
   return { missedCallId: missedCall.id, leadId: lead.id };
 }

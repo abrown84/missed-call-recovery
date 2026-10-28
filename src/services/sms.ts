@@ -1,27 +1,18 @@
+/**
+ * Recovery / follow-up SMS — thin wrappers around the single send module.
+ * No direct relay calls.
+ */
+
 import { createServerClient } from '@/lib/supabase';
-import { getMessagingAdapter } from '@/lib/messaging';
-import { ensureRelayKeySupportProbed } from '@/lib/messaging/brwn-relay';
-import { redactPhone } from '@/lib/pii';
 import { appendOptOutFooter } from '@/lib/templates';
-import {
-  isFailedSmsStatus,
-  isRelayKeySupportConfirmed,
-  recoveryMessageSid,
-} from '@/services/sms-sid';
-import {
-  SuppressionLookupError,
-  isPhoneSuppressed,
-} from '@/services/suppressions';
+import { redactPhone } from '@/lib/pii';
+import { sendMessage } from '@/services/send';
+import { recoveryMessageSid } from '@/services/sms-sid';
 import type { Database } from '@/types/database';
 
 type Business = Database['public']['Tables']['businesses']['Row'];
 
-/**
- * SMS Outreach Service
- * Sends recovery SMS via the active messaging adapter (BRWN relay by default).
- */
-
-/** Kept short so body + STOP footer fit one GSM-7 segment. */
+/** Kept short so body + STOP footer fit reasonably. */
 const SMS_TEMPLATES: Record<string, string> = {
   plumbing: `Hi, {business} here - we missed your call. What plumbing issue can we help with? Reply or call back.`,
   hvac: `Hi, {business} here - missed your call. Heating/cooling issue? Reply with details and we'll help ASAP.`,
@@ -34,34 +25,6 @@ export async function sendRecoverySMS(
   business: Business,
   callerPhone: string
 ): Promise<void> {
-  const supabase = createServerClient();
-
-  try {
-    if (await isPhoneSuppressed(business.id, callerPhone)) {
-      console.log(
-        `Skipping recovery SMS; suppressed ${redactPhone(callerPhone)}`
-      );
-      return;
-    }
-  } catch (err) {
-    if (err instanceof SuppressionLookupError) {
-      console.error('Suppression check failed closed; skipping recovery SMS');
-      return;
-    }
-    throw err;
-  }
-
-  const { data: lead } = await supabase
-    .from('leads')
-    .select('opted_out')
-    .eq('id', leadId)
-    .maybeSingle();
-
-  if (lead?.opted_out) {
-    console.log(`Skipping recovery SMS; lead ${leadId} opted out`);
-    return;
-  }
-
   const customTemplate = (business.settings as Record<string, unknown>)
     ?.smsTemplate as string | undefined;
   const template =
@@ -69,94 +32,43 @@ export async function sendRecoverySMS(
   const messageBody = appendOptOutFooter(
     template.replace('{business}', business.name)
   );
-  const sid = recoveryMessageSid(leadId);
 
-  // Insert-before-send for recovery too (UNIQUE message_sid).
-  // key_supported_at_send set only after caps+echo (see below).
-  const { error: insertError } = await supabase.from('sms_messages').insert({
-    lead_id: leadId,
-    direction: 'outbound',
+  // Quiet hours apply to recovery too (47 CFR 64.1200(c)(1) solicitation
+  // window). Flag for Alex: a direct reply to an inbound missed call may be
+  // informational rather than a "telephone solicitation" — confirm before
+  // relaxing this gate. See CAMPAIGNS.md / PR body.
+  const outcome = await sendMessage({
+    kind: 'recovery',
+    leadId,
+    businessId: business.id,
+    to: callerPhone,
     body: messageBody,
-    message_sid: sid,
-    status: 'sending',
-    key_supported_at_send: false,
+    idempotencyKey: recoveryMessageSid(leadId),
+    businessTimezone: business.timezone,
+    skipQuietHours: false,
   });
 
-  if (insertError?.code === '23505') {
-    console.log(`Recovery SMS already recorded for lead ${leadId}`);
+  if (outcome.kind === 'blocked' || outcome.kind === 'skipped') {
+    console.log(
+      `Recovery SMS ${outcome.kind} for ${redactPhone(callerPhone)}: ${
+        'reason' in outcome ? outcome.reason : ''
+      }`
+    );
     return;
   }
-  if (insertError) {
-    throw new Error(`Failed to record recovery SMS: ${insertError.message}`);
+  if (outcome.kind === 'needs_review') {
+    console.error(`ALERT: recovery SMS needs_review sid=${outcome.sid}`);
+    return;
   }
-
-  try {
-    const adapter = getMessagingAdapter();
-    // Caps must be probed *before* the send for key_supported_at_send trust.
-    await ensureRelayKeySupportProbed(adapter);
-
-    const message = await adapter.sendMessage({
-      to: callerPhone,
-      body: messageBody,
-      auto: true,
-      idempotencyKey: sid,
-    });
-
-    if (isRelayKeySupportConfirmed() && message.keyEchoed) {
-      await supabase
-        .from('sms_messages')
-        .update({ key_supported_at_send: true })
-        .eq('message_sid', sid);
-    }
-
-    if (message.conflict || isFailedSmsStatus(message.status)) {
-      console.error(
-        `ALERT: recovery SMS failed/conflict for lead ${leadId}; needs_review`
-      );
-      await supabase
-        .from('sms_messages')
-        .update({ status: 'needs_review' })
-        .eq('message_sid', sid);
-      return;
-    }
-
-    // 429 on keyed recovery → park as unknown (do not hard-fail the webhook).
-    if (message.ambiguous || message.status === 'unknown') {
-      await supabase
-        .from('sms_messages')
-        .update({ status: 'unknown' })
-        .eq('message_sid', sid);
-      console.warn(
-        `Recovery SMS ambiguous for lead ${leadId}; parked for reconcile`
-      );
-      return;
-    }
-
-    await supabase
-      .from('sms_messages')
-      .update({ status: message.status || 'queued' })
-      .eq('message_sid', sid);
-
-    await supabase
-      .from('leads')
-      .update({ sms_outbound_sid: sid })
-      .eq('id', leadId);
-
-    console.log(
-      `Recovery SMS queued to ${redactPhone(callerPhone)}, id: ${message.id}` +
-        `${message.duplicate ? ' (duplicate)' : ''}`
+  if (outcome.kind === 'ambiguous') {
+    console.warn(
+      `Recovery SMS ambiguous for ${redactPhone(callerPhone)}; parked (${outcome.reason})`
     );
-  } catch (error) {
-    await supabase
-      .from('sms_messages')
-      .update({ status: 'unknown' })
-      .eq('message_sid', sid);
-    console.error(
-      'Failed to send recovery SMS:',
-      error instanceof Error ? error.message : 'unknown'
-    );
-    throw error;
+    return;
   }
+  console.log(
+    `Recovery SMS queued to ${redactPhone(callerPhone)} sid=${outcome.sid}`
+  );
 }
 
 export async function sendFollowUpSMS(
@@ -165,51 +77,29 @@ export async function sendFollowUpSMS(
   callerPhone: string,
   customMessage?: string
 ): Promise<void> {
-  const supabase = createServerClient();
-
-  try {
-    if (await isPhoneSuppressed(business.id, callerPhone)) {
-      console.log(
-        `Skipping follow-up SMS; suppressed ${redactPhone(callerPhone)}`
-      );
-      return;
-    }
-  } catch (err) {
-    if (err instanceof SuppressionLookupError) {
-      console.error('Suppression check failed closed; skipping follow-up SMS');
-      return;
-    }
-    throw err;
-  }
-
   const messageBody = appendOptOutFooter(
     customMessage ||
-      `Hi, just following up from ${business.name}. Still need help? Reply here or give us a call!`
+      `Hi, this is ${business.name}. Just following up on your recent inquiry. How can we help?`
   );
 
-  try {
-    const message = await getMessagingAdapter().sendMessage({
-      to: callerPhone,
-      body: messageBody,
-      auto: true,
-    });
+  const outcome = await sendMessage({
+    kind: 'manual',
+    leadId,
+    businessId: business.id,
+    to: callerPhone,
+    body: messageBody,
+    businessTimezone: business.timezone,
+    skipQuietHours: true,
+  });
 
+  if (outcome.kind === 'sent') {
+    const supabase = createServerClient();
     await supabase.from('sms_messages').insert({
       lead_id: leadId,
       direction: 'outbound',
       body: messageBody,
-      message_sid: message.id,
-      status: message.status,
+      message_sid: outcome.sid,
+      status: outcome.providerStatus,
     });
-
-    console.log(
-      `Follow-up SMS queued to ${redactPhone(callerPhone)}, id: ${message.id}`
-    );
-  } catch (error) {
-    console.error(
-      'Failed to send follow-up SMS:',
-      error instanceof Error ? error.message : 'unknown'
-    );
-    throw error;
   }
 }

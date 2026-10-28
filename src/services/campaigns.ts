@@ -1,18 +1,11 @@
 import { randomUUID } from 'crypto';
 import { createServerClient } from '@/lib/supabase';
 import { getMessagingAdapter } from '@/lib/messaging';
-import {
-  ensureRelayKeySupportProbed,
-  warnIfRelayLookupUnsupported,
-} from '@/lib/messaging/brwn-relay';
 import { getTemplate } from '@/lib/templates';
 import type { Database } from '@/types/database';
 import {
   CLAIM_STALE_MS,
-  STUCK_SENDING_MS,
-  UNKNOWN_SMS_ALERT_THRESHOLD,
   campaignStepMessageSid,
-  classifyMessageInsertError,
   decideReplyEnrollmentAction,
   getCampaignReplyMode,
   hasFreshClaim,
@@ -20,26 +13,22 @@ import {
   planEnrollmentStart,
   selectCampaignForUrgency,
 } from '@/services/campaign-logic';
-// parkedNextSendAt imported above
 import {
-  decideOnDuplicateSid,
-  decideReconcileRow,
-  normalizeLookupOutcome,
-  MAX_RECONCILE_ATTEMPTS,
-} from '@/services/reconcile-logic';
-import { deferUntilQuietHoursOpen } from '@/services/quiet-hours';
-import {
-  classifyRecoverySmsStatus,
-  isFailedSmsStatus,
-  isRelayKeySupportConfirmed,
+  parseMessageSid,
   recoveryMessageSid,
 } from '@/services/sms-sid';
-import { tryNormalizeToE164 } from '@/lib/phone';
+import {
+  parkNextAt,
+  reconcileAmbiguousSms as reconcileViaSendModule,
+  sendMessage,
+  resolveRecoveryOutcome,
+} from '@/services/send';
 import { sendRecoverySMS } from '@/services/sms';
 import {
   SuppressionLookupError,
   isPhoneSuppressed,
 } from '@/services/suppressions';
+import { ENROLLMENT_CLAIM_SELECT } from '@/lib/postgrest-select';
 
 type Business = Database['public']['Tables']['businesses']['Row'];
 type Lead = Database['public']['Tables']['leads']['Row'];
@@ -80,6 +69,12 @@ export async function enrollLeadInCampaign(
 
   if (lead.opted_out) {
     return { enrolled: false, reason: 'opted_out' };
+  }
+
+  // Staging evidence (b): never enroll while urgency is still null — otherwise
+  // every missed call lands in Standard before classification.
+  if (lead.urgency == null || String(lead.urgency).trim() === '') {
+    return { enrolled: false, reason: 'urgency_unset' };
   }
 
   const existing = await getEnrollmentForLead(leadId);
@@ -236,6 +231,8 @@ export async function switchEnrollmentCampaign(
   const staleBefore = new Date(Date.now() - CLAIM_STALE_MS).toISOString();
 
   // Only switch when not mid-send: claim_token null OR claim stale.
+  // PostgREST re-applies filters to the representation — select every column
+  // referenced by the filter or Postgres returns 42703 (staging evidence c).
   const { data: updated, error: updateError } = await supabase
     .from('campaign_enrollments')
     .update({
@@ -252,7 +249,7 @@ export async function switchEnrollmentCampaign(
     .eq('lead_id', leadId)
     .eq('status', 'active')
     .or(`claim_token.is.null,claimed_at.lt.${staleBefore}`)
-    .select('id')
+    .select(ENROLLMENT_CLAIM_SELECT)
     .maybeSingle();
 
   if (updateError || !updated) {
@@ -429,72 +426,6 @@ export async function sendCampaignSMS(
     return false;
   }
 
-  // Gate delay-0 step 1 on recovery resolution (prevents double text).
-  if (
-    currentStep.delay_minutes === 0 &&
-    enrollment.current_step === steps[0]?.step_number
-  ) {
-    const recoveryState = await getRecoverySendState(supabase, lead.id);
-    if (recoveryState === 'confirmed' || lead.sms_outbound_sid) {
-      console.log(
-        `Skipping initial campaign SMS for ${enrollmentId}; recovery confirmed`
-      );
-      await advanceEnrollment(
-        supabase,
-        enrollmentId,
-        token,
-        enrollment.current_step,
-        steps
-      );
-      return true;
-    }
-    if (recoveryState === 'pending') {
-      console.log(
-        `Parking enrollment ${enrollmentId}; recovery SMS still unresolved`
-      );
-      await parkEnrollmentForReconcile(supabase, enrollmentId, token);
-      return false;
-    }
-  }
-
-  // Quiet hours: defer (never drop) until local window opens.
-  const phoneE164 =
-    tryNormalizeToE164(lead.caller_phone) || lead.caller_phone;
-  let quiet;
-  try {
-    quiet = deferUntilQuietHoursOpen(new Date(), {
-      callerPhoneE164: phoneE164,
-      businessTimezone: business.timezone,
-    });
-  } catch (err) {
-    console.error(
-      `Quiet-hours timezone error for ${enrollmentId}:`,
-      err instanceof Error ? err.message : 'unknown'
-    );
-    await releaseClaim(supabase, enrollmentId, token, {
-      nextSendAt: parkedNextSendAt(),
-    });
-    return false;
-  }
-  if (!quiet.allowed) {
-    if ('unresolved' in quiet && quiet.unresolved) {
-      console.error(
-        `ALERT: quiet-hours unresolved for enrollment ${enrollmentId} (${quiet.reason}); not sending`
-      );
-      await releaseClaim(supabase, enrollmentId, token, {
-        nextSendAt: parkedNextSendAt(),
-      });
-      return false;
-    }
-    console.log(
-      `Quiet hours defer enrollment ${enrollmentId} until ${quiet.nextSendAt.toISOString()} zones=${quiet.zones.join(',')}`
-    );
-    await releaseClaim(supabase, enrollmentId, token, {
-      nextSendAt: quiet.nextSendAt.toISOString(),
-    });
-    return true;
-  }
-
   const stepSid = campaignStepMessageSid(
     enrollmentId,
     campaign.id,
@@ -507,121 +438,86 @@ export async function sendCampaignSMS(
     issue: lead.issue || '',
   });
 
-  // key_supported_at_send stays false until BOTH: capabilities.idempotency
-  // was true before send AND the response echoed idempotencyKey.
-  const { error: insertError } = await supabase.from('sms_messages').insert({
-    lead_id: lead.id,
-    direction: 'outbound',
+  const leadTz = (lead as { timezone?: string | null }).timezone ?? null;
+
+  // Single send module: E.164, quiet hours, recovery gate, caps+echo, relay.
+  const outcome = await sendMessage({
+    kind: 'campaign',
+    leadId: lead.id,
+    businessId: business.id,
+    to: lead.caller_phone,
     body: messageBody,
-    message_sid: stepSid,
-    status: 'sending',
-    key_supported_at_send: false,
+    idempotencyKey: stepSid,
+    enrollmentId,
+    campaignId: campaign.id,
+    stepNumber: enrollment.current_step,
+    claimToken: token,
+    leadTimezone: leadTz,
+    businessTimezone: business.timezone,
+    skipRecoveryGate: !(
+      currentStep.delay_minutes === 0 &&
+      enrollment.current_step === steps[0]?.step_number
+    ),
   });
 
-  const insertClass = classifyMessageInsertError(insertError);
-  if (insertClass === 'duplicate') {
-    // Advance ONLY if the existing row is confirmed sent (not failed).
-    const { data: existing } = await supabase
-      .from('sms_messages')
-      .select('id, status')
-      .eq('message_sid', stepSid)
-      .maybeSingle();
+  if (outcome.kind === 'skipped' && outcome.reason === 'recovery_already_sent_skip_step_1') {
+    await advanceEnrollment(
+      supabase,
+      enrollmentId,
+      token,
+      enrollment.current_step,
+      steps
+    );
+    return true;
+  }
 
-    const decision = decideOnDuplicateSid(existing?.status);
-    if (decision.action === 'advance') {
-      console.log(
-        `Duplicate sid ${stepSid} confirmed (${existing?.status}) — advancing`
-      );
-      await advanceEnrollment(
-        supabase,
-        enrollmentId,
-        token,
-        enrollment.current_step,
-        steps
-      );
+  if (outcome.kind === 'blocked') {
+    if (outcome.reason === 'quiet_hours_deferred' && outcome.nextSendAt) {
+      await releaseClaim(supabase, enrollmentId, token, {
+        nextSendAt: outcome.nextSendAt,
+      });
       return true;
     }
-    if (decision.action === 'needs_review') {
+    if (outcome.reason === 'quiet_hours_unresolved') {
       console.error(
-        `ALERT: duplicate sid ${stepSid} has failed status — needs_review, not advancing`
+        `ALERT: quiet-hours unresolved for enrollment ${enrollmentId}; needs_review`
       );
       await supabase
-        .from('sms_messages')
-        .update({ status: 'needs_review' })
-        .eq('message_sid', stepSid);
+        .from('leads')
+        .update({
+          needs_human_review: true,
+          needs_human_review_at: new Date().toISOString(),
+          needs_human_review_reason: 'quiet_hours_unresolved',
+        })
+        .eq('id', lead.id);
+      await releaseClaim(supabase, enrollmentId, token, {
+        nextSendAt: parkedNextSendAt(),
+      });
+      return false;
+    }
+    if (outcome.reason === 'recovery_pending') {
       await parkEnrollmentForReconcile(supabase, enrollmentId, token);
       return false;
     }
-
-    console.log(
-      `Duplicate sid ${stepSid} status=${existing?.status ?? 'missing'} — parking until reconcile`
-    );
-    await parkEnrollmentForReconcile(supabase, enrollmentId, token);
-    return false;
-  }
-  if (insertClass === 'failed') {
-    console.error('Failed to insert sending sms_messages row:', insertError);
+    if (outcome.reason === 'suppressed' || outcome.reason === 'opted_out') {
+      await pauseCampaignForLead(lead.id);
+      return true;
+    }
+    if (outcome.reason === 'sends_disabled') {
+      await releaseClaim(supabase, enrollmentId, token, {
+        nextSendAt: parkedNextSendAt(),
+      });
+      return false;
+    }
+    if (outcome.reason === 'duplicate_in_flight') {
+      await parkEnrollmentForReconcile(supabase, enrollmentId, token);
+      return false;
+    }
     await releaseClaim(supabase, enrollmentId, token);
     return false;
   }
 
-  try {
-    const adapter = getMessagingAdapter();
-    // Caps probe before send (cron already probes; this covers other callers).
-    await ensureRelayKeySupportProbed(adapter);
-
-    const message = await adapter.sendMessage({
-      to: lead.caller_phone,
-      body: messageBody,
-      auto: true,
-      idempotencyKey: stepSid,
-    });
-
-    // Trust never_sent later only if capabilities were true *before* send
-    // AND this response echoed the key (relay >= 1.7.6).
-    if (isRelayKeySupportConfirmed() && message.keyEchoed) {
-      await supabase
-        .from('sms_messages')
-        .update({ key_supported_at_send: true })
-        .eq('message_sid', stepSid);
-    }
-
-    // 409 conflict or failed status → needs_review, NEVER advance.
-    if (
-      message.conflict ||
-      isFailedSmsStatus(message.status) ||
-      (message.duplicate && isFailedSmsStatus(message.status))
-    ) {
-      console.error(
-        `ALERT: campaign SMS failed/conflict for ${enrollmentId} sid=${stepSid} status=${message.status}`
-      );
-      await supabase
-        .from('sms_messages')
-        .update({ status: 'needs_review' })
-        .eq('message_sid', stepSid);
-      await parkEnrollmentForReconcile(supabase, enrollmentId, token);
-      return false;
-    }
-
-    // 429 recent_send on keyed send → ambiguous (park), not a hard error.
-    if (message.ambiguous || message.status === 'unknown') {
-      await supabase
-        .from('sms_messages')
-        .update({ status: 'unknown' })
-        .eq('message_sid', stepSid);
-      await parkEnrollmentForReconcile(supabase, enrollmentId, token);
-      console.warn(
-        `Campaign SMS ambiguous for ${enrollmentId} step ${enrollment.current_step} ` +
-          `(sid=${stepSid}); parked for reconcile`
-      );
-      return false;
-    }
-
-    await supabase
-      .from('sms_messages')
-      .update({ status: message.status || 'queued' })
-      .eq('message_sid', stepSid);
-
+  if (outcome.kind === 'sent') {
     const advanced = await advanceEnrollment(
       supabase,
       enrollmentId,
@@ -631,28 +527,36 @@ export async function sendCampaignSMS(
     );
     if (!advanced) {
       console.warn(
-        `Post-send advance lost claim ownership for ${enrollmentId} (paused/switched mid-send)`
+        `Post-send advance lost claim for ${enrollmentId}`
       );
     }
-
     console.log(
-      `Campaign SMS sent for ${enrollmentId} step ${enrollment.current_step} ` +
-        `(provider=${message.id}, sid=${stepSid}` +
-        `${message.duplicate ? ', duplicate' : ''})`
+      `Campaign SMS sent for ${enrollmentId} step ${enrollment.current_step} sid=${outcome.sid}`
     );
-
     return true;
-  } catch (error) {
-    console.error('Failed to send campaign SMS (mark unknown):', error);
-    await supabase
-      .from('sms_messages')
-      .update({ status: 'unknown' })
-      .eq('message_sid', stepSid);
+  }
 
-    // Park until reconcile confirms or requeues the exact step from the sid.
+  if (outcome.kind === 'needs_review') {
+    console.error(
+      `ALERT: campaign SMS needs_review ${enrollmentId} sid=${outcome.sid} (${outcome.reason})`
+    );
     await parkEnrollmentForReconcile(supabase, enrollmentId, token);
     return false;
   }
+
+  if (outcome.kind === 'ambiguous') {
+    await parkEnrollmentForReconcile(supabase, enrollmentId, token, {
+      nextSendAt: outcome.nextRetryAt ?? parkNextAt(0).toISOString(),
+    });
+    console.warn(
+      `Campaign SMS ambiguous for ${enrollmentId} (${outcome.reason}); parked`
+    );
+    return false;
+  }
+
+  // never_sent should not appear on the live send path
+  await parkEnrollmentForReconcile(supabase, enrollmentId, token);
+  return false;
 }
 
 /**
@@ -686,7 +590,7 @@ export async function advanceEnrollment(
       .eq('id', enrollmentId)
       .eq('status', 'active')
       .eq('claim_token', claimToken)
-      .select('id');
+      .select(ENROLLMENT_CLAIM_SELECT);
 
     if (error || !data?.length) {
       console.warn(
@@ -715,7 +619,7 @@ export async function advanceEnrollment(
     .eq('id', enrollmentId)
     .eq('status', 'active')
     .eq('claim_token', claimToken)
-    .select('id');
+    .select(ENROLLMENT_CLAIM_SELECT);
 
   if (error || !data?.length) {
     console.warn(
@@ -757,10 +661,11 @@ async function releaseClaim(
 async function parkEnrollmentForReconcile(
   supabase: Supabase,
   enrollmentId: string,
-  claimToken: string
+  claimToken: string,
+  opts?: { nextSendAt?: string }
 ): Promise<void> {
   await releaseClaim(supabase, enrollmentId, claimToken, {
-    nextSendAt: parkedNextSendAt(),
+    nextSendAt: opts?.nextSendAt ?? parkedNextSendAt(),
   });
 }
 
@@ -823,7 +728,7 @@ export async function claimDueEnrollment(
     .eq('status', 'active')
     .lte('next_send_at', nowIso)
     .is('claim_token', null)
-    .select('id, claim_token');
+    .select(ENROLLMENT_CLAIM_SELECT);
 
   if (!due.error && (due.data?.length ?? 0) > 0) {
     return token;
@@ -840,7 +745,8 @@ export async function claimDueEnrollment(
     .eq('status', 'active')
     .is('next_send_at', null)
     .lt('claimed_at', staleBefore)
-    .select('id, claim_token');
+    // claimed_at is in the filter — must be selected (PostgREST 42703).
+    .select(ENROLLMENT_CLAIM_SELECT);
 
   if (stale.error) {
     console.error('Failed to reclaim stale enrollment:', stale.error);
@@ -899,210 +805,79 @@ export type ReconcileResult = {
  * - ORDER BY oldest first so a backlog cannot starve new rows
  */
 export async function reconcileAmbiguousSms(): Promise<ReconcileResult> {
+  // All relay lookups go through the send module.
+  const base = await reconcileViaSendModule();
   const supabase = createServerClient();
-  const adapter = getMessagingAdapter();
-  const cutoff = new Date(Date.now() - STUCK_SENDING_MS).toISOString();
 
-  const { data: ambiguous, error } = await supabase
+  // Post-pass: advance / requeue from abandoned_retry + newly resolved rows
+  // that the send module marked in this cron tick is handled inside callers
+  // via sid parse on never_sent. Recovery resend uses sendRecoverySMS.
+  const { data: abandoned } = await supabase
     .from('sms_messages')
-    .select(
-      'id, lead_id, message_sid, status, sent_at, reconcile_attempts, key_supported_at_send'
-    )
-    .in('status', ['unknown', 'sending'])
-    .lte('sent_at', cutoff)
+    .select('id, lead_id, message_sid, status')
+    .eq('status', 'abandoned_retry')
     .order('sent_at', { ascending: true })
     .limit(50);
 
-  if (error) {
-    console.error('Failed to list ambiguous sms_messages:', error);
-    return {
-      unknownCount: 0,
-      stuckSendingCount: 0,
-      requeued: 0,
-      confirmed: 0,
-      parked: 0,
-      needsReview: 0,
-      alert: false,
-    };
-  }
-
-  let unknownCount = 0;
-  let stuckSendingCount = 0;
-  let requeued = 0;
-  let confirmed = 0;
-  let parked = 0;
-  let needsReview = 0;
-
-  for (const row of ambiguous || []) {
-    if (row.status === 'unknown') unknownCount++;
-    if (row.status === 'sending') stuckSendingCount++;
-
-    const sid = row.message_sid;
-    const attempts = Number(
-      (row as { reconcile_attempts?: number }).reconcile_attempts ?? 0
-    );
-    const keySupportedAtSend = Boolean(
-      (row as { key_supported_at_send?: boolean | null }).key_supported_at_send
-    );
-
-    let outcome: 'sent' | 'never_sent' | 'unknown' | 'failed' = 'unknown';
-    let providerStatus = 'queued';
-
-    if (!adapter.lookupByIdempotencyKey) {
-      await bumpReconcileAttempt(supabase, row.id, attempts, 'park');
-      parked++;
-      continue;
-    }
-
-    try {
-      const lookup = await adapter.lookupByIdempotencyKey(sid);
-      const normalized = normalizeLookupOutcome(lookup);
-      outcome = normalized.outcome;
-      providerStatus = normalized.providerStatus;
-    } catch (err) {
-      console.error(
-        'Relay lookup failed for',
-        sid,
-        err instanceof Error ? err.message : 'unknown'
-      );
-      await bumpReconcileAttempt(supabase, row.id, attempts, 'park');
-      parked++;
-      continue;
-    }
-
-    const decision = decideReconcileRow({
-      sid,
-      outcome,
-      providerStatus,
-      reconcileAttempts: attempts,
-      keySupportedAtSend,
-    });
-
-    if (decision.action === 'confirm') {
-      await supabase
-        .from('sms_messages')
-        .update({ status: decision.providerStatus, reconcile_attempts: 0 })
-        .eq('id', row.id);
-      confirmed++;
-
-      if (decision.parsed.kind === 'campaign') {
-        await advanceEnrollmentAfterConfirmedSend(
-          supabase,
-          decision.parsed.enrollmentId,
-          decision.parsed.campaignId,
-          decision.parsed.stepNumber
-        );
-      } else if (decision.parsed.kind === 'recovery') {
-        await supabase
-          .from('leads')
-          .update({
-            sms_outbound_sid: recoveryMessageSid(decision.parsed.leadId),
-            updated_at: new Date().toISOString(),
-          })
-          .eq('id', decision.parsed.leadId);
-      }
-      continue;
-    }
-
-    if (decision.action === 'needs_review') {
-      console.error(
-        `ALERT: sms row ${row.id} → needs_review (${decision.reason ?? 'unspecified'}) sid=${sid}`
-      );
-      await bumpReconcileAttempt(supabase, row.id, attempts, 'needs_review');
-      needsReview++;
-      continue;
-    }
-
-    if (decision.action === 'park') {
-      await bumpReconcileAttempt(supabase, row.id, attempts, 'park');
-      parked++;
-      continue;
-    }
-
-    // Explicit never_sent only — free the sid and requeue / resend.
-    const abandonedSid = `${sid}:abandoned:${Date.now()}`;
-    await supabase
-      .from('sms_messages')
-      .update({
-        message_sid: abandonedSid,
-        status: 'abandoned_retry',
-        reconcile_attempts: 0,
-      })
-      .eq('id', row.id);
-
-    if (decision.action === 'requeue_campaign') {
+  let extraRequeued = 0;
+  for (const row of abandoned ?? []) {
+    // Original sid is prefix before :abandoned:
+    const original = String(row.message_sid).replace(/:abandoned:\d+$/, '');
+    const parsed = parseMessageSid(original);
+    if (parsed.kind === 'campaign') {
       const ok = await requeueExactCampaignStep(
         supabase,
-        decision.enrollmentId,
-        decision.campaignId,
-        decision.stepNumber
+        parsed.enrollmentId,
+        parsed.campaignId,
+        parsed.stepNumber
       );
-      if (ok) requeued++;
-    } else if (decision.action === 'requeue_recovery') {
-      await resendRecoveryIdempotent(supabase, decision.leadId, sid);
-      requeued++;
+      if (ok) extraRequeued++;
+    } else if (parsed.kind === 'recovery') {
+      await resendRecoveryIdempotent(supabase, parsed.leadId, original);
+      extraRequeued++;
     }
+    // Prevent reprocessing the same abandoned row forever
+    await supabase
+      .from('sms_messages')
+      .update({ status: 'abandoned_done' })
+      .eq('id', row.id);
   }
 
-  const { count: needsReviewTotal } = await supabase
+  const { data: confirmedRows } = await supabase
     .from('sms_messages')
-    .select('id', { count: 'exact', head: true })
-    .eq('status', 'needs_review');
+    .select('message_sid, status')
+    .in('status', ['queued', 'dispatched', 'sent', 'delivered'])
+    .like('message_sid', 'mlf:campaign:%')
+    .order('sent_at', { ascending: false })
+    .limit(20);
 
-  const parkedOrReview = parked + needsReview + (needsReviewTotal ?? 0);
-  const threshold = Number(
-    process.env.UNKNOWN_SMS_ALERT_THRESHOLD || UNKNOWN_SMS_ALERT_THRESHOLD
-  );
-  // Alert on ANY parked/needs_review in this pass, or backlog ≥ threshold.
-  const alert =
-    parkedOrReview > 0 ||
-    unknownCount + stuckSendingCount >= threshold;
-  if (alert) {
-    console.error(
-      `ALERT: ambiguous SMS (unknown=${unknownCount}, stuck_sending=${stuckSendingCount}, ` +
-        `parked=${parked}, needs_review=${needsReview}, backlog_needs_review=${needsReviewTotal ?? 0}) ` +
-        `threshold=${threshold} max_attempts=${MAX_RECONCILE_ATTEMPTS}`
-    );
+  for (const row of confirmedRows ?? []) {
+    const parsed = parseMessageSid(row.message_sid);
+    if (parsed.kind === 'campaign') {
+      await advanceEnrollmentAfterConfirmedSend(
+        supabase,
+        parsed.enrollmentId,
+        parsed.campaignId,
+        parsed.stepNumber
+      );
+    }
   }
 
   return {
-    unknownCount,
-    stuckSendingCount,
-    requeued,
-    confirmed,
-    parked,
-    needsReview,
-    alert,
+    ...base,
+    requeued: base.requeued + extraRequeued,
   };
-}
-
-async function bumpReconcileAttempt(
-  supabase: Supabase,
-  rowId: string,
-  attempts: number,
-  mode: 'park' | 'needs_review'
-): Promise<void> {
-  const next = attempts + 1;
-  await supabase
-    .from('sms_messages')
-    .update({
-      reconcile_attempts: next,
-      status: mode === 'needs_review' ? 'needs_review' : 'unknown',
-    })
-    .eq('id', rowId);
 }
 
 async function getRecoverySendState(
   supabase: Supabase,
   leadId: string
 ): Promise<'confirmed' | 'pending' | 'absent' | 'abandoned'> {
-  const sid = recoveryMessageSid(leadId);
-  const { data } = await supabase
-    .from('sms_messages')
-    .select('status')
-    .eq('message_sid', sid)
-    .maybeSingle();
-  return classifyRecoverySmsStatus(data?.status);
+  const outcome = await resolveRecoveryOutcome(supabase, leadId);
+  if (outcome === 'resolved_sent') return 'confirmed';
+  if (outcome === 'resolved_abandoned') return 'abandoned';
+  if (outcome === 'pending') return 'pending';
+  return 'absent';
 }
 
 /**
@@ -1242,7 +1017,7 @@ async function requeueExactCampaignStep(
     .eq('id', enrollmentId)
     .eq('status', 'active')
     .eq('campaign_id', campaignId)
-    .select('id');
+    .select(ENROLLMENT_CLAIM_SELECT);
 
   if (error || !data?.length) {
     console.warn(
@@ -1270,11 +1045,10 @@ export async function processDueCampaigns(): Promise<{
 }> {
   const adapter = getMessagingAdapter();
 
-  // Probe GET /api/capabilities (relay >= 1.7.6). Without idempotency:true,
-  // never_sent must not requeue (rows stay needs_review).
+  // Caps probe + reconcile both live inside the send module.
   let relayLookupSupported: boolean | undefined;
   if (adapter.checkLookupSupport) {
-    const support = await warnIfRelayLookupUnsupported(adapter);
+    const support = await adapter.checkLookupSupport();
     relayLookupSupported = support.supported;
   }
 

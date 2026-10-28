@@ -145,12 +145,13 @@ describe('QC r4 #3 — park attempts → needs_review', () => {
 });
 
 describe('QC r4 #5 — quiet hours coverage', () => {
-  it('808 is Hawaii; FL 239/850; OK 572', () => {
+  it('808 is Hawaii; FL 239; 850 is ET+CT; OK 572', () => {
     expect(resolveLeadTimezones({ callerPhoneE164: '+18085551234' }).zones).toEqual([
       'Pacific/Honolulu',
     ]);
     expect(quietEndHourForPhone('+12395551234')).toBe(20);
     expect(resolveLeadTimezones({ callerPhoneE164: '+18505551234' }).zones).toEqual([
+      'America/New_York',
       'America/Chicago',
     ]);
     expect(quietEndHourForPhone('+15725551234')).toBe(20);
@@ -164,9 +165,10 @@ describe('QC r4 #5 — quiet hours coverage', () => {
     expect(next.toISOString()).toBe('2026-07-01T12:00:00.000Z');
   });
 
-  it('unresolved when no valid timezone', () => {
+  it('unmapped is unresolved even with business TZ', () => {
     const d = deferUntilQuietHoursOpen(new Date(), {
-      businessTimezone: 'Not/AZone',
+      callerPhoneE164: '+19995551234',
+      businessTimezone: 'America/New_York',
     });
     expect(d.allowed).toBe(false);
     if (!d.allowed) expect(d.unresolved).toBe(true);
@@ -193,15 +195,16 @@ describe('QC r4 #6 — opt-out attack surface', () => {
   });
 });
 
-describe('QC r4 minor — GSM-7 segment budget', () => {
-  it('every template + STOP fits one GSM-7 segment for short business names', () => {
+describe('QC r4 minor — templates keep STOP footer (no silent GSM rewrite)', () => {
+  it('every template includes STOP footer', () => {
     for (const key of Object.keys(ALL_TEMPLATES)) {
       const body = getTemplate(key, {
         business: 'Acme',
         name: '',
         issue: '',
       });
-      expect(smsSegmentCount(body), key).toBe(1);
+      expect(body).toContain('Reply STOP to opt out.');
+      expect(smsSegmentCount(body), key).toBeGreaterThanOrEqual(1);
     }
   });
 });

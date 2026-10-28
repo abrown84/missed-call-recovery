@@ -15,7 +15,9 @@ type ChatMessage = {
 const DEFAULT_MODEL = 'gemini-3.8-flash';
 /** Floor for JSON classification so thinking / preamble doesn't truncate the payload. */
 const MIN_JSON_OUTPUT_TOKENS = 1024;
-const DEFAULT_GATEWAY_URL = 'https://brwnindustries.com/labs/one-gateway';
+/** Production-only default — never used when ONE_GATEWAY_URL is unset outside prod. */
+export const PRODUCTION_DEFAULT_GATEWAY_URL =
+  'https://brwnindustries.com/labs/one-gateway';
 const DEFAULT_AGENT_ID = 'main';
 const DEFAULT_TIMEOUT_MS = 45_000;
 
@@ -39,12 +41,36 @@ type LegacyGenerateContentRequest = {
   generationConfig?: LegacyGenerationConfig;
 };
 
-/** Validate and normalize a One Gateway base URL (exported for unit tests). */
-export function resolveGatewayUrl(rawInput?: string): string {
-  const raw = rawInput?.trim() || DEFAULT_GATEWAY_URL;
+/**
+ * Validate and normalize a One Gateway base URL.
+ * - Unset outside production → throw (fail closed; no live call).
+ * - Unset in production → throw (must set ONE_GATEWAY_URL explicitly).
+ * `PRODUCTION_DEFAULT_GATEWAY_URL` is documentation-only — never auto-used.
+ */
+export function resolveGatewayUrl(
+  rawInput?: string,
+  opts: { isProduction?: boolean } = {}
+): string {
+  const isProduction =
+    opts.isProduction ??
+    (process.env.VERCEL_ENV === 'production' ||
+      process.env.NODE_ENV === 'production');
+  const raw = rawInput?.trim();
+  if (!raw) {
+    if (isProduction) {
+      throw new Error(
+        'ONE_GATEWAY_URL is unset in production — set it explicitly ' +
+          `(e.g. ${PRODUCTION_DEFAULT_GATEWAY_URL}); refusing implicit live call`
+      );
+    }
+    throw new Error(
+      'ONE_GATEWAY_URL is unset — refusing external call outside production (fail closed)'
+    );
+  }
+  const effective = raw;
   let url: URL;
   try {
-    url = new URL(raw);
+    url = new URL(effective);
   } catch {
     throw new Error('Invalid ONE_GATEWAY_URL: not a valid URL');
   }

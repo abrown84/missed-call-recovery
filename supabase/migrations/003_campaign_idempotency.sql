@@ -1,16 +1,16 @@
 -- Campaign idempotency, reclaimable claims, opt-out, unique message_sid
--- QC r3 + r4: STOP-safe backfill, E.164 merge, reconcile attempts, human review.
+-- QC r5: STOP backfill uses app-equivalent normalizer; NO business merge-delete.
 --
--- MAINTENANCE NOTE:
--- CREATE UNIQUE INDEX CONCURRENTLY cannot run inside a transaction block.
--- This migration runs in a single transaction with blocking index builds.
--- Rollback: see 003_campaign_idempotency_rollback.sql
---   (archives sms_suppressions — does NOT drop suppression data)
+-- Phone collisions after E.164 normalize must be resolved with the separate
+-- ABORT-ONLY script: supabase/migrations/003_phone_collision_abort.sql
+-- That script lists collisions and raises — it never merges or deletes businesses.
+--
+-- Rollback: 003_campaign_idempotency_rollback.sql
 
 BEGIN;
 
 -- ---------------------------------------------------------------------------
--- 0) Ensure suppression table exists BEFORE backfill / phone normalize
+-- 0) Ensure suppression table + lead/sms columns
 -- ---------------------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS sms_suppressions (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -41,20 +41,20 @@ ALTER TABLE leads
 ALTER TABLE leads
   ADD COLUMN IF NOT EXISTS needs_human_review_reason TEXT;
 
--- Reconcile attempt tracking on sms_messages
+-- Optional per-lead IANA timezone (TCPA); when set, quiet-hours uses it.
+ALTER TABLE leads
+  ADD COLUMN IF NOT EXISTS timezone TEXT;
+
 ALTER TABLE sms_messages
   ADD COLUMN IF NOT EXISTS reconcile_attempts INTEGER NOT NULL DEFAULT 0;
 
--- True only when BOTH were true for this send (relay >= 1.7.6):
---   1) GET /api/capabilities returned idempotency:true *before* the send
---   2) the send response echoed idempotencyKey
--- Pre-upgrade / rollback rows stay false → found:false goes to needs_review.
 ALTER TABLE sms_messages
   ADD COLUMN IF NOT EXISTS key_supported_at_send BOOLEAN NOT NULL DEFAULT false;
 
 -- ---------------------------------------------------------------------------
--- 1) BACKFILL suppressions from STOP inbound FIRST (before any sms dedupe)
---    Uses app-equivalent whole-message tokens (upper + btrim).
+-- 1) STOP backfill — same normalizer shape as src/services/opt-out.ts
+--    NFKC → trim → strip trailing ?!.,… → collapse whitespace → UPPER
+--    Also matches spaceless compact form (S T O P → STOP).
 -- ---------------------------------------------------------------------------
 INSERT INTO sms_suppressions (business_id, phone, reason)
 SELECT DISTINCT ON (l.business_id, l.caller_phone)
@@ -64,18 +64,59 @@ SELECT DISTINCT ON (l.business_id, l.caller_phone)
 FROM sms_messages m
 JOIN leads l ON l.id = m.lead_id
 WHERE m.direction = 'inbound'
-  AND upper(btrim(m.body)) IN (
-    'STOP', 'STOPALL', 'STOP ALL', 'UNSUBSCRIBE', 'QUIT', 'END', 'CANCEL',
-    'OPTOUT', 'OPT OUT', 'OPT-OUT', 'REVOKE',
-    'DON''T TEXT ME AGAIN', 'DONT TEXT ME AGAIN', 'DO NOT TEXT ME AGAIN',
-    'PLEASE STOP', 'STOP PLEASE', 'STOP IT', 'UNSUBSCRIBE ME', 'CANCEL PLEASE',
-    'LEAVE ME ALONE', 'STOP TEXTING ME', 'STOP MESSAGING ME',
-    'STOP?', '"STOP"', '''STOP'''
+  AND (
+    -- Normalized form (app normalizeOptOutText approximation)
+    upper(
+      btrim(
+        regexp_replace(
+          regexp_replace(
+            normalize(btrim(m.body), NFKC),
+            '[?!.,…]+$',
+            ''
+          ),
+          '\s+',
+          ' ',
+          'g'
+        )
+      )
+    ) IN (
+      'STOP', 'STOPALL', 'STOP ALL', 'STOP STOP',
+      'UNSUBSCRIBE', 'QUIT', 'END', 'CANCEL',
+      'OPTOUT', 'OPT OUT', 'OPT-OUT', 'REVOKE',
+      'DON''T TEXT ME AGAIN', 'DONT TEXT ME AGAIN', 'DO NOT TEXT ME AGAIN',
+      'PLEASE STOP', 'STOP PLEASE', 'STOP IT',
+      'UNSUBSCRIBE ME', 'CANCEL PLEASE', 'LEAVE ME ALONE',
+      'STOP TEXTING ME', 'STOP MESSAGING ME',
+      'PLEASE STOP TEXTING ME'
+    )
+    OR
+    -- Compact (spaceless) form: 'S T O P', 'STOP STOP'
+    replace(
+      upper(
+        btrim(
+          regexp_replace(
+            regexp_replace(
+              normalize(btrim(m.body), NFKC),
+              '[?!.,…]+$',
+              ''
+            ),
+            '\s+',
+            ' ',
+            'g'
+          )
+        )
+      ),
+      ' ',
+      ''
+    ) IN (
+      'STOP', 'STOPALL', 'STOPSTOP', 'UNSUBSCRIBE', 'QUIT', 'END',
+      'CANCEL', 'OPTOUT', 'REVOKE'
+    )
   )
 ON CONFLICT (business_id, phone) DO NOTHING;
 
 -- ---------------------------------------------------------------------------
--- 2) Normalize phones to E.164 BEFORE unique indexes / merges
+-- 2) Normalize phones to E.164 (UPDATE only — never merge/delete businesses)
 -- ---------------------------------------------------------------------------
 UPDATE leads
 SET caller_phone = CASE
@@ -113,54 +154,37 @@ END
 WHERE phone IS NOT NULL
   AND phone !~ '^\+1[0-9]{10}$';
 
--- Merge duplicate suppressions that collide after E.164 normalize
-DELETE FROM sms_suppressions s
-WHERE s.ctid IN (
-  SELECT ctid FROM (
-    SELECT ctid,
-           ROW_NUMBER() OVER (
-             PARTITION BY business_id, phone
-             ORDER BY created_at ASC NULLS LAST, id ASC
-           ) AS rn
-    FROM sms_suppressions
-  ) ranked
-  WHERE rn > 1
-);
-
--- Merge duplicate businesses that collide on phone after normalize:
--- keep the oldest, re-point children, then delete extras.
+-- Abort if normalize created collisions (ops must run abort script / fix data).
+-- Does NOT merge or delete businesses.
 DO $$
 DECLARE
-  r RECORD;
-  keeper UUID;
+  biz_list TEXT;
+  sup_list TEXT;
+  biz_n INTEGER;
+  sup_n INTEGER;
 BEGIN
-  FOR r IN
-    SELECT phone FROM businesses
+  SELECT COUNT(*), string_agg(phone || ' (n=' || cnt || ')', ', ')
+    INTO biz_n, biz_list
+  FROM (
+    SELECT phone, COUNT(*)::text AS cnt FROM businesses
     GROUP BY phone HAVING COUNT(*) > 1
-  LOOP
-    SELECT id INTO keeper FROM businesses
-    WHERE phone = r.phone
-    ORDER BY created_at ASC NULLS LAST, id ASC
-    LIMIT 1;
+  ) d;
 
-    UPDATE leads SET business_id = keeper
-    WHERE business_id IN (SELECT id FROM businesses WHERE phone = r.phone AND id <> keeper);
+  SELECT COUNT(*), string_agg(business_id::text || '/' || phone, ', ')
+    INTO sup_n, sup_list
+  FROM (
+    SELECT business_id, phone FROM sms_suppressions
+    GROUP BY business_id, phone HAVING COUNT(*) > 1
+  ) d;
 
-    UPDATE missed_calls SET business_id = keeper
-    WHERE business_id IN (SELECT id FROM businesses WHERE phone = r.phone AND id <> keeper);
-
-    UPDATE sms_suppressions SET business_id = keeper
-    WHERE business_id IN (SELECT id FROM businesses WHERE phone = r.phone AND id <> keeper)
-      AND NOT EXISTS (
-        SELECT 1 FROM sms_suppressions x
-        WHERE x.business_id = keeper AND x.phone = sms_suppressions.phone
-      );
-
-    DELETE FROM sms_suppressions
-    WHERE business_id IN (SELECT id FROM businesses WHERE phone = r.phone AND id <> keeper);
-
-    DELETE FROM businesses WHERE phone = r.phone AND id <> keeper;
-  END LOOP;
+  IF biz_n > 0 OR COALESCE(sup_n, 0) > 0 THEN
+    RAISE EXCEPTION
+      'Phone collisions after E.164 normalize — refuse to continue. '
+      'Business phones: %. Suppression keys: %. '
+      'Run 003_phone_collision_abort.sql for the full listing; resolve manually (no auto-merge).',
+      COALESCE(biz_list, '(none)'),
+      COALESCE(sup_list, '(none)');
+  END IF;
 END $$;
 
 -- Mark leads opted_out from suppressions (after phone normalize)
@@ -177,7 +201,7 @@ WHERE EXISTS (
 AND l.opted_out IS DISTINCT FROM true;
 
 -- ---------------------------------------------------------------------------
--- 3) Dedupe enrollments: prefer active; NULL enrolled_at/created_at sort LAST
+-- 3) Dedupe enrollments + sms_messages (not businesses)
 -- ---------------------------------------------------------------------------
 DELETE FROM campaign_enrollments ce
 WHERE ce.ctid IN (
@@ -195,7 +219,6 @@ WHERE ce.ctid IN (
   WHERE rn > 1
 );
 
--- Dedupe sms_messages by sid: prefer keeping inbound STOP bodies, then oldest
 DELETE FROM sms_messages sm
 WHERE sm.ctid IN (
   SELECT ctid FROM (
@@ -203,15 +226,7 @@ WHERE sm.ctid IN (
            ROW_NUMBER() OVER (
              PARTITION BY message_sid
              ORDER BY
-               CASE
-                 WHEN direction = 'inbound'
-                  AND upper(btrim(body)) IN (
-                    'STOP','STOPALL','STOP ALL','UNSUBSCRIBE','QUIT','END','CANCEL',
-                    'OPTOUT','OPT OUT','OPT-OUT','REVOKE','PLEASE STOP','STOP PLEASE',
-                    'STOP IT','UNSUBSCRIBE ME','CANCEL PLEASE','LEAVE ME ALONE'
-                  ) THEN 0
-                 ELSE 1
-               END,
+               CASE WHEN direction = 'inbound' THEN 0 ELSE 1 END,
                sent_at ASC NULLS LAST,
                id ASC
            ) AS rn
@@ -220,12 +235,10 @@ WHERE sm.ctid IN (
   WHERE rn > 1
 );
 
--- Preflight: refuse if duplicates remain
 DO $$
 DECLARE
   dup_leads INTEGER;
   dup_sids INTEGER;
-  dup_biz INTEGER;
 BEGIN
   SELECT COUNT(*) INTO dup_leads FROM (
     SELECT lead_id FROM campaign_enrollments
@@ -245,15 +258,6 @@ BEGIN
     RAISE EXCEPTION
       'Preflight failed: % duplicate message_sid value(s) remain after dedupe.',
       dup_sids;
-  END IF;
-
-  SELECT COUNT(*) INTO dup_biz FROM (
-    SELECT phone FROM businesses GROUP BY phone HAVING COUNT(*) > 1
-  ) d;
-  IF dup_biz > 0 THEN
-    RAISE EXCEPTION
-      'Preflight failed: % duplicate business phone(s) remain after merge.',
-      dup_biz;
   END IF;
 END $$;
 
@@ -276,7 +280,6 @@ CREATE INDEX IF NOT EXISTS idx_enrollments_claimed_at
 CREATE UNIQUE INDEX IF NOT EXISTS uq_sms_messages_message_sid
   ON sms_messages (message_sid);
 
-CREATE UNIQUE INDEX IF NOT EXISTS uq_businesses_phone
-  ON businesses (phone);
+-- businesses.phone already UNIQUE in schema.sql; do not merge to satisfy it.
 
 COMMIT;

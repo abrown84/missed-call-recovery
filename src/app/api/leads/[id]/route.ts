@@ -2,8 +2,8 @@ import { NextRequest, NextResponse } from 'next/server';
 import { z } from 'zod';
 import { createServerClient } from '@/lib/supabase';
 import { requireApiUser } from '@/lib/auth-api';
-import { getMessagingAdapter } from '@/lib/messaging';
 import { redactId, redactPhone } from '@/lib/pii';
+import { sendMessage } from '@/services/send';
 
 export const dynamic = 'force-dynamic';
 
@@ -126,6 +126,7 @@ export async function PATCH(
 async function handleManualEscalation(
   lead: {
     id: string;
+    business_id: string;
     caller_phone: string;
     urgency: string | null;
     issue: string | null;
@@ -149,9 +150,13 @@ async function handleManualEscalation(
     `Escalated by user - call back ASAP!`,
   ].join('\n');
 
-  await getMessagingAdapter().sendMessage({
+  await sendMessage({
+    kind: 'manual',
+    leadId: lead.id,
+    businessId: lead.business_id,
     to: escalationPhone,
     body: message,
+    skipQuietHours: true,
     auto: true,
   });
 

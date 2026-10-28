@@ -105,6 +105,7 @@ export interface Database {
           needs_human_review: boolean;
           needs_human_review_at: string | null;
           needs_human_review_reason: string | null;
+          timezone: string | null;
           created_at: string;
           updated_at: string;
         };
@@ -127,6 +128,7 @@ export interface Database {
           needs_human_review?: boolean;
           needs_human_review_at?: string | null;
           needs_human_review_reason?: string | null;
+          timezone?: string | null;
           created_at?: string;
           updated_at?: string;
         };
@@ -149,6 +151,7 @@ export interface Database {
           needs_human_review?: boolean;
           needs_human_review_at?: string | null;
           needs_human_review_reason?: string | null;
+          timezone?: string | null;
           created_at?: string;
           updated_at?: string;
         };

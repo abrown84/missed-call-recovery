@@ -28,8 +28,8 @@ export interface SendMessageResult {
   /** Relay returned 200 with duplicate:true for this idempotencyKey. */
   duplicate?: boolean;
   /**
-   * Keyed send hit 429 { error: 'recent_send' } — treat as unknown
-   * (park + reconcile), not a hard failure.
+   * Keyed send hit 429 { error: 'recent_send' } or 503 { error: 'maintenance' }
+   * — treat as unknown (park + reconcile), never a hard failure.
    */
   ambiguous?: boolean;
   /**

@@ -97,7 +97,7 @@ function chainable(result: { data: unknown; error: unknown }) {
   return obj;
 }
 
-describe('enrollLeadInCampaign Standard at missed-call', () => {
+describe('enrollLeadInCampaign after urgency is set', () => {
   beforeEach(() => {
     mockFrom.mockReset();
     mockSendMessage.mockReset();
@@ -108,7 +108,7 @@ describe('enrollLeadInCampaign Standard at missed-call', () => {
   it('enrolls Standard skipping initial when recovery already sent', async () => {
     const lead = {
       id: 'lead-1',
-      urgency: null,
+      urgency: 'normal',
       opted_out: false,
       sms_outbound_sid: 'recovery:lead-1',
       businesses: { id: 'biz-1', name: 'Acme' },

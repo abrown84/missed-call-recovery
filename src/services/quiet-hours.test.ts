@@ -13,7 +13,7 @@ import {
 } from './quiet-hours';
 
 describe('quiet hours timezone resolution', () => {
-  it('prefers lead timezone, then area code, then business', () => {
+  it('prefers lead timezone, then area code; never business fallback', () => {
     expect(
       resolveLeadTimezone({
         leadTimezone: 'America/Denver',
@@ -29,16 +29,18 @@ describe('quiet hours timezone resolution', () => {
       }).zones
     ).toEqual(['America/New_York']);
 
+    // Unmapped / no phone → unresolved (empty). Deprecated helper may default.
     expect(
-      resolveLeadTimezone({ businessTimezone: 'America/Chicago' })
-    ).toBe('America/Chicago');
+      resolveLeadTimezones({ businessTimezone: 'America/Chicago' }).zones
+    ).toEqual([]);
   });
 
-  it('uses 8pm end for FL (incl. 239) and OK (incl. 572); 850 is Central', () => {
+  it('uses 8pm end for FL/OK; 850 is Eastern AND Central', () => {
     expect(quietEndHourForPhone('+13055551234')).toBe(QUIET_END_HOUR_FL_OK);
     expect(quietEndHourForPhone('+12395551234')).toBe(QUIET_END_HOUR_FL_OK);
     expect(quietEndHourForPhone('+15725551234')).toBe(QUIET_END_HOUR_FL_OK);
     expect(resolveLeadTimezones({ callerPhoneE164: '+18505551234' }).zones).toEqual([
+      'America/New_York',
       'America/Chicago',
     ]);
     expect(quietEndHourForPhone('+12125551234')).toBe(QUIET_END_HOUR_DEFAULT);
@@ -47,6 +49,7 @@ describe('quiet hours timezone resolution', () => {
     ]);
   });
 });
+
 
 describe('quiet hours window edges', () => {
   const tz = 'America/New_York';
