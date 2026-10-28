@@ -261,3 +261,38 @@ export function interpretRecoverySendOutcome(
   }
   return { type: 'log_blocked', reason: 'unexpected' };
 }
+
+export type DeferredRowAction =
+  | { type: 'count_sent' }
+  | { type: 're_defer'; nextSendAt: string }
+  | { type: 'abandon' }
+  | { type: 'count_parked' }
+  | { type: 'ignore' };
+
+/**
+ * Pure interpretation of a sendMessage outcome while draining deferred recoveries.
+ */
+export function interpretDeferredRowOutcome(
+  outcome: SendOutcome,
+  fallbackDeferIso: string
+): DeferredRowAction {
+  if (
+    outcome.kind === 'blocked' &&
+    outcome.reason === 'quiet_hours_deferred'
+  ) {
+    return {
+      type: 're_defer',
+      nextSendAt: outcome.nextSendAt ?? fallbackDeferIso,
+    };
+  }
+  if (outcome.kind === 'sent') {
+    return { type: 'count_sent' };
+  }
+  if (outcome.kind === 'blocked' || outcome.kind === 'skipped') {
+    return { type: 'abandon' };
+  }
+  if (outcome.kind === 'ambiguous' || outcome.kind === 'needs_review') {
+    return { type: 'count_parked' };
+  }
+  return { type: 'ignore' };
+}

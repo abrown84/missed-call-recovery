@@ -295,4 +295,182 @@ describe('campaigns more DI coverage', () => {
     expect(r.processed).toBe(0);
     expect(r.messagingProvider).toBe('mock');
   });
+
+  it('enrollLeadInCampaign success (Standard, recovery absent)', async () => {
+    const eqCalls: unknown[][] = [];
+    mockFrom.mockImplementation((table: string) => {
+      if (table === 'leads') {
+        return chainable({
+          data: {
+            id: 'L',
+            opted_out: false,
+            urgency: null,
+            sms_outbound_sid: null,
+            businesses: { id: 'B', name: 'Acme' },
+          },
+          error: null,
+        });
+      }
+      if (table === 'campaign_enrollments') {
+        const b = chainable({ data: null, error: null });
+        b.insert = vi.fn(() => chainable({ data: { id: 'e' }, error: null }));
+        b.eq = vi.fn((...args: unknown[]) => {
+          eqCalls.push(args);
+          return b;
+        });
+        return b;
+      }
+      if (table === 'campaigns') {
+        return chainable({
+          data: [
+            {
+              id: 'C',
+              name: 'Standard',
+              urgency_filter: null,
+              status: 'active',
+              auto_enroll: true,
+              campaign_steps: [
+                {
+                  id: 's1',
+                  step_number: 1,
+                  delay_minutes: 0,
+                  template_key: 't1',
+                },
+                {
+                  id: 's2',
+                  step_number: 2,
+                  delay_minutes: 60,
+                  template_key: 't2',
+                },
+              ],
+            },
+          ],
+          error: null,
+        });
+      }
+      if (table === 'sms_messages') {
+        return chainable({ data: null, error: null });
+      }
+      return chainable({ data: null, error: null });
+    });
+    const r = await enrollLeadInCampaign('L');
+    expect(r.enrolled).toBe(true);
+    if (r.enrolled) {
+      expect(r.campaignName).toBe('Standard');
+      expect(r.currentStep).toBe(1);
+    }
+  });
+
+  it('enrollLeadInCampaign: lead_not_found / no_steps / unique race', async () => {
+    mockFrom.mockImplementation((table: string) => {
+      if (table === 'leads') {
+        return chainable({ data: null, error: { message: 'missing' } });
+      }
+      if (table === 'campaign_enrollments') {
+        return chainable({ data: null, error: null });
+      }
+      return chainable({ data: null, error: null });
+    });
+    await expect(enrollLeadInCampaign('L')).resolves.toEqual({
+      enrolled: false,
+      reason: 'lead_not_found',
+    });
+
+    mockFrom.mockImplementation((table: string) => {
+      if (table === 'leads') {
+        return chainable({
+          data: {
+            id: 'L',
+            opted_out: false,
+            urgency: null,
+            sms_outbound_sid: null,
+            businesses: {},
+          },
+          error: null,
+        });
+      }
+      if (table === 'campaign_enrollments') {
+        return chainable({ data: null, error: null });
+      }
+      if (table === 'campaigns') {
+        return chainable({
+          data: [
+            {
+              id: 'C',
+              name: 'Standard',
+              urgency_filter: null,
+              campaign_steps: [],
+            },
+          ],
+          error: null,
+        });
+      }
+      return chainable({ data: null, error: null });
+    });
+    await expect(enrollLeadInCampaign('L')).resolves.toEqual({
+      enrolled: false,
+      reason: 'no_steps',
+    });
+
+    mockFrom.mockImplementation((table: string) => {
+      if (table === 'leads') {
+        return chainable({
+          data: {
+            id: 'L',
+            opted_out: false,
+            urgency: null,
+            sms_outbound_sid: null,
+            businesses: {},
+          },
+          error: null,
+        });
+      }
+      if (table === 'campaign_enrollments') {
+        const b = chainable({ data: null, error: null });
+        b.insert = vi.fn(() =>
+          chainable({ data: null, error: { code: '23505', message: 'dup' } })
+        );
+        return b;
+      }
+      if (table === 'campaigns') {
+        return chainable({
+          data: [
+            {
+              id: 'C',
+              name: 'Standard',
+              urgency_filter: null,
+              campaign_steps: [
+                { step_number: 1, delay_minutes: 0, template_key: 't' },
+              ],
+            },
+          ],
+          error: null,
+        });
+      }
+      if (table === 'sms_messages') {
+        return chainable({ data: null, error: null });
+      }
+      return chainable({ data: null, error: null });
+    });
+    await expect(enrollLeadInCampaign('L')).resolves.toEqual({
+      enrolled: false,
+      reason: 'already_enrolled:unique',
+    });
+  });
+
+  it('listClaimableEnrollmentIds merges due + stale and respects limit', async () => {
+    let calls = 0;
+    mockFrom.mockImplementation(() => {
+      calls += 1;
+      // First query = due, second = stale
+      const data =
+        calls === 1
+          ? [{ id: 'due1' }, { id: 'due2' }]
+          : [{ id: 'stale1' }, { id: 'due1' }];
+      return chainable({ data, error: null });
+    });
+    const ids = await listClaimableEnrollmentIds(2);
+    expect(ids).toHaveLength(2);
+    expect(ids).toContain('due1');
+  });
 });

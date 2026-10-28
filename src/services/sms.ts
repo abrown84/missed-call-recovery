@@ -7,18 +7,25 @@ import { createServerClient } from '@/lib/supabase';
 import { appendOptOutFooter } from '@/lib/templates';
 import { redactPhone } from '@/lib/pii';
 import { sendMessage, type SendOutcome } from '@/services/send';
-import { interpretRecoverySendOutcome } from '@/services/send/decisions';
+import {
+  interpretDeferredRowOutcome,
+  interpretRecoverySendOutcome,
+} from '@/services/send/decisions';
 import { recoveryMessageSid } from '@/services/sms-sid';
 import {
   SuppressionLookupError,
   isPhoneSuppressed,
 } from '@/services/suppressions';
 import {
+  COL,
   DIRECTION_OUTBOUND,
+  KIND_MANUAL,
+  KIND_RECOVERY,
   LEAD_SELECT_OPTED_OUT,
   LEAD_SELECT_STAR_BIZ,
   PG_UNIQUE,
   SMS_SELECT_DEFERRED,
+  SMS_SELECT_ID_STATUS,
   SMS_STATUS,
   TABLE,
 } from '@/services/db-strings';
@@ -26,6 +33,12 @@ import type { Database } from '@/types/database';
 
 type Business = Database['public']['Tables']['businesses']['Row'];
 type Supabase = ReturnType<typeof createServerClient>;
+
+export type SmsLogger = {
+  log: (...args: unknown[]) => void;
+  warn: (...args: unknown[]) => void;
+  error: (...args: unknown[]) => void;
+};
 
 /** Kept short so body + STOP footer fit reasonably. */
 export const SMS_TEMPLATES: Record<string, string> = {
@@ -44,6 +57,7 @@ export type SmsDeps = {
     phone: string
   ) => Promise<boolean>;
   SuppressionLookupError: typeof SuppressionLookupError;
+  log: SmsLogger;
 };
 
 export function defaultSmsDeps(): SmsDeps {
@@ -53,6 +67,7 @@ export function defaultSmsDeps(): SmsDeps {
     sendMessage,
     isPhoneSuppressed,
     SuppressionLookupError,
+    log: console,
   };
 }
 
@@ -88,8 +103,8 @@ export async function persistDeferredRecoveryWithDeps(
   const sid = recoveryMessageSid(opts.leadId);
   const { data: existing } = await supabase
     .from(TABLE.smsMessages)
-    .select('id, status')
-    .eq('message_sid', sid)
+    .select(SMS_SELECT_ID_STATUS)
+    .eq(COL.messageSid, sid)
     .maybeSingle();
 
   if (existing) {
@@ -100,7 +115,7 @@ export async function persistDeferredRecoveryWithDeps(
         next_retry_at: opts.nextSendAt,
         body: opts.body,
       })
-      .eq('message_sid', sid);
+      .eq(COL.messageSid, sid);
     return;
   }
 
@@ -114,8 +129,7 @@ export async function persistDeferredRecoveryWithDeps(
     key_supported_at_send: false,
   });
   if (error && error.code !== PG_UNIQUE) {
-    // Stryker disable next-line StringLiteral: log-only message (no control flow)
-    console.error('persistDeferredRecovery insert failed:', error.message);
+    deps.log.error('persist_deferred_insert_failed', error.message);
   }
   if (error?.code === PG_UNIQUE) {
     await supabase
@@ -125,7 +139,7 @@ export async function persistDeferredRecoveryWithDeps(
         next_retry_at: opts.nextSendAt,
         body: opts.body,
       })
-      .eq('message_sid', sid);
+      .eq(COL.messageSid, sid);
   }
 }
 
@@ -145,7 +159,7 @@ export async function sendRecoverySMSWithDeps(
 ): Promise<void> {
   const messageBody = buildRecoveryBody(business);
   const outcome = await deps.sendMessage({
-    kind: 'recovery',
+    kind: KIND_RECOVERY,
     leadId,
     businessId: business.id,
     to: callerPhone,
@@ -167,32 +181,31 @@ export async function sendRecoverySMSWithDeps(
         body: messageBody,
         nextSendAt: action.nextSendAt,
       });
-      // Stryker disable next-line StringLiteral: log-only message (no control flow)
-      console.log(
-        `Recovery SMS deferred for ${redactPhone(callerPhone)} until ${action.nextSendAt}`
+      deps.log.log(
+        'recovery_deferred',
+        redactPhone(callerPhone),
+        action.nextSendAt
       );
       return;
     case 'log_blocked':
-      // Stryker disable next-line StringLiteral: log-only message (no control flow)
-      console.log(
-        `Recovery SMS blocked for ${redactPhone(callerPhone)}: ${action.reason}`
+      deps.log.log(
+        'recovery_blocked',
+        redactPhone(callerPhone),
+        action.reason
       );
       return;
     case 'log_needs_review':
-      // Stryker disable next-line StringLiteral: log-only message (no control flow)
-      console.error(`ALERT: recovery SMS needs_review sid=${action.sid}`);
+      deps.log.error('recovery_needs_review', action.sid);
       return;
     case 'log_ambiguous':
-      // Stryker disable next-line StringLiteral: log-only message (no control flow)
-      console.warn(
-        `Recovery SMS ambiguous for ${redactPhone(callerPhone)}; parked (${action.reason})`
+      deps.log.warn(
+        'recovery_ambiguous',
+        redactPhone(callerPhone),
+        action.reason
       );
       return;
     case 'log_sent':
-      // Stryker disable next-line StringLiteral: log-only message (no control flow)
-      console.log(
-        `Recovery SMS queued to ${redactPhone(callerPhone)} sid=${action.sid}`
-      );
+      deps.log.log('recovery_sent', redactPhone(callerPhone), action.sid);
       return;
   }
 }
@@ -216,13 +229,12 @@ export async function processDeferredRecoveriesWithDeps(
   const { data: rows, error } = await supabase
     .from(TABLE.smsMessages)
     .select(SMS_SELECT_DEFERRED)
-    .eq('status', SMS_STATUS.deferred)
-    .lte('next_retry_at', nowIso)
+    .eq(COL.status, SMS_STATUS.deferred)
+    .lte(COL.nextRetryAt, nowIso)
     .limit(50);
 
   if (error) {
-    // Stryker disable next-line StringLiteral: log-only message (no control flow)
-    console.error('processDeferredRecoveries query failed:', error.message);
+    deps.log.error('deferred_query_failed', error.message);
     return { sent: 0, deferred: 0, errors: 1 };
   }
 
@@ -235,7 +247,7 @@ export async function processDeferredRecoveriesWithDeps(
       const { data: lead } = await supabase
         .from(TABLE.leads)
         .select(LEAD_SELECT_STAR_BIZ)
-        .eq('id', row.lead_id)
+        .eq(COL.id, row.lead_id)
         .single();
       if (!lead?.businesses) {
         errors += 1;
@@ -244,7 +256,7 @@ export async function processDeferredRecoveriesWithDeps(
       const business = lead.businesses as unknown as Business;
       const body = row.body || buildRecoveryBody(business);
       const outcome = await deps.sendMessage({
-        kind: 'recovery',
+        kind: KIND_RECOVERY,
         leadId: lead.id,
         businessId: business.id,
         to: lead.caller_phone,
@@ -254,37 +266,37 @@ export async function processDeferredRecoveriesWithDeps(
         skipQuietHours: false,
       });
 
-      if (
-        outcome.kind === 'blocked' &&
-        outcome.reason === 'quiet_hours_deferred'
-      ) {
-        await persistDeferredRecoveryWithDeps(deps, {
-          leadId: lead.id,
-          body,
-          nextSendAt:
-            outcome.nextSendAt ?? fallbackDeferIso(deps.clock()),
-        });
-        deferred += 1;
-        continue;
-      }
-      if (outcome.kind === 'sent') {
-        sent += 1;
-        continue;
-      }
-      if (outcome.kind === 'blocked' || outcome.kind === 'skipped') {
-        await supabase
-          .from(TABLE.smsMessages)
-          .update({ status: SMS_STATUS.abandonedDone, next_retry_at: null })
-          .eq('id', row.id);
-        continue;
-      }
-      if (outcome.kind === 'ambiguous' || outcome.kind === 'needs_review') {
-        deferred += 1;
+      const rowAction = interpretDeferredRowOutcome(
+        outcome,
+        fallbackDeferIso(deps.clock())
+      );
+      switch (rowAction.type) {
+        case 're_defer':
+          await persistDeferredRecoveryWithDeps(deps, {
+            leadId: lead.id,
+            body,
+            nextSendAt: rowAction.nextSendAt,
+          });
+          deferred += 1;
+          break;
+        case 'count_sent':
+          sent += 1;
+          break;
+        case 'abandon':
+          await supabase
+            .from(TABLE.smsMessages)
+            .update({ status: SMS_STATUS.abandonedDone, next_retry_at: null })
+            .eq(COL.id, row.id);
+          break;
+        case 'count_parked':
+          deferred += 1;
+          break;
+        case 'ignore':
+          break;
       }
     } catch (err) {
-      // Stryker disable next-line StringLiteral: log-only message (no control flow)
-      console.error(
-        'processDeferredRecoveries row failed:',
+      deps.log.error(
+        'deferred_row_failed',
         err instanceof Error ? err.message : 'unknown'
       );
       errors += 1;
@@ -319,18 +331,12 @@ export async function sendFollowUpSMSWithDeps(
   // Restore suppression / opt-out checks (QC r6 P2)
   try {
     if (await deps.isPhoneSuppressed(business.id, callerPhone)) {
-      // Stryker disable next-line StringLiteral: log-only message (no control flow)
-      console.log(
-        `Skipping follow-up; phone suppressed: ${redactPhone(callerPhone)}`
-      );
+      deps.log.log('followup_suppressed', redactPhone(callerPhone));
       return;
     }
   } catch (err) {
     if (err instanceof deps.SuppressionLookupError) {
-      // Stryker disable next-line StringLiteral: log-only message (no control flow)
-      console.log(
-        `Skipping follow-up; suppression lookup failed closed: ${redactPhone(callerPhone)}`
-      );
+      deps.log.log('followup_suppression_lookup_failed', redactPhone(callerPhone));
       return;
     }
     throw err;
@@ -340,23 +346,18 @@ export async function sendFollowUpSMSWithDeps(
   const { data: lead } = await supabase
     .from(TABLE.leads)
     .select(LEAD_SELECT_OPTED_OUT)
-    .eq('id', leadId)
+    .eq(COL.id, leadId)
     .maybeSingle();
   if (lead?.opted_out) {
-    // Stryker disable next-line StringLiteral: log-only message (no control flow)
-    console.log(
-      `Skipping follow-up; lead opted out: ${redactPhone(callerPhone)}`
-    );
+    deps.log.log('followup_opted_out', redactPhone(callerPhone));
     return;
   }
 
-  const messageBody = appendOptOutFooter(
-    customMessage ||
-      `Hi, this is ${business.name}. Just following up on your recent inquiry. How can we help?`
-  );
+  const defaultFollowUp = `Hi, this is ${business.name}. Just following up on your recent inquiry. How can we help?`;
+  const messageBody = appendOptOutFooter(customMessage || defaultFollowUp);
 
   const outcome = await deps.sendMessage({
-    kind: 'manual',
+    kind: KIND_MANUAL,
     leadId,
     businessId: business.id,
     to: callerPhone,

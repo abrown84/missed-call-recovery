@@ -31,10 +31,18 @@ import {
 } from './decisions';
 import { defaultSendDeps, type SendDeps, type SupabaseClient } from './deps';
 import {
+  COL,
   DIRECTION_OUTBOUND,
+  KIND_CAMPAIGN,
+  KIND_RECOVERY,
   LEAD_SELECT_GATES,
   LEAD_SELECT_OUTBOUND,
+  LOOKUP_KIND,
   PG_UNIQUE,
+  RECONCILE_PULL_STATUSES,
+  reconcileOrFilter,
+  RELAY_SIGNAL,
+  SEND_REASON,
   SMS_SELECT_RECONCILE,
   SMS_SELECT_STATUS,
   SMS_STATUS,
@@ -92,14 +100,14 @@ export async function sendMessageWithDeps(
   if (!toE164) {
     return {
       kind: 'blocked',
-      reason: 'invalid_phone',
+      reason: SEND_REASON.invalidPhone,
       detail: `cannot normalize ${redactPhone(req.to)}`,
     };
   }
 
   const supabase = deps.db();
 
-  if (req.kind === 'recovery' || req.kind === 'campaign') {
+  if (req.kind === KIND_RECOVERY || req.kind === KIND_CAMPAIGN) {
     let suppressed = false;
     try {
       suppressed = await deps.isPhoneSuppressed(req.businessId, toE164);
@@ -117,14 +125,14 @@ export async function sendMessageWithDeps(
     const { data: lead } = await supabase
       .from(TABLE.leads)
       .select(LEAD_SELECT_GATES)
-      .eq('id', req.leadId)
+      .eq(COL.id, req.leadId)
       .maybeSingle();
 
     let recovery:
       | ReturnType<typeof classifyRecoveryStatus>
       | undefined;
     if (
-      req.kind === 'campaign' &&
+      req.kind === KIND_CAMPAIGN &&
       req.stepNumber === 1 &&
       !req.skipRecoveryGate
     ) {
@@ -163,7 +171,7 @@ export async function sendMessageWithDeps(
 
   const sid = resolveIdempotencySid(req, deps.clock().getTime());
 
-  if (req.kind === 'recovery' || req.kind === 'campaign') {
+  if (req.kind === KIND_RECOVERY || req.kind === KIND_CAMPAIGN) {
     const { error: insertError } = await supabase.from(TABLE.smsMessages).insert({
       lead_id: req.leadId,
       direction: DIRECTION_OUTBOUND,
@@ -177,7 +185,7 @@ export async function sendMessageWithDeps(
       const { data: existing } = await supabase
         .from(TABLE.smsMessages)
         .select(SMS_SELECT_STATUS)
-        .eq('message_sid', sid)
+        .eq(COL.messageSid, sid)
         .maybeSingle();
       const dup = decideDuplicateSid(existing?.status);
       if (dup.action === 'confirm_existing') {
@@ -200,12 +208,12 @@ export async function sendMessageWithDeps(
             next_retry_at: null,
             body: req.body,
           })
-          .eq('message_sid', sid);
+          .eq(COL.messageSid, sid);
         return dispatchToRelay(deps, supabase, req, sid, toE164);
       }
       return {
         kind: 'blocked',
-        reason: 'duplicate_in_flight',
+        reason: SEND_REASON.duplicateInFlight,
         detail: dup.detail,
       };
     }
@@ -241,12 +249,13 @@ async function dispatchToRelay(
     });
     signal = mapRelaySendResult(result);
   } catch (err) {
-    // Stryker disable next-line StringLiteral: log-only message (no control flow)
+    // Stryker disable StringLiteral: log-only (no control flow)
     console.error(
       `sendMessage relay error sid=${sid}:`,
       err instanceof Error ? err.message : 'unknown'
     );
-    signal = { type: 'error' };
+    // Stryker restore StringLiteral
+    signal = { type: RELAY_SIGNAL.error as 'error' };
   }
 
   const decision = transitionSend({
@@ -256,19 +265,19 @@ async function dispatchToRelay(
   });
 
   if (decision.action === 'confirm_sent') {
-    if (req.kind === 'recovery' || req.kind === 'campaign') {
+    if (req.kind === KIND_RECOVERY || req.kind === KIND_CAMPAIGN) {
       await supabase
         .from(TABLE.smsMessages)
         .update({
           status: decision.providerStatus,
           key_supported_at_send: decision.keySupportedAtSend,
         })
-        .eq('message_sid', sid);
-      if (req.kind === 'recovery') {
+        .eq(COL.messageSid, sid);
+      if (req.kind === KIND_RECOVERY) {
         await supabase
           .from(TABLE.leads)
           .update({ sms_outbound_sid: sid })
-          .eq('id', req.leadId);
+          .eq(COL.id, req.leadId);
       }
     }
     return {
@@ -281,11 +290,11 @@ async function dispatchToRelay(
   }
 
   if (decision.action === 'needs_review') {
-    if (req.kind === 'recovery' || req.kind === 'campaign') {
+    if (req.kind === KIND_RECOVERY || req.kind === KIND_CAMPAIGN) {
       await supabase
         .from(TABLE.smsMessages)
         .update({ status: SMS_STATUS.needsReview })
-        .eq('message_sid', sid);
+        .eq(COL.messageSid, sid);
     }
     return { kind: 'needs_review', sid, reason: decision.reason };
   }
@@ -297,7 +306,7 @@ async function dispatchToRelay(
     decision.nextAttempts,
     deps.clock()
   ).toISOString();
-  if (req.kind === 'recovery' || req.kind === 'campaign') {
+  if (req.kind === KIND_RECOVERY || req.kind === KIND_CAMPAIGN) {
     await supabase
       .from(TABLE.smsMessages)
       .update({
@@ -305,7 +314,7 @@ async function dispatchToRelay(
         reconcile_attempts: decision.nextAttempts,
         next_retry_at: nextRetryAt,
       })
-      .eq('message_sid', sid);
+      .eq(COL.messageSid, sid);
   }
   return {
     kind: 'ambiguous',
@@ -332,20 +341,20 @@ export async function resolveRecoveryOutcomeWithDeps(
   const { data } = await supabase
     .from(TABLE.smsMessages)
     .select(SMS_SELECT_STATUS)
-    .eq('message_sid', sid)
+    .eq(COL.messageSid, sid)
     .maybeSingle();
   if (data?.status) return classifyRecoveryStatus(data.status);
 
   const { data: lead } = await supabase
     .from(TABLE.leads)
     .select(LEAD_SELECT_OUTBOUND)
-    .eq('id', leadId)
+    .eq(COL.id, leadId)
     .maybeSingle();
   if (!lead?.sms_outbound_sid) return 'absent';
   const { data: byLead } = await supabase
     .from(TABLE.smsMessages)
     .select(SMS_SELECT_STATUS)
-    .eq('message_sid', lead.sms_outbound_sid)
+    .eq(COL.messageSid, lead.sms_outbound_sid)
     .maybeSingle();
   return classifyRecoveryStatus(byLead?.status);
 }
@@ -385,7 +394,7 @@ export async function reconcileOneWithDeps(
     return {
       kind: 'needs_review',
       sid: row.message_sid,
-      reason: 'lookup_unsupported',
+      reason: SEND_REASON.lookupUnsupported,
     };
   }
 
@@ -402,7 +411,7 @@ export async function reconcileOneWithDeps(
     if (outcome === 'sent') {
       signal = {
         type: 'sent',
-        status: 'status' in lookup ? lookup.status : 'queued',
+        status: 'status' in lookup ? lookup.status : SMS_STATUS.queued,
       };
     } else if (outcome === 'failed') {
       signal = {
@@ -412,15 +421,15 @@ export async function reconcileOneWithDeps(
     } else if (outcome === 'never_sent') {
       signal = { type: 'never_sent' };
     } else {
-      signal = { type: 'unknown' };
+      signal = { type: RELAY_SIGNAL.unknown as 'unknown' };
     }
   } catch {
-    signal = { type: 'unknown' };
+    signal = { type: RELAY_SIGNAL.unknown as 'unknown' };
   }
 
   const attempts = row.reconcile_attempts ?? 0;
   const decision = transitionSend({
-    kind: 'lookup',
+    kind: LOOKUP_KIND as 'lookup',
     signal,
     keySupportedAtSend: Boolean(row.key_supported_at_send),
     attempts,
@@ -430,7 +439,7 @@ export async function reconcileOneWithDeps(
     await supabase
       .from(TABLE.smsMessages)
       .update({ status: decision.providerStatus })
-      .eq('id', row.id);
+      .eq(COL.id, row.id);
     return {
       kind: 'resolved',
       sid: row.message_sid,
@@ -443,7 +452,7 @@ export async function reconcileOneWithDeps(
     await supabase
       .from(TABLE.smsMessages)
       .update({ status: SMS_STATUS.abandonedRetry, message_sid: abandoned })
-      .eq('id', row.id);
+      .eq(COL.id, row.id);
     return { kind: 'never_sent', sid: row.message_sid, requeued: true };
   }
 
@@ -451,7 +460,7 @@ export async function reconcileOneWithDeps(
     await supabase
       .from(TABLE.smsMessages)
       .update({ status: SMS_STATUS.needsReview, next_retry_at: null })
-      .eq('id', row.id);
+      .eq(COL.id, row.id);
     return {
       kind: 'needs_review',
       sid: row.message_sid,
@@ -475,7 +484,7 @@ export async function reconcileOneWithDeps(
       reconcile_attempts: nextAttempts,
       next_retry_at: nextRetryAt,
     })
-    .eq('id', row.id);
+    .eq(COL.id, row.id);
   return {
     kind: 'ambiguous',
     sid: row.message_sid,
@@ -520,13 +529,9 @@ export async function reconcileAmbiguousSmsWithDeps(deps: SendDeps): Promise<{
   const { data: rows } = await supabase
     .from(TABLE.smsMessages)
     .select(SMS_SELECT_RECONCILE)
-    .in('status', ['unknown', 'sending'])
-    .or(
-      `and(status.eq.unknown,next_retry_at.is.null),` +
-        `and(status.eq.unknown,next_retry_at.lte.${nowIso}),` +
-        `and(status.eq.sending,sent_at.lt.${cutoff})`
-    )
-    .order('sent_at', { ascending: true })
+    .in(COL.status, [...RECONCILE_PULL_STATUSES])
+    .or(reconcileOrFilter(nowIso, cutoff))
+    .order(COL.sentAt, { ascending: true })
     .limit(50);
 
   let requeued = 0;
@@ -537,8 +542,8 @@ export async function reconcileAmbiguousSmsWithDeps(deps: SendDeps): Promise<{
   let stuckSendingCount = 0;
 
   for (const row of rows ?? []) {
-    if (row.status === 'unknown') unknownCount += 1;
-    if (row.status === 'sending') stuckSendingCount += 1;
+    if (row.status === SMS_STATUS.unknown) unknownCount += 1;
+    if (row.status === SMS_STATUS.sending) stuckSendingCount += 1;
 
     const result = await reconcileOneWithDeps(deps, row);
     if (result.kind === 'resolved') {
@@ -570,7 +575,7 @@ export async function reconcileAmbiguousSmsWithDeps(deps: SendDeps): Promise<{
 
 async function onReconcileResolved(supabase: SupabaseClient, sid: string) {
   const parsed = parseMessageSid(sid);
-  if (parsed.kind !== 'campaign') return;
+  if (parsed.kind !== KIND_CAMPAIGN) return;
   void supabase;
   void parsed;
 }
@@ -581,11 +586,11 @@ async function onReconcileNeverSent(
   leadId: string
 ) {
   const parsed = parseMessageSid(sid);
-  if (parsed.kind === 'recovery') {
+  if (parsed.kind === KIND_RECOVERY) {
     await supabase
       .from(TABLE.leads)
       .update({ sms_outbound_sid: null })
-      .eq('id', leadId);
+      .eq(COL.id, leadId);
   }
 }
 

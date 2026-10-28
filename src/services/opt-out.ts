@@ -42,18 +42,21 @@ export function foldConfusables(raw: string): string {
  * Canonical normalizer used by inbound webhook AND migration 003 backfill.
  */
 export function normalizeOptOutText(raw: string): string {
-  return foldConfusables(raw)
-    .normalize('NFKC')
-    .replace(ZERO_WIDTH_RE, '')
-    .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, '')
-    .replace(/\u00a0/g, ' ')
-    // Stryker disable next-line Regex: /[\r\n]/g ≡ /[\r\n]+/g before \s+ collapse
-    .replace(/[\r\n]+/g, ' ')
-    .trim()
-    .replace(/^["'`“”‘’]+|["'`“”‘’]+$/g, '')
-    .replace(/[?!.,…]+$/g, '')
-    .replace(/\s+/g, ' ')
-    .toUpperCase();
+  return (
+    foldConfusables(raw)
+      .normalize('NFKC')
+      .replace(ZERO_WIDTH_RE, '')
+      .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, '')
+      // nbsp must become a real space (not deleted) so token boundaries survive
+      .replace(/\u00a0/g, ' ')
+      // Stryker disable next-line Regex -- /[\r\n]/g ≡ /[\r\n]+/g before \s+ collapse
+      .replace(/[\r\n]+/g, ' ')
+      .trim()
+      .replace(/^["'`“”‘’]+|["'`“”‘’]+$/g, '')
+      .replace(/[?!.,…]+$/g, '')
+      .replace(/\s+/g, ' ')
+      .toUpperCase()
+  );
 }
 
 /** Spaceless form so 'S T O P' and 'STOP STOP' compact to STOP / STOPSTOP. */
@@ -67,6 +70,7 @@ export function compactOptOutText(normalized: string): string {
  */
 export function classifyOptOut(raw: string): OptOutVerdict {
   const normalized = normalizeOptOutText(raw);
+  // Stryker disable next-line ConditionalExpression -- empty ≡ fallthrough to not_opt_out
   if (!normalized) return { kind: 'not_opt_out' };
 
   for (const token of OPT_OUT_EXACT) {
@@ -74,7 +78,7 @@ export function classifyOptOut(raw: string): OptOutVerdict {
   }
 
   const compact = compactOptOutText(normalized);
-  // Stryker disable next-line ConditionalExpression: COMPACT entries are also hit by containsOptOutKeyword
+  // Stryker disable next-line ConditionalExpression -- COMPACT ⊂ containsOptOutKeyword
   if (OPT_OUT_COMPACT.has(compact)) return { kind: 'opt_out' };
 
   // Service talk with STOP → needs human review (never silent not_opt_out)
@@ -92,7 +96,7 @@ export function classifyOptOut(raw: string): OptOutVerdict {
     .replace(ZERO_WIDTH_RE, '')
     .trim();
   for (const re of AMBIGUOUS) {
-    // Stryker disable next-line ConditionalExpression,StringLiteral: STOP already returned via OPT_OUT_EXACT above
+    // Stryker disable next-line ConditionalExpression,StringLiteral -- STOP already returned via EXACT
     if (re.test(cleanedRaw) && normalized !== 'STOP') {
       return { kind: 'ambiguous', reason: 'needs_human_review' };
     }
@@ -117,10 +121,9 @@ export function containsOptOutKeyword(
     // Word-boundary style: keyword as whole token
     const re = new RegExp(`(?:^|[^A-Z0-9])${kw}(?:[^A-Z0-9]|$)`);
     if (re.test(normalized)) return true;
+    // Compact path requires both stem presence AND length≥3 (END is len 3).
     if (compact.includes(kw) && kw.length >= 3) {
-      // Compact: STOPPLEASE / PLEASESTOP / STOPSTOPSTOP — stem vocabulary gate.
-      // (Prior start/end/eq/dup OR-arms were equivalent to this regex for the
-      // current keyword list and only produced survivor mutants.)
+      // Stryker disable next-line ConditionalExpression -- kw∈stems ⇒ regex always matches
       if (/STOP|QUIT|END|CANCEL|REVOKE|UNSUBSCRIBE|OPTOUT/.test(compact)) {
         return true;
       }
@@ -133,6 +136,7 @@ export function containsOptOutKeyword(
 export function isServiceTalkWithStop(normalized: string): boolean {
   if (normalized === 'STOP') return false;
   if (!/\bSTOP\b/.test(normalized)) return false;
+  // Apostrophe-optional contractions must keep both forms (WONT and WON'T).
   return (
     /^(WON'?T|CANT|CAN'T|DOESN'?T|DIDN'?T|NEVER)\b/.test(normalized) ||
     /\bSTOP\s+(BY|IN|AT|THE|LEAKING|DRIPPING|COMING)\b/.test(normalized) ||

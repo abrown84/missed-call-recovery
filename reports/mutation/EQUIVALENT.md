@@ -193,3 +193,26 @@ are unchanged. Each site annotated `// Stryker disable next-line StringLiteral`.
 - original → replacement: `+` → empty quantifier
 - justification: following `.replace(/\s+/g, ' ')` collapses any run of spaces produced by per-newline replacement, so `+` vs empty quantifier yields the same normalized string.
   Disabled in source.
+
+
+### opt-out-empty-normalized-early-return
+
+- file: `src/services/opt-out.ts` / mutator: ConditionalExpression / `if (!normalized)`
+- original → replacement: `if (!normalized)` → `if (false)`
+- justification: empty normalized never matches EXACT/COMPACT/contains/AMBIGUOUS, so
+  fallthrough also returns `{ kind: 'not_opt_out' }`. Disabled in source.
+
+### opt-out-compact-stem-regex-redundant
+
+- file: `src/services/opt-out.ts` / mutator: ConditionalExpression / stem vocabulary regex
+- original → replacement: `if (/STOP|QUIT|…/.test(compact))` → `if (true)`
+- justification: reached only after `compact.includes(kw)` for `kw` drawn from that
+  same stem set, so the regex is always true when the guard runs. Disabled in source.
+
+### log-only-console-stringliterals (campaigns-impl / send)
+
+Log-only `console.*` sites in `campaigns-impl.ts` and `send/index.ts` are wrapped in
+`// Stryker disable StringLiteral` … `// Stryker restore StringLiteral` blocks.
+Replacement only changes operator-visible log text; return values, DB writes, and
+control flow are unchanged. (sms.ts now injects `deps.log` with asserted event
+names instead.)

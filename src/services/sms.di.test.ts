@@ -8,9 +8,20 @@ import {
   sendRecoverySMSWithDeps,
   SMS_TEMPLATES,
   type SmsDeps,
+  type SmsLogger,
 } from './sms';
 import { SuppressionLookupError } from '@/services/suppressions';
 import type { SendOutcome } from '@/services/send/types';
+import {
+  COL,
+  DIRECTION_OUTBOUND,
+  KIND_MANUAL,
+  KIND_RECOVERY,
+  SMS_SELECT_DEFERRED,
+  SMS_SELECT_ID_STATUS,
+  SMS_STATUS,
+  TABLE,
+} from '@/services/db-strings';
 
 type Business = {
   id: string;
@@ -27,6 +38,22 @@ const business: Business = {
   timezone: 'America/Los_Angeles',
   settings: {},
 };
+
+function makeLogger(): SmsLogger & { calls: Array<{ level: string; args: unknown[] }> } {
+  const calls: Array<{ level: string; args: unknown[] }> = [];
+  return {
+    calls,
+    log: (...args: unknown[]) => {
+      calls.push({ level: 'log', args });
+    },
+    warn: (...args: unknown[]) => {
+      calls.push({ level: 'warn', args });
+    },
+    error: (...args: unknown[]) => {
+      calls.push({ level: 'error', args });
+    },
+  };
+}
 
 function makeDb(state: {
   existing?: { id: string; status: string } | null;
@@ -47,7 +74,7 @@ function makeDb(state: {
           resolve: (v: unknown) => unknown,
           reject?: (e: unknown) => unknown
         ) => {
-          if (table === 'sms_messages' && state.deferredRows !== undefined) {
+          if (table === TABLE.smsMessages && state.deferredRows !== undefined) {
             return Promise.resolve({
               data: state.deferredRows,
               error: state.queryError ?? null,
@@ -88,10 +115,10 @@ function makeDb(state: {
       };
       api.maybeSingle = async () => {
         calls.push({ table, op: 'maybeSingle', args: [] });
-        if (table === 'sms_messages') {
+        if (table === TABLE.smsMessages) {
           return { data: state.existing ?? null, error: null };
         }
-        if (table === 'leads') {
+        if (table === TABLE.leads) {
           return { data: state.lead ?? null, error: null };
         }
         return { data: null, error: null };
@@ -105,8 +132,11 @@ function makeDb(state: {
   };
 }
 
-function deps(overrides: Partial<SmsDeps> & { dbImpl?: ReturnType<typeof makeDb> }): SmsDeps {
+function deps(
+  overrides: Partial<SmsDeps> & { dbImpl?: ReturnType<typeof makeDb>; logImpl?: ReturnType<typeof makeLogger> } = {}
+): SmsDeps {
   const dbImpl = overrides.dbImpl ?? makeDb({});
+  const logImpl = overrides.logImpl ?? makeLogger();
   return {
     db: () => dbImpl as never,
     clock: () => new Date('2026-06-15T18:00:00.000Z'),
@@ -120,7 +150,11 @@ function deps(overrides: Partial<SmsDeps> & { dbImpl?: ReturnType<typeof makeDb>
       }) satisfies SendOutcome,
     isPhoneSuppressed: async () => false,
     SuppressionLookupError,
+    log: logImpl,
     ...overrides,
+    // keep log/db after spread if provided via overrides without wiping
+    ...(overrides.log ? {} : { log: logImpl }),
+    ...(overrides.db ? {} : { db: () => dbImpl as never }),
   };
 }
 
@@ -152,85 +186,160 @@ describe('fallbackDeferIso', () => {
 });
 
 describe('persistDeferredRecoveryWithDeps', () => {
-  it('updates existing row', async () => {
+  it('selects id,status by message_sid and updates existing', async () => {
     const db = makeDb({ existing: { id: '1', status: 'sending' } });
     await persistDeferredRecoveryWithDeps(deps({ dbImpl: db }), {
       leadId: 'L',
       body: 'b',
       nextSendAt: 't',
     });
-    expect(db.calls.some((c) => c.op === 'update')).toBe(true);
+    expect(db.calls).toContainEqual({
+      table: TABLE.smsMessages,
+      op: 'select',
+      args: [SMS_SELECT_ID_STATUS],
+    });
+    expect(db.calls).toContainEqual({
+      table: TABLE.smsMessages,
+      op: 'eq',
+      args: [COL.messageSid, 'mlf:recovery:L'],
+    });
     const upd = db.calls.find((c) => c.op === 'update');
-    expect(upd?.args[0]).toMatchObject({ status: 'deferred', body: 'b' });
+    expect(upd?.args[0]).toMatchObject({ status: SMS_STATUS.deferred, body: 'b' });
   });
 
-  it('inserts when absent; handles 23505 race', async () => {
+  it('inserts when absent; handles 23505 race; logs non-unique errors', async () => {
     const db = makeDb({
       existing: null,
       insertError: { code: '23505', message: 'dup' },
     });
-    await persistDeferredRecoveryWithDeps(deps({ dbImpl: db }), {
+    const log = makeLogger();
+    await persistDeferredRecoveryWithDeps(deps({ dbImpl: db, logImpl: log }), {
       leadId: 'L',
       body: 'b',
       nextSendAt: 't',
     });
     expect(db.calls.some((c) => c.op === 'insert')).toBe(true);
     expect(db.calls.filter((c) => c.op === 'update').length).toBeGreaterThan(0);
+    // Unique race must NOT log insert_failed
+    expect(log.calls.some((c) => c.args[0] === 'persist_deferred_insert_failed')).toBe(
+      false
+    );
+
+    const dbErr = makeDb({
+      existing: null,
+      insertError: { code: '42501', message: 'perm' },
+    });
+    const logErr = makeLogger();
+    await persistDeferredRecoveryWithDeps(
+      deps({ dbImpl: dbErr, logImpl: logErr }),
+      { leadId: 'L', body: 'b', nextSendAt: 't' }
+    );
+    expect(logErr.calls.some((c) => c.args[0] === 'persist_deferred_insert_failed')).toBe(
+      true
+    );
+  });
+
+  it('insert payload uses deferred/outbound constants', async () => {
+    const db = makeDb({ existing: null });
+    await persistDeferredRecoveryWithDeps(deps({ dbImpl: db }), {
+      leadId: 'L',
+      body: 'hello',
+      nextSendAt: '2026-01-01T00:00:00.000Z',
+    });
+    const insert = db.calls.find((c) => c.op === 'insert');
+    expect(insert?.args[0]).toEqual({
+      lead_id: 'L',
+      direction: DIRECTION_OUTBOUND,
+      body: 'hello',
+      message_sid: 'mlf:recovery:L',
+      status: SMS_STATUS.deferred,
+      next_retry_at: '2026-01-01T00:00:00.000Z',
+      key_supported_at_send: false,
+    });
   });
 });
 
 describe('sendRecoverySMSWithDeps', () => {
-  it('persists deferred on quiet_hours_deferred', async () => {
+  it('persists deferred and logs recovery_deferred', async () => {
     const db = makeDb({ existing: null });
-    const persistSpy = vi.fn();
-    const d = deps({
-      dbImpl: db,
-      sendMessage: async () => ({
-        kind: 'blocked',
-        reason: 'quiet_hours_deferred',
-        nextSendAt: '2026-06-16T12:00:00.000Z',
+    const log = makeLogger();
+    await sendRecoverySMSWithDeps(
+      deps({
+        dbImpl: db,
+        logImpl: log,
+        sendMessage: async () => ({
+          kind: 'blocked',
+          reason: 'quiet_hours_deferred',
+          nextSendAt: '2026-06-16T12:00:00.000Z',
+        }),
       }),
-    });
-    // wrap persist via real path
-    await sendRecoverySMSWithDeps(d, 'L', business as never, '+12135550100');
-    expect(db.calls.some((c) => c.op === 'insert' || c.op === 'update')).toBe(
-      true
+      'L',
+      business as never,
+      '+12135550100'
     );
-    void persistSpy;
+    expect(db.calls.some((c) => c.op === 'insert' || c.op === 'update')).toBe(true);
+    expect(log.calls.some((c) => c.args[0] === 'recovery_deferred')).toBe(true);
   });
 
-  it('logs blocked / needs_review / ambiguous / sent', async () => {
-    const outcomes: SendOutcome[] = [
-      { kind: 'blocked', reason: 'suppressed' },
-      { kind: 'skipped', reason: 'x' },
-      { kind: 'needs_review', sid: 's', reason: 'r' },
-      { kind: 'ambiguous', sid: 's', reason: 'r' },
+  it('logs distinct events per outcome kind (kills case-label mutants)', async () => {
+    const cases: Array<{ outcome: SendOutcome; event: string; level: string }> = [
       {
-        kind: 'sent',
-        sid: 's',
-        messageId: 'm',
-        providerStatus: 'queued',
-        keySupportedAtSend: true,
+        outcome: { kind: 'blocked', reason: 'suppressed' },
+        event: 'recovery_blocked',
+        level: 'log',
+      },
+      {
+        outcome: { kind: 'skipped', reason: 'x' },
+        event: 'recovery_blocked',
+        level: 'log',
+      },
+      {
+        outcome: { kind: 'needs_review', sid: 's', reason: 'r' },
+        event: 'recovery_needs_review',
+        level: 'error',
+      },
+      {
+        outcome: { kind: 'ambiguous', sid: 's', reason: 'r' },
+        event: 'recovery_ambiguous',
+        level: 'warn',
+      },
+      {
+        outcome: {
+          kind: 'sent',
+          sid: 's',
+          messageId: 'm',
+          providerStatus: 'queued',
+          keySupportedAtSend: true,
+        },
+        event: 'recovery_sent',
+        level: 'log',
       },
     ];
-    for (const outcome of outcomes) {
+    for (const c of cases) {
+      const log = makeLogger();
       await sendRecoverySMSWithDeps(
         deps({
           dbImpl: makeDb({}),
-          sendMessage: async () => outcome,
+          logImpl: log,
+          sendMessage: async () => c.outcome,
         }),
         'L',
         business as never,
         '+12135550100'
+      );
+      expect(log.calls.some((x) => x.level === c.level && x.args[0] === c.event)).toBe(
+        true
       );
     }
   });
 });
 
 describe('processDeferredRecoveriesWithDeps', () => {
-  it('query error → errors:1', async () => {
+  it('query error → errors:1 and logs', async () => {
+    const log = makeLogger();
     const r = await processDeferredRecoveriesWithDeps(
       deps({
+        logImpl: log,
         dbImpl: makeDb({
           deferredRows: [],
           queryError: { message: 'boom' },
@@ -238,9 +347,30 @@ describe('processDeferredRecoveriesWithDeps', () => {
       })
     );
     expect(r).toEqual({ sent: 0, deferred: 0, errors: 1 });
+    expect(log.calls.some((c) => c.args[0] === 'deferred_query_failed')).toBe(true);
   });
 
-  it('sends / re-defers / abandons / counts review', async () => {
+  it('filters deferred by status+next_retry_at columns', async () => {
+    const db = makeDb({ deferredRows: [], lead: null });
+    await processDeferredRecoveriesWithDeps(deps({ dbImpl: db }));
+    expect(db.calls).toContainEqual({
+      table: TABLE.smsMessages,
+      op: 'select',
+      args: [SMS_SELECT_DEFERRED],
+    });
+    expect(db.calls).toContainEqual({
+      table: TABLE.smsMessages,
+      op: 'eq',
+      args: [COL.status, SMS_STATUS.deferred],
+    });
+    expect(
+      db.calls.some(
+        (c) => c.op === 'lte' && c.args[0] === COL.nextRetryAt
+      )
+    ).toBe(true);
+  });
+
+  it('sends / re-defers / abandons / parks / catches', async () => {
     const lead = {
       id: 'L',
       caller_phone: '+12135550100',
@@ -259,14 +389,17 @@ describe('processDeferredRecoveriesWithDeps', () => {
     let r = await processDeferredRecoveriesWithDeps(
       deps({
         dbImpl: makeDb({ deferredRows: rows, lead }),
-        sendMessage: async () =>
-          ({
+        sendMessage: async (req) => {
+          expect(req.kind).toBe(KIND_RECOVERY);
+          expect(req.skipQuietHours).toBe(false);
+          return {
             kind: 'sent',
             sid: 's',
             messageId: 'm',
             providerStatus: 'queued',
             keySupportedAtSend: true,
-          }) as SendOutcome,
+          } as SendOutcome;
+        },
       })
     );
     expect(r.sent).toBe(1);
@@ -283,6 +416,18 @@ describe('processDeferredRecoveriesWithDeps', () => {
     );
     expect(r.deferred).toBe(1);
 
+    // quiet hours without nextSendAt → fallback
+    r = await processDeferredRecoveriesWithDeps(
+      deps({
+        dbImpl: makeDb({ deferredRows: rows, lead, existing: null }),
+        sendMessage: async () => ({
+          kind: 'blocked',
+          reason: 'quiet_hours_deferred',
+        }),
+      })
+    );
+    expect(r.deferred).toBe(1);
+
     const dbAbandon = makeDb({ deferredRows: rows, lead });
     r = await processDeferredRecoveriesWithDeps(
       deps({
@@ -294,9 +439,21 @@ describe('processDeferredRecoveriesWithDeps', () => {
       dbAbandon.calls.some(
         (c) =>
           c.op === 'update' &&
-          (c.args[0] as { status?: string })?.status === 'abandoned_done'
+          (c.args[0] as { status?: string })?.status === SMS_STATUS.abandonedDone
       )
     ).toBe(true);
+    expect(
+      dbAbandon.calls.some((c) => c.op === 'eq' && c.args[0] === COL.id && c.args[1] === '1')
+    ).toBe(true);
+
+    // skipped also abandons
+    r = await processDeferredRecoveriesWithDeps(
+      deps({
+        dbImpl: makeDb({ deferredRows: rows, lead }),
+        sendMessage: async () => ({ kind: 'skipped', reason: 'x' }),
+      })
+    );
+    expect(r.sent).toBe(0);
 
     r = await processDeferredRecoveriesWithDeps(
       deps({
@@ -309,6 +466,51 @@ describe('processDeferredRecoveriesWithDeps', () => {
       })
     );
     expect(r.deferred).toBe(1);
+
+    r = await processDeferredRecoveriesWithDeps(
+      deps({
+        dbImpl: makeDb({ deferredRows: rows, lead }),
+        sendMessage: async () => ({
+          kind: 'ambiguous',
+          sid: 's',
+          reason: 'r',
+        }),
+      })
+    );
+    expect(r.deferred).toBe(1);
+
+    // empty body → buildRecoveryBody
+    const emptyBodyRows = [{ ...rows[0], body: '' }];
+    const send = vi.fn(async () => ({
+      kind: 'sent' as const,
+      sid: 's',
+      messageId: 'm',
+      providerStatus: 'queued',
+      keySupportedAtSend: true,
+    }));
+    await processDeferredRecoveriesWithDeps(
+      deps({
+        dbImpl: makeDb({ deferredRows: emptyBodyRows, lead }),
+        sendMessage: send,
+      })
+    );
+    expect(String((send.mock.calls[0] as unknown as [Record<string, unknown>])[0].body)).toContain(
+      'plumbing'
+    );
+
+    // throw → errors++
+    const log = makeLogger();
+    r = await processDeferredRecoveriesWithDeps(
+      deps({
+        logImpl: log,
+        dbImpl: makeDb({ deferredRows: rows, lead }),
+        sendMessage: async () => {
+          throw new Error('relay down');
+        },
+      })
+    );
+    expect(r.errors).toBe(1);
+    expect(log.calls.some((c) => c.args[0] === 'deferred_row_failed')).toBe(true);
   });
 
   it('missing business increments errors', async () => {
@@ -330,13 +532,35 @@ describe('processDeferredRecoveriesWithDeps', () => {
     );
     expect(r.errors).toBe(1);
   });
+
+  it('null businesses via missing optional chain increments errors', async () => {
+    const r = await processDeferredRecoveriesWithDeps(
+      deps({
+        dbImpl: makeDb({
+          deferredRows: [
+            {
+              id: '1',
+              lead_id: 'L',
+              message_sid: 'x',
+              body: 'b',
+              next_retry_at: 't',
+            },
+          ],
+          lead: null,
+        }),
+      })
+    );
+    expect(r.errors).toBe(1);
+  });
 });
 
 describe('sendFollowUpSMSWithDeps (QC r6 P2 suppression restore)', () => {
-  it('skips when suppressed / lookup failed / opted out', async () => {
+  it('skips when suppressed / lookup failed / opted out and logs events', async () => {
     const send = vi.fn();
+    const log = makeLogger();
     await sendFollowUpSMSWithDeps(
       deps({
+        logImpl: log,
         isPhoneSuppressed: async () => true,
         sendMessage: send,
       }),
@@ -345,9 +569,12 @@ describe('sendFollowUpSMSWithDeps (QC r6 P2 suppression restore)', () => {
       '+12135550100'
     );
     expect(send).not.toHaveBeenCalled();
+    expect(log.calls.some((c) => c.args[0] === 'followup_suppressed')).toBe(true);
 
+    const log2 = makeLogger();
     await sendFollowUpSMSWithDeps(
       deps({
+        logImpl: log2,
         isPhoneSuppressed: async () => {
           throw new SuppressionLookupError('x');
         },
@@ -358,9 +585,14 @@ describe('sendFollowUpSMSWithDeps (QC r6 P2 suppression restore)', () => {
       '+12135550100'
     );
     expect(send).not.toHaveBeenCalled();
+    expect(
+      log2.calls.some((c) => c.args[0] === 'followup_suppression_lookup_failed')
+    ).toBe(true);
 
+    const log3 = makeLogger();
     await sendFollowUpSMSWithDeps(
       deps({
+        logImpl: log3,
         dbImpl: makeDb({ lead: { opted_out: true } }),
         sendMessage: send,
       }),
@@ -369,9 +601,10 @@ describe('sendFollowUpSMSWithDeps (QC r6 P2 suppression restore)', () => {
       '+12135550100'
     );
     expect(send).not.toHaveBeenCalled();
+    expect(log3.calls.some((c) => c.args[0] === 'followup_opted_out')).toBe(true);
   });
 
-  it('sends and inserts when clear', async () => {
+  it('sends and inserts when clear; non-sent skips insert', async () => {
     const db = makeDb({ lead: { opted_out: false } });
     const send = vi.fn(async () => ({
       kind: 'sent' as const,
@@ -388,45 +621,71 @@ describe('sendFollowUpSMSWithDeps (QC r6 P2 suppression restore)', () => {
       'Custom follow'
     );
     expect(send).toHaveBeenCalled();
-    expect(send.mock.calls[0]).toBeDefined();
-    const [sentReq] = send.mock.calls[0] as unknown as [
-      Record<string, unknown>,
-    ];
+    const [sentReq] = send.mock.calls[0] as unknown as [Record<string, unknown>];
     expect(sentReq).toMatchObject({
-      kind: 'manual',
+      kind: KIND_MANUAL,
       skipQuietHours: true,
       to: '+12135550100',
     });
     const insert = db.calls.find((c) => c.op === 'insert');
     expect(insert?.args[0]).toEqual({
       lead_id: 'L',
-      direction: 'outbound',
+      direction: DIRECTION_OUTBOUND,
       body: expect.stringContaining('Custom follow'),
       message_sid: 's',
       status: 'queued',
     });
-  });
-});
+    expect(db.calls).toContainEqual({
+      table: TABLE.leads,
+      op: 'eq',
+      args: [COL.id, 'L'],
+    });
 
-describe('persistDeferredRecovery payload strings', () => {
-  it('insert uses deferred status and outbound direction', async () => {
-    const db = makeDb({ existing: null });
-    await persistDeferredRecoveryWithDeps(deps({ dbImpl: db }), {
-      leadId: 'L',
-      body: 'hello',
-      nextSendAt: '2026-01-01T00:00:00.000Z',
-    });
-    const insert = db.calls.find((c) => c.op === 'insert');
-    expect(insert?.args[0]).toMatchObject({
-      lead_id: 'L',
-      direction: 'outbound',
-      body: 'hello',
-      status: 'deferred',
-      next_retry_at: '2026-01-01T00:00:00.000Z',
-      key_supported_at_send: false,
-    });
-    expect(String((insert?.args[0] as { message_sid: string }).message_sid)).toContain(
-      'mlf:recovery:L'
+    // blocked → no insert (kills outcome.kind === 'sent' → true)
+    const db2 = makeDb({ lead: { opted_out: false } });
+    await sendFollowUpSMSWithDeps(
+      deps({
+        dbImpl: db2,
+        sendMessage: async () => ({ kind: 'blocked', reason: 'suppressed' }),
+      }),
+      'L',
+      business as never,
+      '+12135550100'
     );
+    expect(db2.calls.some((c) => c.op === 'insert')).toBe(false);
+
+    // default body when no customMessage
+    const db3 = makeDb({ lead: { opted_out: false } });
+    const send3 = vi.fn(async () => ({
+      kind: 'sent' as const,
+      sid: 's',
+      messageId: 'm',
+      providerStatus: 'queued',
+      keySupportedAtSend: true,
+    }));
+    await sendFollowUpSMSWithDeps(
+      deps({ dbImpl: db3, sendMessage: send3 }),
+      'L',
+      business as never,
+      '+12135550100'
+    );
+    const followReq = (send3.mock.calls[0] as unknown as [Record<string, unknown>])[0];
+    expect(String(followReq.body)).toContain('Acme Plumbing');
+    expect(String(followReq.body)).toContain('following up');
+  });
+
+  it('rethrows non-suppression errors', async () => {
+    await expect(
+      sendFollowUpSMSWithDeps(
+        deps({
+          isPhoneSuppressed: async () => {
+            throw new Error('network');
+          },
+        }),
+        'L',
+        business as never,
+        '+12135550100'
+      )
+    ).rejects.toThrow('network');
   });
 });

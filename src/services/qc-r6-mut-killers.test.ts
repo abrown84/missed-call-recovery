@@ -316,7 +316,7 @@ describe('QC r6 mut.py killers', () => {
     expect(src).toMatch(
       /status: ENROLLMENT_STATUS\.needsReview|status: 'needs_review'/
     ); // terminal enrollment
-    expect(src).toMatch(/\.eq\('claim_token', claimToken\)/);
+    expect(src).toMatch(/\.eq\(COL\.claimToken, claimToken\)/);
     expect(src).toMatch(/requeueExactCampaignStep/);
     expect(campDec).toContain('hasClaimToken');
     expect(src).toContain('decideReconcileAdvanceEligibility');
@@ -326,7 +326,7 @@ describe('QC r6 mut.py killers', () => {
     const src = readSrc('src/services/send/index.ts');
     const decisions = readSrc('src/services/send/decisions.ts');
     if (!src || !decisions) return;
-    expect(src).toMatch(/\.order\('sent_at', \{ ascending: true \}\)/);
+    expect(src).toMatch(/\.order\(COL\.sentAt, \{ ascending: true \}\)/);
     expect(src).toMatch(/reconcile_attempts: nextAttempts/);
     expect(src).toMatch(/next_retry_at: nextRetryAt/);
     expect(src).toMatch(/needsReview > 0/);
@@ -386,7 +386,7 @@ describe('QC r6 mut.py killers', () => {
     );
     expect(parkCase).toContain('parkEnrollmentForReconcile');
     expect(parkCase).not.toContain('advanceEnrollment');
-    expect(src).toContain(".eq('claim_token', claimToken)");
+    expect(src).toContain('.eq(COL.claimToken, claimToken)');
     expect(src).toContain('const ok = await requeueExactCampaignStep(');
     expect(src).not.toContain('const ok = false && await requeueExactCampaignStep(');
     expect(src).toContain('// Isolate per-enrollment failures');
@@ -435,14 +435,14 @@ describe('QC r6 mut.py killers', () => {
   it('#44 advanceEnrollment claim_token checks present on both branches', () => {
     const src = readSrc('src/services/campaigns-impl.ts');
     if (!src) return;
-    // Exact mut.py #44 target — must remain (6-space indent before .eq)
+    // Exact mut.py #44 target — claim_token gate on both advance branches (via COL)
     expect(src).toContain(
-      "      .eq('claim_token', claimToken)\n      .select(ENROLLMENT_CLAIM_SELECT);"
+      '      .eq(COL.claimToken, claimToken)\n      .select(ENROLLMENT_CLAIM_SELECT);'
     );
     const advIdx = src.indexOf('export async function advanceEnrollment');
     expect(advIdx).toBeGreaterThan(-1);
     const adv = src.slice(advIdx, advIdx + 3500);
-    expect(adv.split(".eq('claim_token', claimToken)").length - 1).toBeGreaterThanOrEqual(
+    expect(adv.split('.eq(COL.claimToken, claimToken)').length - 1).toBeGreaterThanOrEqual(
       2
     );
   });

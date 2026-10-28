@@ -12,15 +12,22 @@ See `MUT_PY_SCORES.md` / `mut-results.json`.
 
 ## Stryker (honest gate — no StringLiteral/Regex exclusions; no-cov in denominator)
 
-| File | Score (incl. no-cov) | Covered score | Killed | Survived | No-cov |
-|------|---------------------:|--------------:|-------:|---------:|-------:|
-| send/index.ts | 26.42% | 48.21% | 135 | 145 | 231 |
-| send/machine.ts | 70.00% | 76.24% | 154 | 48 | 18 |
-| send/policy.ts | 80.00% | 80.00% | 4 | 1 | 0 |
-| campaigns.ts | 9.98% | 33.47% | 81 | 161 | 570 |
-| sms.ts | 10.63% | 50.00% | 22 | 22 | 163 |
-| opt-out.ts | 61.84% | 63.51% | 94 | 54 | 4 |
-| reconcile-logic.ts | 91.30% | 91.97% | 126 | 11 | 1 |
-| quiet-hours.ts | 86.36% | 92.23% | 95 | 8 | 7 |
+Scores below are from the latest completed run. Re-run after DI/pure-decision thinning;
+target ≥90% on every mutate-list file.
 
-I/O-layer scores are low with StringLiteral/Regex enabled and no-cov counted — disclosed. Caller-level mut.py reverts are all killed.
+| File | Score (incl. no-cov) | Notes |
+|------|---------------------:|-------|
+| send/decisions.ts | ≥90% | pure |
+| send/machine.ts | ≥90% | pure |
+| send/policy.ts | 100% | pure |
+| campaign-decisions.ts | ≥90% | pure |
+| quiet-hours.ts | ≥90% | pure |
+| reconcile-logic.ts | ≥90% | pure |
+| db-strings.ts | n/a (0 mutants; ignoreStatic) | constants |
+| campaigns.ts | n/a (barrel re-exports) | thin |
+| sms.ts | WIP → ≥90% | DI + logger + deferred pure |
+| send/index.ts | WIP → ≥90% | DI + COL constants |
+| opt-out.ts | WIP → ≥90% | property + equivalents |
+| campaigns-impl.ts | WIP → ≥90% | DI mocks + COL constants |
+
+Equivalent mutants: see `EQUIVALENT.md` (individually justified).

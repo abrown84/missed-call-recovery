@@ -12,6 +12,15 @@ import {
 } from './index';
 import { SuppressionLookupError } from '@/services/suppressions';
 import { markRelayKeySupportConfirmed, resetRelayKeySupportConfirmed } from '@/services/sms-sid';
+import {
+  COL,
+  KIND_CAMPAIGN,
+  KIND_RECOVERY,
+  RECONCILE_PULL_STATUSES,
+  SEND_REASON,
+  SMS_STATUS,
+  TABLE,
+} from '@/services/db-strings';
 
 type Row = Record<string, unknown>;
 
@@ -81,10 +90,12 @@ function makeDb(state: {
     ]) {
       api[m] = (...args: unknown[]) => {
         calls.push({ table: name, op: m, args });
-        if (m === 'eq' && args[0] === 'message_sid') {
+        if (m === 'eq' && args[0] === COL.messageSid) {
           ctx.filters.message_sid = args[1];
         }
-        if (m === 'eq' && args[0] === 'id') ctx.filters.id = args[1];
+        if (m === 'eq' && args[0] === COL.id) {
+          ctx.filters.id = args[1];
+        }
         if (m === 'in') ctx.filters.in = args;
         return asList();
       };
@@ -655,5 +666,159 @@ describe('reconcileAmbiguousSmsWithDeps', () => {
       })
     );
     expect(r.unknownCount + r.stuckSendingCount).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe('send I/O column/kind constants (survivor killers)', () => {
+  beforeEach(() => {
+    resetRelayKeySupportConfirmed();
+    markRelayKeySupportConfirmed();
+  });
+
+  it('invalid phone reason uses SEND_REASON constant', async () => {
+    const o = await sendMessageWithDeps(baseDeps({}), {
+      kind: KIND_RECOVERY,
+      leadId: 'L',
+      businessId: 'B',
+      to: 'nope',
+      body: 'hi',
+    });
+    expect(o).toMatchObject({
+      kind: 'blocked',
+      reason: SEND_REASON.invalidPhone,
+    });
+  });
+
+  it('recovery path eq uses COL.id / COL.messageSid', async () => {
+    const db = makeDb({ leads: { opted_out: false } });
+    const send = vi.fn(async () => ({
+      id: 'm',
+      status: 'queued',
+      keyEchoed: true,
+    }));
+    await sendMessageWithDeps(
+      baseDeps({
+        dbImpl: db,
+        adapter: () =>
+          ({
+            name: 'm',
+            sendMessage: send,
+            checkLookupSupport: async () => ({ supported: true }),
+          }) as never,
+      }),
+      {
+        kind: KIND_RECOVERY,
+        leadId: 'L',
+        businessId: 'B',
+        to: '+12135550100',
+        body: 'hi',
+        skipQuietHours: true,
+      }
+    );
+    expect(
+      db.calls.some(
+        (c) => c.op === 'eq' && c.args[0] === COL.id && c.args[1] === 'L'
+      )
+    ).toBe(true);
+    expect(
+      db.calls.some(
+        (c) =>
+          c.table === TABLE.smsMessages &&
+          c.op === 'eq' &&
+          c.args[0] === COL.messageSid
+      )
+    ).toBe(true);
+  });
+
+  it('campaign confirm updates sms + skips lead outbound sid', async () => {
+    const db = makeDb({ leads: { opted_out: false } });
+    const send = vi.fn(async () => ({
+      id: 'm',
+      status: 'queued',
+      keyEchoed: true,
+    }));
+    const o = await sendMessageWithDeps(
+      baseDeps({
+        dbImpl: db,
+        adapter: () =>
+          ({
+            name: 'm',
+            sendMessage: send,
+            checkLookupSupport: async () => ({ supported: true }),
+          }) as never,
+      }),
+      {
+        kind: KIND_CAMPAIGN,
+        leadId: 'L',
+        businessId: 'B',
+        to: '+12135550100',
+        body: 'hi',
+        skipQuietHours: true,
+        skipRecoveryGate: true,
+        enrollmentId: 'E',
+        campaignId: 'C',
+        stepNumber: 2,
+      }
+    );
+    expect(o.kind).toBe('sent');
+    // campaign must NOT write sms_outbound_sid on leads
+    expect(
+      db.calls.some(
+        (c) =>
+          c.table === TABLE.leads &&
+          c.op === 'update' &&
+          (c.args[0] as { sms_outbound_sid?: string })?.sms_outbound_sid
+      )
+    ).toBe(false);
+  });
+
+  it('reconcileAmbiguousSms pulls RECONCILE_PULL_STATUSES via COL.status', async () => {
+    const db = makeDb({ smsList: [] });
+    await reconcileAmbiguousSmsWithDeps(
+      baseDeps({
+        dbImpl: db,
+        adapter: () =>
+          ({
+            name: 'm',
+            sendMessage: vi.fn(),
+            lookupByIdempotencyKey: vi.fn(),
+            checkLookupSupport: async () => ({ supported: true }),
+          }) as never,
+      })
+    );
+    expect(
+      db.calls.some(
+        (c) =>
+          c.op === 'in' &&
+          c.args[0] === COL.status &&
+          JSON.stringify(c.args[1]) ===
+            JSON.stringify([...RECONCILE_PULL_STATUSES])
+      )
+    ).toBe(true);
+  });
+
+  it('duplicate_in_flight reason constant + needs_review path', async () => {
+    const sid = 'mlf:recovery:L';
+    const db = makeDb({
+      leads: { opted_out: false },
+      insertError: { code: '23505', message: 'dup' },
+      smsBySid: new Map([[sid, { status: 'sending' }]]),
+    });
+    const o = await sendMessageWithDeps(
+      baseDeps({ dbImpl: db }),
+      {
+        kind: KIND_RECOVERY,
+        leadId: 'L',
+        businessId: 'B',
+        to: '+12135550100',
+        body: 'hi',
+        skipQuietHours: true,
+        idempotencyKey: sid,
+      }
+    );
+    expect(o).toMatchObject({
+      kind: 'blocked',
+      reason: SEND_REASON.duplicateInFlight,
+    });
   });
 });
