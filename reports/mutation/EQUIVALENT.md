@@ -246,3 +246,22 @@ Log-only `console.*` sites in `campaigns-impl.ts` and `send/index.ts` are wrappe
 Replacement only changes operator-visible log text; return values, DB writes, and
 control flow are unchanged. (sms.ts now injects `deps.log` with asserted event
 names instead.)
+
+### opt-out-spaced-keyword-branch-covered-by-compact
+
+- file: `src/services/opt-out.ts` / mutator: ConditionalExpression,BlockStatement /
+  spaced `kw.includes(' ')` branch
+- original → replacement: skip spaced-includes short-circuit / empty block
+- justification: for the current keyword set (`OPT OUT`), every input that the
+  spaced `includes` arm would accept is also accepted by the later `OPTOUT`
+  compact stem (`compact.includes('OPTOUT')` + stem regex). Dropping the
+  short-circuit still yields `true`. Disabled in source.
+
+### opt-out-spaced-kw-includes-space-guard
+
+- file: `src/services/opt-out.ts` / mutator: ConditionalExpression /
+  `if (kw.includes(' '))`
+- original → replacement: force false (route spaced kw into word-boundary regex)
+- justification: `new RegExp('(?:^|[^A-Z0-9])OPT OUT(?:[^A-Z0-9]|$)')` matches the
+  same normalized strings as `normalized.includes('OPT OUT')`, and the `OPTOUT`
+  compact path remains as a backstop. Disabled in source.

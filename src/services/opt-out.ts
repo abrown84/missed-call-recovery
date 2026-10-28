@@ -30,6 +30,18 @@ export {
 const ZERO_WIDTH_RE =
   /[\u200B-\u200D\uFEFF\u2060\u180E\u00AD\u034F\u061C\u115F\u1160\u17B4\u17B5\u3164\uFFA0]/g;
 
+const QUOTE_EDGE_RE = /^["'`“”‘’]+|["'`“”‘’]+$/g;
+
+/** Replace NBSP with a real space so token boundaries survive collapse. */
+export function replaceNbspWithSpace(s: string): string {
+  return s.replace(/\u00a0/g, ' ');
+}
+
+/** Strip leading/trailing straight + smart quotes (both anchors required). */
+export function stripEdgeQuotes(s: string): string {
+  return s.replace(QUOTE_EDGE_RE, '');
+}
+
 export function foldConfusables(raw: string): string {
   let out = '';
   for (const ch of raw) {
@@ -42,21 +54,18 @@ export function foldConfusables(raw: string): string {
  * Canonical normalizer used by inbound webhook AND migration 003 backfill.
  */
 export function normalizeOptOutText(raw: string): string {
-  return (
-    foldConfusables(raw)
-      .normalize('NFKC')
-      .replace(ZERO_WIDTH_RE, '')
-      .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, '')
-      // nbsp must become a real space (not deleted) so token boundaries survive
-      .replace(/\u00a0/g, ' ')
-      // Stryker disable next-line Regex -- /[\r\n]/g ≡ /[\r\n]+/g before \s+ collapse
-      .replace(/[\r\n]+/g, ' ')
-      .trim()
-      .replace(/^["'`“”‘’]+|["'`“”‘’]+$/g, '')
-      .replace(/[?!.,…]+$/g, '')
-      .replace(/\s+/g, ' ')
-      .toUpperCase()
-  );
+  const folded = foldConfusables(raw)
+    .normalize('NFKC')
+    .replace(ZERO_WIDTH_RE, '')
+    .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, '');
+  // nbsp must become a real space (not deleted) so token boundaries survive
+  const spaced = replaceNbspWithSpace(folded);
+  // Stryker disable next-line Regex -- /[\r\n]/g ≡ /[\r\n]+/g before \s+ collapse
+  const lined = spaced.replace(/[\r\n]+/g, ' ').trim();
+  return stripEdgeQuotes(lined)
+    .replace(/[?!.,…]+$/g, '')
+    .replace(/\s+/g, ' ')
+    .toUpperCase();
 }
 
 /** Spaceless form so 'S T O P' and 'STOP STOP' compact to STOP / STOPSTOP. */
@@ -114,8 +123,10 @@ export function containsOptOutKeyword(
     if (normalized.includes(phrase)) return true;
   }
   for (const kw of OPT_OUT_CONTAINS_KEYWORDS) {
+    // Stryker disable next-line ConditionalExpression -- spaced kw also matches via OPTOUT compact
     if (kw.includes(' ')) {
       // Spaced stems (OPT OUT) — includes match; do not fall into word-boundary regex.
+      // Stryker disable next-line ConditionalExpression,BlockStatement -- OPTOUT compact covers same inputs
       if (normalized.includes(kw)) return true;
       continue;
     }

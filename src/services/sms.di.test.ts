@@ -576,6 +576,80 @@ describe('processDeferredRecoveriesWithDeps', () => {
     expect(r.errors).toBe(1);
     expect(send).not.toHaveBeenCalled();
   });
+
+  it('ignore (never_sent) leaves counters unchanged and does not abandon', async () => {
+    const lead = {
+      id: 'L',
+      caller_phone: '+12135550100',
+      businesses: business,
+    };
+    const db = makeDb({
+      deferredRows: [
+        {
+          id: '1',
+          lead_id: 'L',
+          message_sid: 'x',
+          body: 'b',
+          next_retry_at: 't',
+        },
+      ],
+      lead,
+    });
+    const r = await processDeferredRecoveriesWithDeps(
+      deps({
+        dbImpl: db,
+        sendMessage: async () =>
+          ({ kind: 'never_sent', sid: 's', requeued: true }) as SendOutcome,
+      })
+    );
+    expect(r).toEqual({ sent: 0, deferred: 0, errors: 0 });
+    expect(
+      db.calls.some(
+        (c) =>
+          c.op === 'update' &&
+          (c.args[0] as { status?: string })?.status === SMS_STATUS.abandonedDone
+      )
+    ).toBe(false);
+  });
+
+  it('re_defer persists exact leadId/body/nextSendAt (not empty payload)', async () => {
+    const lead = {
+      id: 'L',
+      caller_phone: '+12135550100',
+      businesses: business,
+    };
+    const db = makeDb({
+      deferredRows: [
+        {
+          id: '1',
+          lead_id: 'L',
+          message_sid: 'x',
+          body: 'hi-body',
+          next_retry_at: 't',
+        },
+      ],
+      lead,
+      existing: null,
+    });
+    await processDeferredRecoveriesWithDeps(
+      deps({
+        dbImpl: db,
+        sendMessage: async () => ({
+          kind: 'blocked',
+          reason: 'quiet_hours_deferred',
+          nextSendAt: '2026-06-01T12:00:00.000Z',
+        }),
+      })
+    );
+    const inserts = db.calls.filter((c) => c.op === 'insert');
+    expect(inserts.length).toBeGreaterThan(0);
+    expect(inserts[0].args[0]).toMatchObject({
+      lead_id: 'L',
+      body: 'hi-body',
+      next_retry_at: '2026-06-01T12:00:00.000Z',
+      status: SMS_STATUS.deferred,
+    });
+  });
 });
 
 describe('sendFollowUpSMSWithDeps (QC r6 P2 suppression restore)', () => {

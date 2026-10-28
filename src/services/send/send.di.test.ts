@@ -704,7 +704,108 @@ describe('reconcileAmbiguousSmsWithDeps', () => {
           }) as never,
       })
     );
-    expect(r.unknownCount + r.stuckSendingCount).toBeGreaterThanOrEqual(1);
+    expect(r.unknownCount).toBe(1);
+    expect(r.stuckSendingCount).toBe(1);
+    expect(r.confirmed).toBe(2);
+    // alert only when threshold met or needsReview > 0; both resolved → no alert
+    expect(r.needsReview).toBe(0);
+    expect(r.alert).toBe(false);
+  });
+
+  it('tallies never_sent / needs_review / ambiguous independently (+ recovery clear)', async () => {
+    const outcomes = ['never_sent', 'unknown', 'failed'] as const;
+    let i = 0;
+    const db = makeDb({
+      smsList: [
+        {
+          id: '1',
+          lead_id: 'L1',
+          message_sid: 'mlf:recovery:L1',
+          status: 'unknown',
+          reconcile_attempts: 0,
+          key_supported_at_send: true,
+        },
+        {
+          id: '2',
+          lead_id: 'L2',
+          message_sid: 'mlf:campaign:E:C:step:1',
+          status: 'sending',
+          reconcile_attempts: 0,
+          key_supported_at_send: false,
+        },
+        {
+          id: '3',
+          lead_id: 'L3',
+          message_sid: 'mlf:campaign:E:C:step:2',
+          status: 'unknown',
+          reconcile_attempts: 0,
+          key_supported_at_send: true,
+        },
+      ],
+    });
+    const r = await reconcileAmbiguousSmsWithDeps(
+      baseDeps({
+        dbImpl: db,
+        adapter: () =>
+          ({
+            name: 'm',
+            lookupByIdempotencyKey: async () => {
+              const outcome = outcomes[i++ % outcomes.length];
+              if (outcome === 'never_sent') {
+                return { outcome: 'never_sent', found: false };
+              }
+              if (outcome === 'failed') {
+                return { outcome: 'failed', status: 'failed', found: true };
+              }
+              return { outcome: 'unknown', found: true };
+            },
+            checkLookupSupport: async () => ({ supported: true }),
+          }) as never,
+      })
+    );
+    expect(r.unknownCount).toBe(2);
+    expect(r.stuckSendingCount).toBe(1);
+    expect(r.requeued).toBe(1);
+    expect(r.needsReview + r.parked).toBeGreaterThanOrEqual(1);
+    // needsReview > 0 forces alert even below unknown threshold
+    if (r.needsReview > 0) expect(r.alert).toBe(true);
+    // recovery never_sent clears outbound sid
+    expect(
+      db.calls.some(
+        (c) =>
+          c.table === TABLE.leads &&
+          c.op === 'update' &&
+          (c.args[0] as { sms_outbound_sid?: unknown })?.sms_outbound_sid ===
+            null
+      )
+    ).toBe(true);
+  });
+
+  it('alert when unknown+sending reaches threshold (exactly >= 5)', async () => {
+    const smsList = Array.from({ length: 5 }, (_, i) => ({
+      id: String(i),
+      lead_id: 'L',
+      message_sid: `mlf:campaign:E:C:step:${i}`,
+      status: i % 2 === 0 ? 'unknown' : 'sending',
+      reconcile_attempts: 0,
+      key_supported_at_send: true,
+    }));
+    const r = await reconcileAmbiguousSmsWithDeps(
+      baseDeps({
+        dbImpl: makeDb({ smsList }),
+        adapter: () =>
+          ({
+            name: 'm',
+            lookupByIdempotencyKey: async () => ({
+              outcome: 'sent',
+              status: 'delivered',
+              found: true,
+            }),
+          }) as never,
+      })
+    );
+    expect(r.unknownCount + r.stuckSendingCount).toBe(5);
+    expect(r.alert).toBe(true);
   });
 });
 

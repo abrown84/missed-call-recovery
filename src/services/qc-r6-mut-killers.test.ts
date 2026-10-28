@@ -325,11 +325,14 @@ describe('QC r6 mut.py killers', () => {
   it('send/index.ts orders reconcile ascending and increments attempts', () => {
     const src = readSrc('src/services/send/index.ts');
     const decisions = readSrc('src/services/send/decisions.ts');
-    if (!src || !decisions) return;
+    const tally = readSrc('src/services/send/reconcile-tally.ts');
+    if (!src || !decisions || !tally) return;
     expect(src).toMatch(/\.order\(COL\.sentAt, \{ ascending: true \}\)/);
     expect(src).toMatch(/reconcile_attempts: nextAttempts/);
     expect(src).toMatch(/next_retry_at: nextRetryAt/);
-    expect(src).toMatch(/needsReview > 0/);
+    // Alert predicate lives in pure reconcile-tally (DI shell just calls it).
+    expect(tally).toMatch(/needsReview > 0/);
+    expect(src).toContain('decideReconcileAlert');
     expect(decisions).toMatch(/keyEchoed: Boolean\(result\.keyEchoed\)/);
     expect(src).toMatch(/key_supported_at_send: decision\.keySupportedAtSend/);
     expect(src).toMatch(/keySupportedAtSend: Boolean\(row\.key_supported_at_send\)/);

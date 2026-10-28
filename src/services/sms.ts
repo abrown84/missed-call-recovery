@@ -249,11 +249,15 @@ export async function processDeferredRecoveriesWithDeps(
         .select(LEAD_SELECT_STAR_BIZ)
         .eq(COL.id, row.lead_id)
         .single();
-      if (!lead?.businesses) {
+      if (!lead) {
         errors += 1;
         continue;
       }
-      const business = lead.businesses as unknown as Business;
+      const business = (lead as { businesses?: Business | null }).businesses;
+      if (!business) {
+        errors += 1;
+        continue;
+      }
       const body = row.body || buildRecoveryBody(business);
       const outcome = await deps.sendMessage({
         kind: KIND_RECOVERY,
@@ -292,6 +296,7 @@ export async function processDeferredRecoveriesWithDeps(
           deferred += 1;
           break;
         case 'ignore':
+          // never_sent / unexpected — leave deferred row for a later pass
           break;
       }
     } catch (err) {

@@ -153,6 +153,85 @@ export function computeNextSendAt(
   return new Date(nowMs + nextStepDelayMs(delayMinutes)).toISOString();
 }
 
+/** Post-reconcile advance to next step (claim cleared). */
+export function reconcileAdvancePayload(input: {
+  nextStepNumber: number;
+  nextSendAt: string;
+  nowIso: string;
+}): Record<string, unknown> {
+  return {
+    current_step: input.nextStepNumber,
+    next_send_at: input.nextSendAt,
+    claimed_at: null,
+    claim_token: null,
+    updated_at: input.nowIso,
+  };
+}
+
+/** Post-reconcile complete enrollment. */
+export function reconcileCompletePayload(input: {
+  status: string;
+  nowIso: string;
+}): Record<string, unknown> {
+  return {
+    status: input.status,
+    completed_at: input.nowIso,
+    next_send_at: null,
+    claimed_at: null,
+    claim_token: null,
+    updated_at: input.nowIso,
+  };
+}
+
+/** Requeue exact campaign step after abandoned_retry. */
+export function requeueStepPayload(input: {
+  stepNumber: number;
+  nowIso: string;
+}): Record<string, unknown> {
+  return {
+    current_step: input.stepNumber,
+    next_send_at: input.nowIso,
+    claimed_at: null,
+    claim_token: null,
+    updated_at: input.nowIso,
+  };
+}
+
+/** Clear lead outbound sid after recovery never_sent / resend. */
+export function clearOutboundSidPayload(input: {
+  nowIso: string;
+}): Record<string, unknown> {
+  return {
+    sms_outbound_sid: null,
+    updated_at: input.nowIso,
+  };
+}
+
+/** Cron catch: park enrollment after unexpected throw. */
+export function processDueErrorParkPayload(input: {
+  nextSendAt: string;
+  nowIso: string;
+}): Record<string, unknown> {
+  return {
+    claim_token: null,
+    claimed_at: null,
+    next_send_at: input.nextSendAt,
+    updated_at: input.nowIso,
+  };
+}
+
+/** Flag lead for quiet-hours unresolved timezone. */
+export function quietHoursReviewLeadPayload(input: {
+  reason: string;
+  nowIso: string;
+}): Record<string, unknown> {
+  return {
+    needs_human_review: true,
+    needs_human_review_at: input.nowIso,
+    needs_human_review_reason: input.reason,
+  };
+}
+
 export const REPLY_ACTION = {
   deferSwitch: 'defer_switch',
   switch: 'switch',

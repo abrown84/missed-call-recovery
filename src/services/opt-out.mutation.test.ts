@@ -7,7 +7,26 @@ import {
   isDefiniteOptOut,
   isServiceTalkWithStop,
   normalizeOptOutText,
+  replaceNbspWithSpace,
+  stripEdgeQuotes,
 } from './opt-out';
+
+describe('opt-out normalize helpers (survivor killers)', () => {
+  it('replaceNbspWithSpace keeps a real space (not delete)', () => {
+    expect(replaceNbspWithSpace('A\u00a0B')).toBe('A B');
+    expect(replaceNbspWithSpace('A\u00a0B')).not.toBe('AB');
+    expect(replaceNbspWithSpace('TAKE\u00a0ME\u00a0OFF')).toBe('TAKE ME OFF');
+  });
+
+  it('stripEdgeQuotes needs both ^ and $ anchors', () => {
+    expect(stripEdgeQuotes('"STOP')).toBe('STOP');
+    expect(stripEdgeQuotes('STOP"')).toBe('STOP');
+    expect(stripEdgeQuotes('"STOP"')).toBe('STOP');
+    expect(stripEdgeQuotes('\u201cSTOP\u201d')).toBe('STOP');
+    // Mid-string quotes must survive (anchors only)
+    expect(stripEdgeQuotes('SAY "HI" NOW')).toBe('SAY "HI" NOW');
+  });
+});
 
 describe('opt-out normalize killers', () => {
   it('strips emoji exactly (not replaced with filler)', () => {

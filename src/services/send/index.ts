@@ -31,6 +31,14 @@ import {
 } from './decisions';
 import { defaultSendDeps, type SendDeps, type SupabaseClient } from './deps';
 import {
+  abandonedSid,
+  decideReconcileAlert,
+  emptyReconcileCounts,
+  noteReconcileOutcome,
+  noteReconcileRowStatus,
+  signalFromLookupOutcome,
+} from './reconcile-tally';
+import {
   COL,
   DIRECTION_OUTBOUND,
   KIND_CAMPAIGN,
@@ -408,21 +416,7 @@ export async function reconcileOneWithDeps(
         httpStatus: 200,
         body: lookup,
       });
-    if (outcome === 'sent') {
-      signal = {
-        type: 'sent',
-        status: 'status' in lookup ? lookup.status : SMS_STATUS.queued,
-      };
-    } else if (outcome === 'failed') {
-      signal = {
-        type: 'failed',
-        status: 'status' in lookup ? String(lookup.status) : 'failed',
-      };
-    } else if (outcome === 'never_sent') {
-      signal = { type: 'never_sent' };
-    } else {
-      signal = { type: RELAY_SIGNAL.unknown as 'unknown' };
-    }
+    signal = signalFromLookupOutcome(outcome, lookup);
   } catch {
     signal = { type: RELAY_SIGNAL.unknown as 'unknown' };
   }
@@ -448,7 +442,7 @@ export async function reconcileOneWithDeps(
   }
 
   if (decision.action === 'requeue_never_sent') {
-    const abandoned = `${row.message_sid}:abandoned:${deps.clock().getTime()}`;
+    const abandoned = abandonedSid(row.message_sid, deps.clock().getTime());
     await supabase
       .from(TABLE.smsMessages)
       .update({ status: SMS_STATUS.abandonedRetry, message_sid: abandoned })
@@ -534,42 +528,22 @@ export async function reconcileAmbiguousSmsWithDeps(deps: SendDeps): Promise<{
     .order(COL.sentAt, { ascending: true })
     .limit(50);
 
-  let requeued = 0;
-  let confirmed = 0;
-  let parked = 0;
-  let needsReview = 0;
-  let unknownCount = 0;
-  let stuckSendingCount = 0;
+  let counts = emptyReconcileCounts();
 
   for (const row of rows ?? []) {
-    if (row.status === SMS_STATUS.unknown) unknownCount += 1;
-    if (row.status === SMS_STATUS.sending) stuckSendingCount += 1;
-
+    counts = noteReconcileRowStatus(counts, row.status);
     const result = await reconcileOneWithDeps(deps, row);
+    counts = noteReconcileOutcome(counts, result.kind);
     if (result.kind === 'resolved') {
-      confirmed += 1;
       await onReconcileResolved(supabase, row.message_sid);
     } else if (result.kind === 'never_sent') {
-      requeued += 1;
       await onReconcileNeverSent(supabase, row.message_sid, row.lead_id);
-    } else if (result.kind === 'needs_review') {
-      needsReview += 1;
-    } else if (result.kind === 'ambiguous') {
-      parked += 1;
     }
   }
 
-  const alert =
-    unknownCount + stuckSendingCount >= UNKNOWN_SMS_ALERT_THRESHOLD ||
-    needsReview > 0;
   return {
-    unknownCount,
-    stuckSendingCount,
-    requeued,
-    confirmed,
-    parked,
-    needsReview,
-    alert,
+    ...counts,
+    alert: decideReconcileAlert(counts, UNKNOWN_SMS_ALERT_THRESHOLD),
   };
 }
 

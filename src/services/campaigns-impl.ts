@@ -10,7 +10,6 @@ import {
   getCampaignReplyMode,
   hasFreshClaim,
   parkedNextSendAt,
-  planEnrollmentStart,
   selectCampaignForUrgency,
 } from '@/services/campaign-logic';
 import {
@@ -26,28 +25,28 @@ import {
 import {
   decideCampaignLeadGates,
   decideCampaignSendDispatch,
-  decideEnrollmentGates,
-  decideEnrollmentPlan,
   decideReconcileAdvanceEligibility,
   decideRequeueEligibility,
   decideSkipRecoveryGate,
-  decideSwitchClaimGate,
   mapRecoveryOutcomeToState,
 } from '@/services/campaign-decisions';
+import { planEnroll, planSwitch } from '@/services/campaign-enroll-plan';
 import {
   REPLY_ACTION,
   advanceStepPayload,
   claimDuePayload,
+  clearOutboundSidPayload,
   completeEnrollmentPayload,
   computeNextSendAt,
-  enrollmentInsertPayload,
   needsReviewEnrollmentPayload,
   pauseEnrollmentPayload,
+  processDueErrorParkPayload,
+  quietHoursReviewLeadPayload,
   reclaimStalePayload,
+  reconcileAdvancePayload,
+  reconcileCompletePayload,
   releaseClaimPayload,
-  sortCampaignSteps,
-  stepsOrEmpty,
-  switchUpdatePayload,
+  requeueStepPayload,
 } from '@/services/campaign-io-plans';
 import { processDeferredRecoveries, sendRecoverySMS } from '@/services/sms';
 import {
@@ -87,6 +86,7 @@ type Campaign = Database['public']['Tables']['campaigns']['Row'];
 type CampaignStep = Database['public']['Tables']['campaign_steps']['Row'];
 type CampaignEnrollment =
   Database['public']['Tables']['campaign_enrollments']['Row'];
+type CampaignRow = Campaign & { campaign_steps?: CampaignStep[] | null };
 
 export type EnrollmentResult =
   | {
@@ -116,87 +116,57 @@ export async function enrollLeadInCampaign(
   // QC r6 P0: enroll non-responders into Standard (urgency null → Standard
   // campaign). Classification still switches Emergency/High on reply.
   const existing = await getEnrollmentForLead(leadId);
-  const gate = decideEnrollmentGates({
-    leadFound: Boolean(lead) && !leadError,
+  const leadFound = Boolean(lead) && !leadError;
+
+  const { data: campaigns, error: campaignError } = leadFound
+    ? await supabase
+        .from(TABLE.campaigns)
+        .select(CAMPAIGN_SELECT_STAR_STEPS)
+        .eq(COL.status, ENROLLMENT_STATUS.active)
+        .eq(COL.autoEnroll, true)
+    : { data: null, error: null };
+
+  const recoveryState = leadFound
+    ? await getRecoverySendState(supabase, leadId)
+    : 'absent';
+
+  const plan = planEnroll({
+    leadId,
+    leadFound,
     optedOut: Boolean(lead?.opted_out),
     existingStatus: existing?.status ?? null,
+    campaigns: (campaigns as CampaignRow[] | null) ?? null,
+    campaignError: Boolean(campaignError),
+    urgency: lead?.urgency ?? null,
+    recoveryState,
+    smsOutboundSid: lead?.sms_outbound_sid ?? null,
+    statusActive: ENROLLMENT_STATUS.active,
   });
-  if (!gate.ok) {
-    if (gate.reason === 'lead_not_found') {
+
+  if (plan.type === 'reject') {
+    if (plan.reason === 'lead_not_found') {
       // Stryker disable StringLiteral: log-only (no control flow)
       console.error('Failed to fetch lead for enrollment:', leadError);
       // Stryker restore StringLiteral
+    } else if (plan.reason === 'no_campaigns') {
+      // Stryker disable StringLiteral: log-only (no control flow)
+      console.warn('No active campaigns found for enrollment');
+      // Stryker restore StringLiteral
+    } else if (plan.reason === 'no_matching_campaign') {
+      // Stryker disable StringLiteral: log-only (no control flow)
+      console.warn('No matching campaign found for lead');
+      // Stryker restore StringLiteral
+    } else if (plan.reason === 'no_steps') {
+      // Stryker disable StringLiteral: log-only (no control flow)
+      console.error('Campaign has no steps');
+      // Stryker restore StringLiteral
     }
-    return { enrolled: false, reason: gate.reason };
-  }
-  if (!lead) {
-    return { enrolled: false, reason: 'lead_not_found' };
-  }
-
-  const { data: campaigns, error: campaignError } = await supabase
-    .from(TABLE.campaigns)
-    .select(CAMPAIGN_SELECT_STAR_STEPS)
-    .eq(COL.status, ENROLLMENT_STATUS.active)
-    .eq(COL.autoEnroll, true);
-
-  if (campaignError || !campaigns || campaigns.length === 0) {
-    // Stryker disable StringLiteral: log-only (no control flow)
-    console.warn('No active campaigns found for enrollment');
-    // Stryker restore StringLiteral
-    return { enrolled: false, reason: 'no_campaigns' };
-  }
-
-  const selectedCampaign = selectCampaignForUrgency(
-    campaigns as Array<Campaign & { campaign_steps: CampaignStep[] }>,
-    lead.urgency
-  );
-
-  if (!selectedCampaign) {
-    // Stryker disable StringLiteral: log-only (no control flow)
-    console.warn('No matching campaign found for lead');
-    // Stryker restore StringLiteral
-    return { enrolled: false, reason: 'no_matching_campaign' };
-  }
-
-  const steps = sortCampaignSteps(
-    stepsOrEmpty(selectedCampaign.campaign_steps as unknown as CampaignStep[])
-  );
-
-  if (steps.length === 0) {
-    // Stryker disable StringLiteral: log-only (no control flow)
-    console.error('Campaign has no steps');
-    // Stryker restore StringLiteral
-    return { enrolled: false, reason: 'no_steps' };
-  }
-
-  // Gate step 1 on recovery's *resolved* outcome — not just sms_outbound_sid.
-  const recoveryState = await getRecoverySendState(supabase, leadId);
-  const recoveryConfirmed =
-    recoveryState === 'confirmed' || Boolean(lead.sms_outbound_sid);
-  // Recovery only substitutes Standard's delay-0 initial — never Emergency/High
-  // (staging evidence c: first Emergency step must still go out).
-  const plan = decideEnrollmentPlan({
-    steps,
-    recoveryState,
-    recoveryConfirmed,
-    treatRecoveryAsInitial: selectedCampaign.urgency_filter == null,
-  });
-  if (!plan.ok) {
     return { enrolled: false, reason: plan.reason };
   }
-  const nextSendAt = plan.nextSendAt;
 
   const { error: enrollError } = await supabase
     .from(TABLE.campaignEnrollments)
-    .insert(
-      enrollmentInsertPayload({
-        leadId,
-        campaignId: selectedCampaign.id,
-        currentStep: plan.currentStep,
-        status: ENROLLMENT_STATUS.active,
-        nextSendAt,
-      })
-    );
+    .insert(plan.payload);
 
   if (enrollError) {
     if (enrollError.code === PG_UNIQUE) {
@@ -210,20 +180,13 @@ export async function enrollLeadInCampaign(
 
   // Stryker disable StringLiteral: log-only (no control flow)
   console.log(
-    `Lead ${leadId} enrolled in campaign ${selectedCampaign.name} ` +
-      `(urgency=${lead.urgency ?? 'null'}, step=${plan.currentStep}` +
-      `${plan.skippedInitial ? ', skipped initial' : ''}), next send: ${nextSendAt}`
+    `Lead ${leadId} enrolled in campaign ${plan.result.campaignName} ` +
+      `(urgency=${lead?.urgency ?? 'null'}, step=${plan.result.currentStep}` +
+      `${plan.result.skippedInitial ? ', skipped initial' : ''}), next send: ${plan.result.nextSendAt}`
   );
   // Stryker restore StringLiteral
 
-  return {
-    enrolled: true,
-    campaignId: selectedCampaign.id,
-    campaignName: selectedCampaign.name,
-    currentStep: plan.currentStep,
-    nextSendAt,
-    skippedInitial: plan.skippedInitial,
-  };
+  return plan.result;
 }
 
 /**
@@ -237,23 +200,11 @@ export async function switchEnrollmentCampaign(
   const supabase = createServerClient();
 
   const existing = await getEnrollmentForLead(leadId);
-  const switchGate = decideSwitchClaimGate({
-    hasEnrollment: Boolean(existing),
-    freshClaim: existing ? hasFreshClaim(existing) : false,
-  });
-  if (!switchGate.ok) {
-    return { enrolled: false, reason: switchGate.reason };
-  }
-
   const { data: lead, error: leadError } = await supabase
     .from(TABLE.leads)
     .select(ENROLLMENT_SELECT_STAR)
     .eq(COL.id, leadId)
     .single();
-
-  if (leadError || !lead) {
-    return { enrolled: false, reason: 'lead_not_found' };
-  }
 
   const { data: campaign, error: campError } = await supabase
     .from(TABLE.campaigns)
@@ -261,25 +212,24 @@ export async function switchEnrollmentCampaign(
     .eq(COL.id, targetCampaignId)
     .single();
 
-  if (campError || !campaign) {
-    return { enrolled: false, reason: 'campaign_not_found' };
-  }
-
-  const steps = sortCampaignSteps(
-    stepsOrEmpty(campaign.campaign_steps as unknown as CampaignStep[])
-  );
-
-  if (steps.length === 0) {
-    return { enrolled: false, reason: 'no_steps' };
-  }
-
-  // Staging (c): recovery ≠ Emergency initial — always start at step 1 of the
-  // target campaign so the first Emergency text goes out on switch.
-  const plan = planEnrollmentStart(steps, {
-    recoveryAlreadySent: Boolean(lead.sms_outbound_sid),
-    treatRecoveryAsInitial: false,
+  // Staging (c): recovery ≠ Emergency initial — planSwitch keeps
+  // treatRecoveryAsInitial: false so the first Emergency text goes out.
+  const nowIso = new Date().toISOString();
+  const plan = planSwitch({
+    hasEnrollment: Boolean(existing),
+    freshClaim: existing ? hasFreshClaim(existing) : false,
+    leadFound: Boolean(lead) && !leadError,
+    campaignFound: Boolean(campaign) && !campError,
+    campaign: (campaign as CampaignRow | null) ?? null,
+    targetCampaignId,
+    smsOutboundSid: lead?.sms_outbound_sid ?? null,
+    nowIso,
   });
-  const nextSendAt = plan.nextSendAt.toISOString();
+
+  if (plan.type === 'reject') {
+    return { enrolled: false, reason: plan.reason };
+  }
+
   const staleBefore = new Date(Date.now() - CLAIM_STALE_MS).toISOString();
 
   // Only switch when not mid-send: claim_token null OR claim stale.
@@ -287,15 +237,7 @@ export async function switchEnrollmentCampaign(
   // referenced by the filter or Postgres returns 42703 (staging evidence c).
   const { data: updated, error: updateError } = await supabase
     .from(TABLE.campaignEnrollments)
-    .update(
-      switchUpdatePayload({
-        targetCampaignId,
-        currentStep: plan.currentStep,
-        status: ENROLLMENT_STATUS.active,
-        nextSendAt,
-        nowIso: new Date().toISOString(),
-      })
-    )
+    .update(plan.payload)
     .eq(COL.leadId, leadId)
     .eq(COL.status, ENROLLMENT_STATUS.active)
     .or(`claim_token.is.null,claimed_at.lt.${staleBefore}`)
@@ -311,20 +253,12 @@ export async function switchEnrollmentCampaign(
 
   // Stryker disable StringLiteral: log-only (no control flow)
   console.log(
-    `Lead ${leadId} switched to campaign ${campaign.name}, ` +
-      `step=${plan.currentStep}, next send: ${nextSendAt}`
+    `Lead ${leadId} switched to campaign ${plan.result.campaignName}, ` +
+      `step=${plan.result.currentStep}, next send: ${plan.result.nextSendAt}`
   );
   // Stryker restore StringLiteral
 
-  return {
-    enrolled: true,
-    campaignId: targetCampaignId,
-    campaignName: campaign.name,
-    currentStep: plan.currentStep,
-    nextSendAt,
-    skippedInitial: plan.skippedInitial,
-    switched: true,
-  };
+  return plan.result;
 }
 
 export async function handleClassifiedReplyEnrollment(
@@ -576,11 +510,12 @@ export async function sendCampaignSMS(
       );
       await supabase
         .from(TABLE.leads)
-        .update({
-          needs_human_review: true,
-          needs_human_review_at: new Date().toISOString(),
-          needs_human_review_reason: REVIEW_REASON_QUIET_HOURS,
-        })
+        .update(
+          quietHoursReviewLeadPayload({
+            reason: REVIEW_REASON_QUIET_HOURS,
+            nowIso: new Date().toISOString(),
+          })
+        )
         .eq(COL.id, lead.id);
       await releaseClaim(supabase, enrollmentId, token, {
         nextSendAt: dispatch.nextSendAt,
@@ -976,10 +911,7 @@ async function resendRecoveryIdempotent(
 ): Promise<void> {
   await supabase
     .from(TABLE.leads)
-    .update({
-      sms_outbound_sid: null,
-      updated_at: new Date().toISOString(),
-    })
+    .update(clearOutboundSidPayload({ nowIso: new Date().toISOString() }))
     .eq(COL.id, leadId)
     .eq(COL.smsOutboundSid, abandonedOriginalSid);
 
@@ -1042,19 +974,18 @@ async function advanceEnrollmentAfterConfirmedSend(
   if (!steps?.length) return;
 
   const nextStep = steps.find((s) => s.step_number === stepNumber + 1);
+  const nowIso = new Date().toISOString();
   if (nextStep) {
-    const nextSendAt = new Date(
-      Date.now() + nextStep.delay_minutes * 60 * 1000
-    ).toISOString();
+    const nextSendAt = computeNextSendAt(Date.now(), nextStep.delay_minutes);
     await supabase
       .from(TABLE.campaignEnrollments)
-      .update({
-        current_step: nextStep.step_number,
-        next_send_at: nextSendAt,
-        claimed_at: null,
-        claim_token: null,
-        updated_at: new Date().toISOString(),
-      })
+      .update(
+        reconcileAdvancePayload({
+          nextStepNumber: nextStep.step_number,
+          nextSendAt,
+          nowIso,
+        })
+      )
       .eq(COL.id, enrollmentId)
       .eq(COL.status, ENROLLMENT_STATUS.active)
       .eq(COL.stepNumber, stepNumber)
@@ -1062,14 +993,12 @@ async function advanceEnrollmentAfterConfirmedSend(
   } else {
     await supabase
       .from(TABLE.campaignEnrollments)
-      .update({
-        status: ENROLLMENT_STATUS.completed,
-        completed_at: new Date().toISOString(),
-        next_send_at: null,
-        claimed_at: null,
-        claim_token: null,
-        updated_at: new Date().toISOString(),
-      })
+      .update(
+        reconcileCompletePayload({
+          status: ENROLLMENT_STATUS.completed,
+          nowIso,
+        })
+      )
       .eq(COL.id, enrollmentId)
       .eq(COL.status, ENROLLMENT_STATUS.active)
       .eq(COL.stepNumber, stepNumber)
@@ -1104,13 +1033,12 @@ async function requeueExactCampaignStep(
 
   const { data, error } = await supabase
     .from(TABLE.campaignEnrollments)
-    .update({
-      current_step: stepNumber,
-      next_send_at: new Date().toISOString(),
-      claimed_at: null,
-      claim_token: null,
-      updated_at: new Date().toISOString(),
-    })
+    .update(
+      requeueStepPayload({
+        stepNumber,
+        nowIso: new Date().toISOString(),
+      })
+    )
     .eq(COL.id, enrollmentId)
     .eq(COL.status, ENROLLMENT_STATUS.active)
     .eq(COL.campaignId, campaignId)
@@ -1204,12 +1132,12 @@ export async function processDueCampaigns(): Promise<{
         const supabase = createServerClient();
         await supabase
           .from(TABLE.campaignEnrollments)
-          .update({
-            claim_token: null,
-            claimed_at: null,
-            next_send_at: parkedNextSendAt(),
-            updated_at: new Date().toISOString(),
-          })
+          .update(
+            processDueErrorParkPayload({
+              nextSendAt: parkedNextSendAt(),
+              nowIso: new Date().toISOString(),
+            })
+          )
           .eq(COL.id, id)
           .eq(COL.status, ENROLLMENT_STATUS.active);
       } catch {

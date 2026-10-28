@@ -4,14 +4,20 @@ import {
   REPLY_ACTION,
   advanceStepPayload,
   claimDuePayload,
+  clearOutboundSidPayload,
   completeEnrollmentPayload,
   computeNextSendAt,
   enrollmentInsertPayload,
   needsReviewEnrollmentPayload,
   nextStepDelayMs,
   pauseEnrollmentPayload,
+  processDueErrorParkPayload,
+  quietHoursReviewLeadPayload,
   reclaimStalePayload,
+  reconcileAdvancePayload,
+  reconcileCompletePayload,
   releaseClaimPayload,
+  requeueStepPayload,
   sortCampaignSteps,
   stepsOrEmpty,
   switchUpdatePayload,
@@ -127,6 +133,59 @@ describe('campaign-io-plans', () => {
       claim_token: null,
       next_send_at: 't',
       updated_at: 'n',
+    });
+
+    expect(
+      reconcileAdvancePayload({
+        nextStepNumber: 2,
+        nextSendAt: 't',
+        nowIso: 'n',
+      })
+    ).toEqual({
+      current_step: 2,
+      next_send_at: 't',
+      claimed_at: null,
+      claim_token: null,
+      updated_at: 'n',
+    });
+
+    expect(
+      reconcileCompletePayload({ status: 'completed', nowIso: 'n' })
+    ).toMatchObject({
+      status: 'completed',
+      completed_at: 'n',
+      next_send_at: null,
+      claim_token: null,
+    });
+
+    expect(requeueStepPayload({ stepNumber: 3, nowIso: 'n' })).toEqual({
+      current_step: 3,
+      next_send_at: 'n',
+      claimed_at: null,
+      claim_token: null,
+      updated_at: 'n',
+    });
+
+    expect(clearOutboundSidPayload({ nowIso: 'n' })).toEqual({
+      sms_outbound_sid: null,
+      updated_at: 'n',
+    });
+
+    expect(
+      processDueErrorParkPayload({ nextSendAt: 'park', nowIso: 'n' })
+    ).toEqual({
+      claim_token: null,
+      claimed_at: null,
+      next_send_at: 'park',
+      updated_at: 'n',
+    });
+
+    expect(
+      quietHoursReviewLeadPayload({ reason: 'quiet_hours', nowIso: 'n' })
+    ).toEqual({
+      needs_human_review: true,
+      needs_human_review_at: 'n',
+      needs_human_review_reason: 'quiet_hours',
     });
   });
 
