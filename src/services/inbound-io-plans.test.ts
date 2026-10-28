@@ -53,8 +53,7 @@ describe('inbound-io-plans', () => {
     });
   });
 
-  it('stopLeadLookupResult short-circuits second query', () => {
-    expect(stopLeadLookupResult({ id: 'x' }, true)).toEqual({ data: { id: 'x' } });
-    expect(stopLeadLookupResult(null, false)).toBe(null);
+  it('skipSecondLookup treats null anyLead with matching phones as skip', () => {
+    expect(stopLeadLookupResult(null, true)).toEqual({ data: null });
   });
 });

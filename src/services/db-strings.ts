@@ -105,6 +105,8 @@ export const DIRECTION_OUTBOUND = 'outbound';
 
 export const LEAD_SELECT_GATES = 'opted_out, timezone, sms_outbound_sid';
 export const LEAD_SELECT_STAR = '*';
+
+export const ORDER_CREATED_DESC = { ascending: false } as const;
 export const SMS_SELECT_STATUS = 'status';
 export const SMS_SELECT_ID_STATUS = 'id, status';
 export const SMS_SELECT_DEFERRED =

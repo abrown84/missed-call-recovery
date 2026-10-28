@@ -17,6 +17,8 @@ export function missedCallRowPayload(input: {
   };
 }
 
+export const EMPTY_LOOKUP = { data: null } as const;
+
 export function missedCallLeadPayload(input: {
   businessId: string;
   missedCallId: string;
@@ -32,4 +34,14 @@ export function missedCallLeadPayload(input: {
     [COL.optedOut]: input.suppressed,
     [COL.optedOutAt]: input.optedOutAt,
   };
+}
+
+export function missedCallLeadInsertInput(input: {
+  businessId: string;
+  missedCallId: string;
+  callerE164: string;
+  suppressed: boolean;
+  optedOutAt: string | null;
+}) {
+  return input;
 }

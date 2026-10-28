@@ -1,9 +1,12 @@
 import {
+  missedCallLeadInsertInput,
   missedCallLeadPayload,
   missedCallRowPayload,
+  EMPTY_LOOKUP,
 } from '@/services/missed-call-io-plans';
 import {
   COL,
+  LEAD_SELECT_STAR,
   PG_UNIQUE,
   TABLE,
 } from '@/services/db-strings';
@@ -41,7 +44,7 @@ export async function processMissedCallWithDeps(
 
   const { data: business, error: bizError } = await supabase
     .from(TABLE.businesses)
-    .select('*')
+    .select(LEAD_SELECT_STAR)
     .eq(COL.phone, event.businessPhone)
     .single();
 
@@ -81,7 +84,7 @@ export async function processMissedCallWithDeps(
             .select(COL.id)
             .eq(COL.missedCallId, existing.id)
             .single()
-        : { data: null };
+        : EMPTY_LOOKUP;
       if (existing && existingLead) {
         return { missedCallId: existing.id, leadId: existingLead.id };
       }
@@ -95,6 +98,7 @@ export async function processMissedCallWithDeps(
   const callerE164 = deps.normalizeToE164(event.callerPhone);
 
   let suppressed = false;
+  // Stryker disable next-line BooleanLiteral: overwritten before read — fail-closed path sets true
   try {
     suppressed = await deps.isPhoneSuppressed(business.id, callerE164);
   } catch (err) {
@@ -111,13 +115,15 @@ export async function processMissedCallWithDeps(
   const { data: lead, error: leadError } = await supabase
     .from(TABLE.leads)
     .insert(
-      missedCallLeadPayload({
-        businessId: business.id,
-        missedCallId: missedCall.id,
-        callerE164,
-        suppressed,
-        optedOutAt: suppressed ? deps.clock().toISOString() : null,
-      })
+      missedCallLeadPayload(
+        missedCallLeadInsertInput({
+          businessId: business.id,
+          missedCallId: missedCall.id,
+          callerE164,
+          suppressed,
+          optedOutAt: suppressed ? deps.clock().toISOString() : null,
+        })
+      )
     )
     .select()
     .single();

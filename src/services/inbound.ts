@@ -1,6 +1,7 @@
 import {
   inboundAmbiguousReviewPayload,
   inboundQualifiedLeadPayload,
+  inboundSmsInsertInput,
   inboundSmsReceivedPayload,
   stopLeadLookupResult,
 } from '@/services/inbound-io-plans';
@@ -13,6 +14,7 @@ import {
   LEAD_STATUS,
   LEGACY_LEAD_STATUSES,
   OPEN_LEAD_STATUSES,
+  ORDER_CREATED_DESC,
   TABLE,
 } from '@/services/db-strings';
 import type { Database } from '@/types/database';
@@ -100,11 +102,12 @@ export async function processInboundSmsWithDeps(
       .select(COL.id)
       .eq(COL.businessId, business.id)
       .eq(COL.callerPhone, phoneForLookup)
-      .order(COL.createdAt, { ascending: false })
+      .order(COL.createdAt, ORDER_CREATED_DESC)
       .limit(1)
       .maybeSingle();
 
-    const skipSecondLookup = Boolean(anyLead || phoneForLookup === event.from);
+    const skipSecondLookup =
+      anyLead != null || phoneForLookup === event.from;
     const shortCircuit = stopLeadLookupResult(anyLead, skipSecondLookup);
     const { data: rawLead } =
       shortCircuit === null
@@ -113,7 +116,7 @@ export async function processInboundSmsWithDeps(
             .select(COL.id)
             .eq(COL.businessId, business.id)
             .eq(COL.callerPhone, event.from)
-            .order(COL.createdAt, { ascending: false })
+            .order(COL.createdAt, ORDER_CREATED_DESC)
             .limit(1)
             .maybeSingle()
         : shortCircuit;
@@ -139,11 +142,13 @@ export async function processInboundSmsWithDeps(
       });
       await deps.pauseCampaignForLead(leadId).catch(() => undefined);
       await supabase.from(TABLE.smsMessages).insert(
-        inboundSmsReceivedPayload({
-          leadId,
-          body,
-          messageSid: messageId,
-        })
+        inboundSmsReceivedPayload(
+          inboundSmsInsertInput({
+            leadId,
+            body,
+            messageSid: messageId,
+          })
+        )
       );
       return {
         status: 'opt_out_recorded',
@@ -165,7 +170,7 @@ export async function processInboundSmsWithDeps(
       .select(COL.id)
       .eq(COL.businessId, business.id)
       .eq(COL.callerPhone, phoneForLookup)
-      .order(COL.createdAt, { ascending: false })
+      .order(COL.createdAt, ORDER_CREATED_DESC)
       .limit(1)
       .maybeSingle();
 
@@ -180,11 +185,13 @@ export async function processInboundSmsWithDeps(
         )
         .eq(COL.id, anyLead.id);
       await supabase.from(TABLE.smsMessages).insert(
-        inboundSmsReceivedPayload({
-          leadId: anyLead.id,
-          body,
-          messageSid: messageId,
-        })
+        inboundSmsReceivedPayload(
+          inboundSmsInsertInput({
+            leadId: anyLead.id,
+            body,
+            messageSid: messageId,
+          })
+        )
       );
       return { status: 'ambiguous_opt_out', leadId: anyLead.id };
     }
@@ -221,9 +228,9 @@ export async function processInboundSmsWithDeps(
       .select(LEAD_SELECT_STAR)
       .eq(COL.businessId, business.id)
       .eq(COL.callerPhone, fromE164)
-      .in(COL.status, [...OPEN_LEAD_STATUSES])
+      .in(COL.status, OPEN_LEAD_STATUSES as unknown as string[])
       .gte(COL.createdAt, cutoff)
-      .order(COL.createdAt, { ascending: false })
+      .order(COL.createdAt, ORDER_CREATED_DESC)
       .limit(1)
       .maybeSingle();
     lead = openLead;
@@ -235,9 +242,9 @@ export async function processInboundSmsWithDeps(
       .select(LEAD_SELECT_STAR)
       .eq(COL.businessId, business.id)
       .eq(COL.callerPhone, event.from)
-      .in(COL.status, [...LEGACY_LEAD_STATUSES])
+      .in(COL.status, LEGACY_LEAD_STATUSES as unknown as string[])
       .gte(COL.createdAt, cutoff)
-      .order(COL.createdAt, { ascending: false })
+      .order(COL.createdAt, ORDER_CREATED_DESC)
       .limit(1)
       .maybeSingle();
     lead = legacy;
@@ -251,11 +258,13 @@ export async function processInboundSmsWithDeps(
   }
 
   await supabase.from(TABLE.smsMessages).insert(
-    inboundSmsReceivedPayload({
-      leadId: lead.id,
-      body,
-      messageSid: messageId,
-    })
+    inboundSmsReceivedPayload(
+      inboundSmsInsertInput({
+        leadId: lead.id,
+        body,
+        messageSid: messageId,
+      })
+    )
   );
 
   const classification = await deps.classifyUrgency(body, business.vertical);

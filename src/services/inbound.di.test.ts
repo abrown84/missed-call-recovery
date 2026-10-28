@@ -58,6 +58,7 @@ function createDb(handlers: {
   const inLog: Array<{ table: string; col: string; vals: unknown }> = [];
   const gteLog: Array<{ table: string; col: string; val: unknown }> = [];
   const fromLog: string[] = [];
+  const orderLog: Array<{ ascending?: boolean }> = [];
 
   const from = vi.fn((table: string) => {
     fromLog.push(table);
@@ -90,6 +91,10 @@ function createDb(handlers: {
         gteLog.push({ table, col, val });
         return c;
       });
+      c.order = vi.fn((_col: string, opts?: { ascending?: boolean }) => {
+        orderLog.push(opts ?? {});
+        return c;
+      });
       c.update = vi.fn((payload: unknown) => {
         updates.push(payload);
         return c;
@@ -107,6 +112,7 @@ function createDb(handlers: {
     inLog,
     gteLog,
     fromLog,
+    orderLog,
     resetPass: () => {
       leadPass = 0;
     },
@@ -539,7 +545,7 @@ describe('processInboundSmsWithDeps', () => {
       return chain({ data: null, error: null });
     });
     const { deps } = buildDeps({
-      dbImpl: { from, inserts: [], updates: [], resetPass: () => undefined, eqLog: [], inLog: [], gteLog: [], fromLog: [] },
+      dbImpl: { from, inserts: [], updates: [], resetPass: () => undefined, eqLog: [], inLog: [], gteLog: [], fromLog: [], orderLog: [] },
     });
 
     const result = await processInboundSmsWithDeps(deps, baseEvent());
@@ -609,6 +615,7 @@ describe('processInboundSmsWithDeps', () => {
         inLog: [],
         gteLog: [],
         fromLog: [],
+        orderLog: [],
         resetPass: () => undefined,
       },
       tryNormalizeToE164: vi.fn((p: string) => p),
@@ -647,6 +654,7 @@ describe('processInboundSmsWithDeps', () => {
         inLog: [],
         gteLog: [],
         fromLog: [],
+        orderLog: [],
       },
     });
 
@@ -785,6 +793,92 @@ describe('processInboundSmsWithDeps', () => {
       col: 'caller_phone',
       val: '5551234567',
     });
+  });
+
+  it('does not classify urgency on ambiguous opt-out path', async () => {
+    const db = createDb({
+      leads: () => ({ data: { id: 'a1' }, error: null }),
+    });
+    const { deps, spies } = buildDeps({
+      dbImpl: db,
+      classifyOptOut: vi.fn(() => ({
+        kind: 'ambiguous' as const,
+        reason: 'x',
+      })),
+    });
+
+    await processInboundSmsWithDeps(deps, baseEvent({ body: 'please stop calling' }));
+
+    expect(spies.classifyUrgency).not.toHaveBeenCalled();
+  });
+
+  it('orders lead lookups by created_at descending', async () => {
+    const lead = {
+      id: 'lead-order',
+      created_at: FIXED.toISOString(),
+      status: 'pending',
+    };
+    const db = createDb({ leads: () => ({ data: lead, error: null }) });
+    const { deps } = buildDeps({ dbImpl: db });
+
+    await processInboundSmsWithDeps(deps, baseEvent());
+
+    expect(db.orderLog.length).toBeGreaterThan(0);
+    expect(db.orderLog.every((o) => o.ascending === false)).toBe(true);
+  });
+
+  it('warns on STOP when sender is not normalizable', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const db = createDb({ leads: () => ({ data: null, error: null }) });
+    const { deps } = buildDeps({
+      dbImpl: db,
+      classifyOptOut: vi.fn(() => ({ kind: 'opt_out' as const })),
+      tryNormalizeToE164: vi.fn(() => null),
+    });
+
+    await processInboundSmsWithDeps(
+      deps,
+      baseEvent({ from: 'bad', body: 'STOP' })
+    );
+
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it('uses single STOP lead query when phoneForLookup equals raw from', async () => {
+    let leadQueries = 0;
+    const from = vi.fn((table: string) => {
+      if (table === 'businesses') {
+        return chain({ data: BIZ, error: null });
+      }
+      if (table === 'leads') {
+        leadQueries += 1;
+        return chain({ data: null, error: null });
+      }
+      return chain({ data: null, error: null });
+    });
+    const { deps } = buildDeps({
+      dbImpl: {
+        from,
+        inserts: [],
+        updates: [],
+        eqLog: [],
+        inLog: [],
+        gteLog: [],
+        fromLog: [],
+        orderLog: [],
+        resetPass: () => undefined,
+      },
+      classifyOptOut: vi.fn(() => ({ kind: 'opt_out' as const })),
+      tryNormalizeToE164: vi.fn(() => '+15551234567'),
+    });
+
+    await processInboundSmsWithDeps(
+      deps,
+      baseEvent({ from: '+15551234567', body: 'STOP' })
+    );
+
+    expect(leadQueries).toBe(1);
   });
 
   it('stores ambiguous reason on lead flag', async () => {

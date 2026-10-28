@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   missedCallLeadPayload,
   missedCallRowPayload,
+  EMPTY_LOOKUP,
 } from './missed-call-io-plans';
 
 describe('missed-call-io-plans', () => {
@@ -40,5 +41,9 @@ describe('missed-call-io-plans', () => {
         optedOutAt: '2026-01-01T00:00:00.000Z',
       })
     ).toMatchObject({ status: 'spam', opted_out: true });
+  });
+
+  it('EMPTY_LOOKUP', () => {
+    expect(EMPTY_LOOKUP).toEqual({ data: null });
   });
 });

@@ -5,6 +5,14 @@ import {
   LEAD_STATUS,
 } from '@/services/db-strings';
 
+export function inboundSmsInsertInput(input: {
+  leadId: string;
+  body: string;
+  messageSid: string;
+}) {
+  return input;
+}
+
 export function inboundSmsReceivedPayload(input: {
   leadId: string;
   body: string;

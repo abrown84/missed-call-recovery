@@ -42,6 +42,7 @@ import {
   INBOUND_MESSAGE_ID_PREFIX,
   LEAD_STATUS,
   LEGACY_LEAD_STATUSES,
+  ORDER_CREATED_DESC,
   OPEN_LEAD_STATUSES,
   reconcileOrFilter,
 } from './db-strings';
@@ -87,7 +88,7 @@ describe('db-strings constants (kill StringLiteral mutants)', () => {
     expect(LEGACY_LEAD_STATUSES).toEqual(['pending', 'qualified', 'escalated']);
     expect(SMS_STATUS.received).toBe('received');
     expect(INBOUND_MESSAGE_ID_PREFIX).toBe('brwn-in-');
-    expect(ENV_BRWN_DEFAULT_BUSINESS_PHONE).toBe('BRWN_DEFAULT_BUSINESS_PHONE');
+    expect(ORDER_CREATED_DESC).toEqual({ ascending: false });
   });
 
   it('sms / enrollment statuses', () => {

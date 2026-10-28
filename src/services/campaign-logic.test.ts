@@ -278,4 +278,59 @@ describe('misc helpers', () => {
   it('classifyMessageInsertError failed for other codes', () => {
     expect(classifyMessageInsertError({ code: 'XX' })).toBe('failed');
   });
+
+  it('getCampaignReplyMode defaults pause when env missing', () => {
+    expect(getCampaignReplyMode({})).toBe('pause');
+    expect(getCampaignReplyMode({ CAMPAIGN_REPLY_MODE: '  continue  ' })).toBe(
+      'continue'
+    );
+  });
+
+  it('decideReplyEnrollmentAction respects custom claimStaleMs', () => {
+    const now = new Date('2026-10-28T12:00:00.000Z');
+    expect(
+      decideReplyEnrollmentAction(
+        {
+          id: 'e1',
+          campaign_id: 'c-std',
+          status: 'active',
+          claimed_at: '2026-10-28T11:59:30.000Z',
+        },
+        CAMPAIGNS[0],
+        { now, claimStaleMs: 60_000 }
+      )
+    ).toEqual({ action: 'defer_switch', targetCampaignId: 'c-em' });
+  });
+
+  it('isEnrollmentClaimable when next_send_at is in the future', () => {
+    const now = new Date('2026-10-28T12:00:00.000Z');
+    expect(
+      isEnrollmentClaimable(
+        {
+          status: 'active',
+          next_send_at: '2026-10-28T13:00:00.000Z',
+          claimed_at: null,
+        },
+        now
+      )
+    ).toBe(false);
+  });
+
+  it('isEnrollmentClaimable when stale claim and no next_send_at', () => {
+    const now = new Date('2026-10-28T12:00:00.000Z');
+    expect(
+      isEnrollmentClaimable(
+        {
+          status: 'active',
+          next_send_at: null,
+          claimed_at: new Date(now.getTime() - CLAIM_STALE_MS - 1).toISOString(),
+        },
+        now
+      )
+    ).toBe(true);
+  });
+
+  it('selectCampaignForUrgency falls back to Standard when urgency unknown', () => {
+    expect(selectCampaignForUrgency(CAMPAIGNS, 'low')).toBe(CAMPAIGNS[2]);
+  });
 });
