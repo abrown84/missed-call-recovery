@@ -2,21 +2,38 @@
 /**
  * Staging / preview evidence helper for campaign timing + urgency enrollment.
  *
+ * Modes:
+ * 1) Live HTTP (default): hits CRON_APP_URL webhooks + cron.
+ * 2) Dry-run DB: set STAGING_EVIDENCE_MODE=dry-run-db to exercise SQL checks
+ *    against DATABASE_URL / SUPABASE_DB_URL without sending SMS.
+ *
  * SAFE DEFAULTS:
- * - Refuses to run unless MESSAGING_PROVIDER=dry-run (or CONFIRM_LIVE_SMS=yes
- *   with an explicit STAGING_TEST_TO number already used in this repo — none is).
+ * - Refuses HTTP mode unless MESSAGING_PROVIDER=dry-run (or CONFIRM_LIVE_SMS=yes).
  * - Never prints secrets; only redacts phones in logs.
  *
- * Usage (staging preview with dry-run sender configured on the deployment):
- *   CRON_APP_URL=https://your-preview.vercel.app \
- *   CRON_SECRET=... \
- *   BRWN_WEBHOOK_SECRET=... \
- *   STAGING_BUSINESS_PHONE=+1... \
+ * Usage (HTTP / dry-run messaging):
+ *   CRON_APP_URL=https://staging.example \
+ *   CRON_SECRET=... BRWN_WEBHOOK_SECRET=... STAGING_BUSINESS_PHONE=+1... \
  *   MESSAGING_PROVIDER=dry-run \
  *   node scripts/staging-campaign-evidence.mjs
  *
- * If required env vars are missing, prints exactly what is missing and exits 2.
+ * Usage (dry-run DB only — no HTTP, no SMS):
+ *   STAGING_EVIDENCE_MODE=dry-run-db \
+ *   DATABASE_URL=postgres://... \
+ *   node scripts/staging-campaign-evidence.mjs
  */
+
+const mode = (process.env.STAGING_EVIDENCE_MODE || 'http').trim().toLowerCase();
+
+function redact(phone) {
+  const d = String(phone).replace(/\D/g, '');
+  return d.length >= 4 ? `***-***-${d.slice(-4)}` : '***';
+}
+
+if (mode === 'dry-run-db') {
+  await runDryRunDb();
+  process.exit(0);
+}
 
 const required = [
   'CRON_APP_URL',
@@ -35,7 +52,7 @@ if (missing.length) {
     '\nAlso required on the target deployment: Supabase URL/keys, and MESSAGING_PROVIDER=dry-run.'
   );
   console.error(
-    'This environment has no staging/preview URL or secrets wired; cannot produce live evidence.'
+    'Tip: STAGING_EVIDENCE_MODE=dry-run-db DATABASE_URL=… runs SQL checks without HTTP.'
   );
   process.exit(2);
 }
@@ -48,11 +65,6 @@ if (provider !== 'dry-run' && process.env.CONFIRM_LIVE_SMS !== 'yes') {
     'or CONFIRM_LIVE_SMS=yes only if you intentionally accept live SMS risk (not recommended).'
   );
   process.exit(2);
-}
-
-function redact(phone) {
-  const d = String(phone).replace(/\D/g, '');
-  return d.length >= 4 ? `***-***-${d.slice(-4)}` : '***';
 }
 
 const base = process.env.CRON_APP_URL.replace(/\/$/, '');
@@ -84,6 +96,7 @@ const callId = `evidence-${Date.now()}`;
 console.log(
   JSON.stringify({
     phase: 'start',
+    mode: 'http',
     at: new Date().toISOString(),
     base,
     businessPhone: redact(businessPhone),
@@ -115,7 +128,6 @@ const inbound = await post(
 );
 console.log(JSON.stringify({ phase: 'inbound-classify-enroll', ...inbound }));
 
-// Schedule check: hit cron immediately (due messages) and log timestamps.
 const cron1 = await post('/api/cron/campaigns', {}, cronSecret);
 console.log(JSON.stringify({ phase: 'cron-immediate', ...cron1 }));
 
@@ -128,3 +140,75 @@ console.log(
       'For the 2-minute due test, update next_send_at to now()+2min in staging Supabase, wait, re-run cron.',
   })
 );
+
+/**
+ * Dry-run against a staging Postgres URL: verify migration artifacts +
+ * reconcile-related columns without sending SMS.
+ */
+async function runDryRunDb() {
+  const url =
+    process.env.DATABASE_URL?.trim() ||
+    process.env.SUPABASE_DB_URL?.trim() ||
+    process.env.STAGING_DATABASE_URL?.trim();
+
+  if (!url) {
+    console.error(
+      'dry-run-db requires DATABASE_URL or SUPABASE_DB_URL or STAGING_DATABASE_URL'
+    );
+    process.exit(2);
+  }
+
+  // Prefer pg if installed; otherwise print the SQL checklist for operators.
+  let Client;
+  try {
+    ({ Client } = await import('pg'));
+  } catch {
+    console.log(
+      JSON.stringify({
+        phase: 'dry-run-db',
+        status: 'pg_not_installed',
+        checklist: [
+          'SELECT COUNT(*) FROM sms_suppressions;',
+          'SELECT indexname FROM pg_indexes WHERE indexname LIKE %uq_sms_messages% OR indexname LIKE %uq_campaign%;',
+          'SELECT COUNT(*) FROM sms_messages WHERE status IN (\'unknown\',\'sending\');',
+          'SELECT COUNT(*) FROM campaign_enrollments WHERE claim_token IS NOT NULL;',
+        ],
+        note: 'Install `pg` or run the checklist SQL in the staging SQL editor.',
+      })
+    );
+    process.exit(0);
+  }
+
+  const client = new Client({ connectionString: url, ssl: { rejectUnauthorized: false } });
+  await client.connect();
+  try {
+    const suppressions = await client.query(
+      `SELECT COUNT(*)::int AS n FROM information_schema.tables
+       WHERE table_name = 'sms_suppressions'`
+    );
+    const indexes = await client.query(
+      `SELECT indexname FROM pg_indexes
+       WHERE indexname IN (
+         'uq_sms_messages_message_sid',
+         'uq_campaign_enrollments_lead_id'
+       )`
+    );
+    const ambiguous = await client.query(
+      `SELECT COUNT(*)::int AS n FROM sms_messages
+       WHERE status IN ('unknown', 'sending')`
+    ).catch(() => ({ rows: [{ n: null }] }));
+
+    console.log(
+      JSON.stringify({
+        phase: 'dry-run-db',
+        status: 'ok',
+        sms_suppressions_table: suppressions.rows[0]?.n === 1,
+        idempotency_indexes: indexes.rows.map((r) => r.indexname),
+        ambiguous_sms_count: ambiguous.rows[0]?.n,
+        at: new Date().toISOString(),
+      })
+    );
+  } finally {
+    await client.end();
+  }
+}

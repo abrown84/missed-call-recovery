@@ -11,6 +11,7 @@ import {
   hasFreshClaim,
   isEnrollmentClaimable,
 } from './campaign-logic';
+import { decideOnDuplicateSid } from './reconcile-logic';
 
 type Enrollment = {
   id: string;
@@ -120,7 +121,7 @@ describe('adversarial: mid-send switch is deferred', () => {
 });
 
 describe('adversarial: timeout reconcile requeues instead of silent skip', () => {
-  it('stuck sending with no relay record can free sid and reschedule', () => {
+  it('stuck sending with definite never_sent frees sid and reschedules exact step', () => {
     const db = makeDb();
     const sid = campaignStepMessageSid('E1', 'c-std', 2);
     db.sms.push({ sid, status: 'sending' });
@@ -133,6 +134,11 @@ describe('adversarial: timeout reconcile requeues instead of silent skip', () =>
     // Fresh send for same logical step uses original sid again
     expect(db.sms.some((r) => r.sid === sid)).toBe(false);
     expect(classifyMessageInsertError({ code: '23505' })).toBe('duplicate');
+  });
+
+  it('duplicate sid with unknown status parks (does not advance)', () => {
+    expect(decideOnDuplicateSid('unknown').action).toBe('park');
+    expect(decideOnDuplicateSid('queued').action).toBe('advance');
   });
 });
 

@@ -1,3 +1,4 @@
+import { classifyRelayLookupResponse } from '@/services/sms-sid';
 import type {
   IdempotencyLookupResult,
   MessagingAdapter,
@@ -57,6 +58,12 @@ function getTimeoutMs(): number {
  * BRWN Text relay adapter.
  * POST {BRWN_RELAY_URL}/api/messages with Bearer sender token.
  * The Android (or future Mac) node long-polls the relay and sends the SMS.
+ *
+ * RELAY VERIFICATION (QC r3): No public `abrown84` relay source repo was
+ * found that documents GET /api/messages?idempotencyKey=… or server-side
+ * dedupe on idempotencyKey. This client treats bare 404 / arrays / missing
+ * fields as `unknown` (never auto-requeue). Only an explicit
+ * `{ found: false }` (HTTP 2xx) is `never_sent`.
  */
 export class BrwnRelayAdapter implements MessagingAdapter {
   readonly name = 'brwn-relay';
@@ -118,7 +125,11 @@ export class BrwnRelayAdapter implements MessagingAdapter {
   /**
    * Look up a prior queue by idempotency key.
    * GET {BRWN_RELAY_URL}/api/messages?idempotencyKey=…
-   * 404 / empty → not found (safe to re-queue a stuck 'sending' row).
+   *
+   * Contract (conservative):
+   * - HTTP 2xx + `{ found: false }` → never_sent (safe to requeue)
+   * - HTTP 2xx + `{ found: true, id }` or `{ id }` → sent
+   * - Bare 404, array body, missing fields, non-2xx → unknown (park)
    */
   async lookupByIdempotencyKey(
     key: string
@@ -138,18 +149,33 @@ export class BrwnRelayAdapter implements MessagingAdapter {
         signal: controller.signal,
       });
 
-      if (res.status === 404) return { found: false };
-      if (!res.ok) {
-        throw new Error(`BRWN relay lookup HTTP ${res.status}`);
+      let body: unknown = null;
+      try {
+        body = await res.json();
+      } catch {
+        body = null;
       }
 
-      const json = (await res.json()) as {
-        id?: string;
-        status?: string;
-        found?: boolean;
-      };
-      if (json.found === false || !json.id) return { found: false };
-      return { found: true, id: json.id, status: json.status || 'queued' };
+      const outcome = classifyRelayLookupResponse({
+        httpStatus: res.status,
+        body,
+      });
+
+      if (outcome === 'sent') {
+        const obj = (body && typeof body === 'object' && !Array.isArray(body)
+          ? body
+          : {}) as { id?: string; status?: string };
+        return {
+          outcome: 'sent',
+          found: true,
+          id: String(obj.id || 'unknown'),
+          status: obj.status || 'queued',
+        };
+      }
+      if (outcome === 'never_sent') {
+        return { outcome: 'never_sent', found: false };
+      }
+      return { outcome: 'unknown', found: false };
     } finally {
       clearTimeout(timer);
     }

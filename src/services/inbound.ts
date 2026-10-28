@@ -1,7 +1,8 @@
 import { createServerClient } from '@/lib/supabase';
 import { redactPhone } from '@/lib/pii';
-import { normalizeToE164 } from '@/lib/phone';
+import { tryNormalizeToE164 } from '@/lib/phone';
 import { classifyUrgency, isOptOutMessage } from '@/services/classification';
+import { classifyOptOut } from '@/services/opt-out';
 import { escalateLead } from '@/services/escalation';
 import {
   handleClassifiedReplyEnrollment,
@@ -35,12 +36,13 @@ export type InboundResult =
       enrolledCampaign?: string;
     }
   | { status: 'opt_out_recorded'; leadId?: string }
+  | { status: 'ambiguous_opt_out'; leadId?: string }
   | { status: 'no_lead_found' };
 
 /**
  * Handle an inbound customer SMS (forwarded from the BRWN relay webhook).
  * STOP is handled before the age-limited lead lookup so a late opt-out
- * still suppresses the number.
+ * still suppresses the number. Phone normalize must not throw before STOP.
  */
 export async function processInboundSms(
   event: InboundSmsEvent
@@ -65,28 +67,33 @@ export async function processInboundSms(
     throw new InboundError('Business not found', 404);
   }
 
-  const fromE164 = normalizeToE164(event.from);
+  // Never throw on bad sender before STOP check (QC: non-numeric sender).
+  const fromE164 = tryNormalizeToE164(event.from);
+  const phoneForLookup = fromE164 || event.from.trim();
+
+  const optOutVerdict = classifyOptOut(body);
 
   // Opt-out FIRST — before age-limited lead lookup — so STOP after 7 days
   // still suppresses the number for this business.
-  if (isOptOutMessage(body)) {
-    const cutoff = new Date(
-      Date.now() - LEAD_LOOKUP_MAX_AGE_DAYS * 24 * 60 * 60 * 1000
-    ).toISOString();
+  if (optOutVerdict.kind === 'opt_out' || isOptOutMessage(body)) {
+    if (!fromE164) {
+      console.warn(
+        'Definite STOP from non-normalizable sender; recording without E.164 suppress',
+        redactPhone(event.from)
+      );
+    }
 
-    // Try any lead for this phone (including old ones) just to mark opted_out.
     const { data: anyLead } = await supabase
       .from('leads')
       .select('id')
       .eq('business_id', business.id)
-      .eq('caller_phone', fromE164)
+      .eq('caller_phone', phoneForLookup)
       .order('created_at', { ascending: false })
       .limit(1)
       .maybeSingle();
 
-    // Also try raw from in case older rows weren't normalized.
     const { data: rawLead } =
-      anyLead || fromE164 === event.from
+      anyLead || phoneForLookup === event.from
         ? { data: anyLead }
         : await supabase
             .from('leads')
@@ -99,7 +106,9 @@ export async function processInboundSms(
 
     const leadId = anyLead?.id || rawLead?.id;
 
-    await suppressPhoneForBusiness(business.id, fromE164, 'opt_out');
+    if (fromE164) {
+      await suppressPhoneForBusiness(business.id, fromE164, 'opt_out');
+    }
 
     if (leadId) {
       await markLeadOptedOut(leadId).catch((err) => {
@@ -109,7 +118,6 @@ export async function processInboundSms(
         );
       });
       await pauseCampaignForLead(leadId).catch(() => undefined);
-      // Record inbound against the lead when we have one (even if older than cutoff).
       await supabase.from('sms_messages').insert({
         lead_id: leadId,
         direction: 'inbound',
@@ -117,7 +125,6 @@ export async function processInboundSms(
         message_sid: messageId,
         status: 'received',
       });
-      void cutoff;
       return {
         status: 'opt_out_recorded',
         leadId,
@@ -125,6 +132,40 @@ export async function processInboundSms(
     }
 
     return { status: 'opt_out_recorded' };
+  }
+
+  if (optOutVerdict.kind === 'ambiguous') {
+    // Send to human review — do not auto-suppress.
+    console.warn(
+      `Ambiguous opt-out language from ${redactPhone(event.from)}: needs_human_review`
+    );
+    const { data: anyLead } = await supabase
+      .from('leads')
+      .select('id')
+      .eq('business_id', business.id)
+      .eq('caller_phone', phoneForLookup)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    if (anyLead?.id) {
+      await supabase.from('sms_messages').insert({
+        lead_id: anyLead.id,
+        direction: 'inbound',
+        body,
+        message_sid: messageId,
+        status: 'received',
+      });
+      // Pause outreach pending human review of ambiguous opt-out.
+      await pauseCampaignForLead(anyLead.id).catch(() => undefined);
+      return { status: 'ambiguous_opt_out', leadId: anyLead.id };
+    }
+    return { status: 'ambiguous_opt_out' };
+  }
+
+  if (!fromE164) {
+    console.error('Invalid sender phone for inbound:', redactPhone(event.from));
+    return { status: 'no_lead_found' };
   }
 
   const cutoff = new Date(

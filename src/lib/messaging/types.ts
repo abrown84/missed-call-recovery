@@ -24,18 +24,22 @@ export interface SendMessageResult {
   status: MessageDeliveryStatus | string;
 }
 
-export interface IdempotencyLookupResult {
-  found: boolean;
-  id?: string;
-  status?: string;
-}
+/**
+ * Lookup by idempotency key.
+ * Only `never_sent` permits automatic requeue. Bare 404 / arrays / missing
+ * fields / HTTP errors → `unknown` (park; do not requeue).
+ */
+export type IdempotencyLookupResult =
+  | { outcome: 'sent'; found: true; id: string; status: string }
+  | { outcome: 'never_sent'; found: false }
+  | { outcome: 'unknown'; found: false };
 
 export interface MessagingAdapter {
   readonly name: string;
   sendMessage(input: SendMessageInput): Promise<SendMessageResult>;
   /**
    * Optional: look up a prior send by idempotency key (for stuck/unknown reconcile).
-   * Return { found: false } when the relay has no record.
+   * Return outcome='never_sent' ONLY when the relay explicitly confirms absence.
    */
   lookupByIdempotencyKey?(
     key: string

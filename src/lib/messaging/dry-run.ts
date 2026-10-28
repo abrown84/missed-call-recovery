@@ -31,7 +31,12 @@ export class DryRunAdapter implements MessagingAdapter {
     key: string
   ): Promise<IdempotencyLookupResult> {
     const hit = this.sent.find((s) => s.idempotencyKey === key);
-    if (!hit) return { found: false };
-    return { found: true, id: `dry-run-lookup`, status: 'queued' };
+    if (!hit) return { outcome: 'never_sent', found: false };
+    return {
+      outcome: 'sent',
+      found: true,
+      id: `dry-run-lookup`,
+      status: 'queued',
+    };
   }
 }

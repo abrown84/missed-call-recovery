@@ -90,6 +90,16 @@ Tracks leads in campaigns
 
 ---
 
+## Environment knobs
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `CAMPAIGN_REPLY_MODE` | `pause` | After a classified reply on the **matching** campaign: `pause` stops follow-ups; `continue` keeps the sequence running. |
+| `UNKNOWN_SMS_ALERT_THRESHOLD` | `5` | Cron alerts when ambiguous (`unknown` + stuck `sending`) rows in a reconcile pass meet/exceed this count. |
+| `MESSAGING_PROVIDER` | `brwn-relay` | Set `dry-run` on staging to log sends without hitting the relay. |
+
+---
+
 ## How It Works
 
 ### **1. Lead Created (Missed Call)**
@@ -109,13 +119,15 @@ Non-responders still get follow-ups on the Standard cadence
 ```
 Webhook: /api/webhooks/brwn/inbound  (leads older than 7 days ignored)
   ↓
+STOP / opt-out (whole-message NFKC) FIRST — even after 7 days
+  ↓
+Ambiguous opt-out language → pause + human review (no auto-suppress)
+  ↓
 classifyUrgency
   ↓
-STOP → persist opted_out + sms_suppressions; pause; never text again
-  ↓
-Else handleClassifiedReplyEnrollment:
+Else handleClassifiedReplyEnrollment (see CAMPAIGN_REPLY_MODE):
   - Standard → Emergency/High when urgency warrants (re-route / switch in place)
-  - Already on matching campaign + active → pause
+  - Already on matching campaign + active → pause (default) or continue
   - Already paused/completed on matching campaign → noop (no re-enroll)
 UNIQUE(lead_id) makes concurrent enrolls safe
 ```
@@ -124,17 +136,46 @@ UNIQUE(lead_id) makes concurrent enrolls safe
 ```
 Every 5 minutes: POST /api/cron/campaigns  (GitHub Actions; see Setup)
   ↓
-List due (next_send_at<=now, claimed_at null) OR stale claims (claimed_at > 10m)
+reconcileAmbiguousSms() FIRST (see state machine below)
   ↓
-Claim: set claimed_at=now(), clear next_send_at
+Quiet-hours check per lead (47 CFR 64.1200(c)(1); FL/OK end 8pm local)
   ↓
-Insert sms_messages (sid=campaign:{id}:step:{n}, status=sending) FIRST
-  - UNIQUE(message_sid) + 23505 → already sent, advance
+List due (next_send_at<=now, claim_token null) OR stale claims (claimed_at > 10m)
+  ↓
+Claim with fresh claim_token
+  ↓
+Insert sms_messages (sid=campaign:{enrollment}:{campaign}:step:{n}, status=sending)
+  - UNIQUE hit + existing status confirmed → advance
+  - UNIQUE hit + sending/unknown → PARK (far-future next_send_at) until reconcile
   ↓
 Send via BRWN (idempotencyKey=sid) or dry-run
-  - success → status=queued, advance, clear claimed_at
-  - timeout/error → status=unknown, advance, NEVER auto-resend that step
+  - success → status=queued, advance, clear claim
+  - timeout/error → status=unknown, PARK (do not advance; do not resend yet)
 ```
+
+### **Send / reconcile state machine**
+
+Sids:
+- Campaign: `campaign:{enrollmentId}:{campaignId}:step:{n}`
+- Recovery: `recovery:{leadId}` (reconciled separately — never mutates `current_step`)
+
+| Relay lookup outcome | Action |
+|----------------------|--------|
+| `sent` | Mark sms row confirmed; for campaign sids, advance past the **exact** step in the sid |
+| `never_sent` | Only when relay returns HTTP 2xx + `{ found: false }`. Abandon sid (`…:abandoned:{ts}`), requeue **exact** step (or clear recovery outbound sid) |
+| `unknown` | Bare 404, array body, missing fields, HTTP errors, or no lookup API. **Park** — never auto-requeue |
+
+Alert: if `unknown + stuck sending >= UNKNOWN_SMS_ALERT_THRESHOLD` (default **5**), cron logs `ALERT: …`.
+
+> **Relay verification:** No public `abrown84` BRWN relay source was available to confirm GET `/api/messages?idempotencyKey=` or server-side idempotency dedupe. The client is conservative (404 ≠ never_sent). Contract tests live in `brwn-relay.test.ts` / `sms-sid.test.ts`.
+
+---
+
+## Quiet hours & opt-out
+
+- **Quiet hours:** texts allowed 08:00–21:00 in the lead’s local time (area code or `businesses.timezone`); Florida & Oklahoma end at 20:00. Outside the window → defer `next_send_at` to next local 08:00 (never drop).
+- **Opt-out:** whole-message match after NFKC (`STOP`, `STOPALL`, `UNSUBSCRIBE`, `QUIT`, `END`, `CANCEL`, `OPT OUT` / `OPTOUT`, `REVOKE`, “don’t text me again”, …). No false positives on “won’t stop leaking” / “stop by today”. Ambiguous → human.
+- Every outbound template appends `Reply STOP to opt out.` (FCC 26-67, effective 2026-11-25).
 
 ---
 

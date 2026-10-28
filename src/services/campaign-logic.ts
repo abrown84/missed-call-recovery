@@ -99,16 +99,24 @@ export function planEnrollmentStart(
   };
 }
 
-/**
- * Stable sid scoped by enrollment + campaign + step so a Standard→Emergency
- * switch does not collide with a prior Standard step sid.
- */
-export function campaignStepMessageSid(
-  enrollmentId: string,
-  campaignId: string,
-  stepNumber: number
-): string {
-  return `campaign:${enrollmentId}:${campaignId}:step:${stepNumber}`;
+// Sid helpers live in sms-sid.ts (single source of truth for parse/confirm).
+export {
+  campaignStepMessageSid,
+  recoveryMessageSid,
+  parseMessageSid,
+  isConfirmedSmsStatus,
+  isAmbiguousSmsStatus,
+  classifyRelayLookupResponse,
+  CONFIRMED_SMS_STATUSES,
+  AMBIGUOUS_SMS_STATUSES,
+} from '@/services/sms-sid';
+import { campaignStepMessageSid } from '@/services/sms-sid';
+
+/** Far-future next_send_at used to park enrollments until reconcile runs. */
+export const PARKED_SEND_MS = 365 * 24 * 60 * 60 * 1000;
+
+export function parkedNextSendAt(now: Date = new Date()): string {
+  return new Date(now.getTime() + PARKED_SEND_MS).toISOString();
 }
 
 export function shouldSendCampaignStep(

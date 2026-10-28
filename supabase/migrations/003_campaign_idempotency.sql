@@ -1,5 +1,5 @@
 -- Campaign idempotency, reclaimable claims, opt-out, unique message_sid
--- Addresses QC must-fixes for PR #6 follow-up.
+-- Addresses QC must-fixes for PR #6 follow-up (r3).
 --
 -- MAINTENANCE NOTE:
 -- CREATE UNIQUE INDEX CONCURRENTLY cannot run inside a transaction block.
@@ -9,41 +9,14 @@
 -- and use: CREATE UNIQUE INDEX CONCURRENTLY ...
 --
 -- Rollback: see 003_campaign_idempotency_rollback.sql
+--   (archives sms_suppressions — does NOT drop suppression data)
 
 BEGIN;
 
 -- ---------------------------------------------------------------------------
--- Preflight: refuse to proceed if duplicate lead enrollments or message_sids
--- would make UNIQUE indexes fail. Fix data first, then re-run.
--- ---------------------------------------------------------------------------
-DO $$
-DECLARE
-  dup_leads INTEGER;
-  dup_sids INTEGER;
-BEGIN
-  SELECT COUNT(*) INTO dup_leads FROM (
-    SELECT lead_id FROM campaign_enrollments
-    GROUP BY lead_id HAVING COUNT(*) > 1
-  ) d;
-  IF dup_leads > 0 THEN
-    RAISE EXCEPTION
-      'Preflight failed: % lead_id value(s) have multiple campaign_enrollments. Dedupe before applying UNIQUE(lead_id).',
-      dup_leads;
-  END IF;
-
-  SELECT COUNT(*) INTO dup_sids FROM (
-    SELECT message_sid FROM sms_messages
-    GROUP BY message_sid HAVING COUNT(*) > 1
-  ) d;
-  IF dup_sids > 0 THEN
-    RAISE EXCEPTION
-      'Preflight failed: % duplicate message_sid value(s). Dedupe before applying UNIQUE(message_sid).',
-      dup_sids;
-  END IF;
-END $$;
-
--- Dedupe safety net (no-ops when preflight already passed with zero dups).
+-- Dedupe BEFORE preflight so UNIQUE indexes can be applied cleanly.
 -- Keep the newest enrollment per lead; keep the oldest sms_messages row per sid.
+-- ---------------------------------------------------------------------------
 DELETE FROM campaign_enrollments ce
 WHERE ce.ctid IN (
   SELECT ctid FROM (
@@ -63,6 +36,33 @@ WHERE sm.ctid IN (
   ) ranked
   WHERE rn > 1
 );
+
+-- Preflight: refuse if duplicates remain after dedupe (should be zero).
+DO $$
+DECLARE
+  dup_leads INTEGER;
+  dup_sids INTEGER;
+BEGIN
+  SELECT COUNT(*) INTO dup_leads FROM (
+    SELECT lead_id FROM campaign_enrollments
+    GROUP BY lead_id HAVING COUNT(*) > 1
+  ) d;
+  IF dup_leads > 0 THEN
+    RAISE EXCEPTION
+      'Preflight failed: % lead_id value(s) still have multiple campaign_enrollments after dedupe.',
+      dup_leads;
+  END IF;
+
+  SELECT COUNT(*) INTO dup_sids FROM (
+    SELECT message_sid FROM sms_messages
+    GROUP BY message_sid HAVING COUNT(*) > 1
+  ) d;
+  IF dup_sids > 0 THEN
+    RAISE EXCEPTION
+      'Preflight failed: % duplicate message_sid value(s) remain after dedupe.',
+      dup_sids;
+  END IF;
+END $$;
 
 -- 1) One enrollment per lead
 CREATE UNIQUE INDEX IF NOT EXISTS uq_campaign_enrollments_lead_id
@@ -103,5 +103,75 @@ CREATE INDEX IF NOT EXISTS idx_sms_suppressions_phone
   ON sms_suppressions (phone);
 
 ALTER TABLE sms_suppressions ENABLE ROW LEVEL SECURITY;
+
+-- 5) Backfill suppressions from historical STOP / opt-out inbound SMS
+--    (whole-message style keywords; case-insensitive; NFKC-ish via trim/upper).
+INSERT INTO sms_suppressions (business_id, phone, reason)
+SELECT DISTINCT ON (l.business_id, l.caller_phone)
+  l.business_id,
+  l.caller_phone,
+  'opt_out_backfill'
+FROM sms_messages m
+JOIN leads l ON l.id = m.lead_id
+WHERE m.direction = 'inbound'
+  AND upper(btrim(m.body)) IN (
+    'STOP', 'STOPALL', 'STOP ALL', 'UNSUBSCRIBE', 'QUIT', 'END', 'CANCEL',
+    'OPTOUT', 'OPT OUT', 'OPT-OUT', 'REVOKE',
+    'DON''T TEXT ME AGAIN', 'DONT TEXT ME AGAIN', 'DO NOT TEXT ME AGAIN',
+    'PLEASE STOP', 'STOP PLEASE'
+  )
+ON CONFLICT (business_id, phone) DO NOTHING;
+
+UPDATE leads l
+SET
+  opted_out = true,
+  opted_out_at = COALESCE(l.opted_out_at, NOW())
+WHERE EXISTS (
+  SELECT 1 FROM sms_suppressions s
+  WHERE s.business_id = l.business_id
+    AND s.phone = l.caller_phone
+    AND s.reason IN ('opt_out', 'opt_out_backfill')
+)
+AND l.opted_out IS DISTINCT FROM true;
+
+-- 6) Convert existing caller_phone / business phone values toward E.164 (US NANP).
+--    Strips non-digits; 10-digit → +1XXXXXXXXXX; 11-digit leading 1 → +1…;
+--    already-+ values left alone when they look like +1 + 10 digits.
+--    Leaves unconvertible values unchanged for manual review.
+UPDATE leads
+SET caller_phone = CASE
+  WHEN caller_phone ~ '^\+1[0-9]{10}$' THEN caller_phone
+  WHEN regexp_replace(caller_phone, '[^0-9]', '', 'g') ~ '^[0-9]{10}$'
+    THEN '+1' || regexp_replace(caller_phone, '[^0-9]', '', 'g')
+  WHEN regexp_replace(caller_phone, '[^0-9]', '', 'g') ~ '^1[0-9]{10}$'
+    THEN '+' || regexp_replace(caller_phone, '[^0-9]', '', 'g')
+  ELSE caller_phone
+END
+WHERE caller_phone IS NOT NULL
+  AND caller_phone !~ '^\+1[0-9]{10}$';
+
+UPDATE businesses
+SET phone = CASE
+  WHEN phone ~ '^\+1[0-9]{10}$' THEN phone
+  WHEN regexp_replace(phone, '[^0-9]', '', 'g') ~ '^[0-9]{10}$'
+    THEN '+1' || regexp_replace(phone, '[^0-9]', '', 'g')
+  WHEN regexp_replace(phone, '[^0-9]', '', 'g') ~ '^1[0-9]{10}$'
+    THEN '+' || regexp_replace(phone, '[^0-9]', '', 'g')
+  ELSE phone
+END
+WHERE phone IS NOT NULL
+  AND phone !~ '^\+1[0-9]{10}$';
+
+UPDATE sms_suppressions
+SET phone = CASE
+  WHEN phone ~ '^\+1[0-9]{10}$' THEN phone
+  WHEN regexp_replace(phone, '[^0-9]', '', 'g') ~ '^[0-9]{10}$'
+    THEN '+1' || regexp_replace(phone, '[^0-9]', '', 'g')
+  WHEN regexp_replace(phone, '[^0-9]', '', 'g') ~ '^1[0-9]{10}$'
+    THEN '+' || regexp_replace(phone, '[^0-9]', '', 'g')
+  ELSE phone
+END
+WHERE phone IS NOT NULL
+  AND phone !~ '^\+1[0-9]{10}$';
 
 COMMIT;

@@ -1,15 +1,19 @@
 import { createServerClient } from '@/lib/supabase';
 import { geminiFlash } from '@/lib/gemini';
 import type { ClassificationResult, UrgencyLevel } from '@/types';
+import {
+  classifyOptOut,
+  isDefiniteOptOut,
+} from '@/services/opt-out';
 
 /**
  * Urgency Classification Service
  * Uses Gemini Flash for AI-powered classification with keyword fallback
  */
 
-// Stop/spam patterns (check first, skip AI)
+/** @deprecated Prefer classifyOptOut / isDefiniteOptOut — kept for import compat. */
 export const SPAM_PATTERNS = [
-  /\b(stop|unsubscribe|remove me|wrong number)\b/i,
+  /^(stop|stopall|stop all|unsubscribe|quit|end|cancel|optout|opt out|opt-out|revoke)$/i,
 ];
 
 export const EMERGENCY_PATTERNS = [
@@ -24,11 +28,15 @@ export const LOW_URGENCY_PATTERNS = [
   /\b(just asking|information|wondering)\b/i,
 ];
 
-/** Pure opt-out / spam detection used before AI classification. */
+/**
+ * Definite whole-message opt-out (NFKC-normalized).
+ * Does NOT match "won't stop leaking" / "stop by today" / "wrong number".
+ */
 export function isOptOutMessage(messageText: string): boolean {
-  const text = messageText.toLowerCase();
-  return SPAM_PATTERNS.some((pattern) => pattern.test(text));
+  return isDefiniteOptOut(messageText);
 }
+
+export { classifyOptOut, isDefiniteOptOut };
 
 /**
  * Score a message using built-in patterns + optional keyword weights.

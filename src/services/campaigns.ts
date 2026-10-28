@@ -12,9 +12,16 @@ import {
   decideReplyEnrollmentAction,
   getCampaignReplyMode,
   hasFreshClaim,
+  parkedNextSendAt,
   planEnrollmentStart,
   selectCampaignForUrgency,
 } from '@/services/campaign-logic';
+import {
+  decideOnDuplicateSid,
+  decideReconcileRow,
+} from '@/services/reconcile-logic';
+import { deferUntilQuietHoursOpen } from '@/services/quiet-hours';
+import { tryNormalizeToE164 } from '@/lib/phone';
 import {
   SuppressionLookupError,
   isPhoneSuppressed,
@@ -416,6 +423,23 @@ export async function sendCampaignSMS(
     return true;
   }
 
+  // Quiet hours: defer (never drop) until local window opens.
+  const phoneE164 =
+    tryNormalizeToE164(lead.caller_phone) || lead.caller_phone;
+  const quiet = deferUntilQuietHoursOpen(new Date(), {
+    callerPhoneE164: phoneE164,
+    businessTimezone: business.timezone,
+  });
+  if (!quiet.allowed) {
+    console.log(
+      `Quiet hours defer enrollment ${enrollmentId} until ${quiet.nextSendAt.toISOString()} (${quiet.timeZone})`
+    );
+    await releaseClaim(supabase, enrollmentId, token, {
+      nextSendAt: quiet.nextSendAt.toISOString(),
+    });
+    return true;
+  }
+
   const stepSid = campaignStepMessageSid(
     enrollmentId,
     campaign.id,
@@ -438,17 +462,34 @@ export async function sendCampaignSMS(
 
   const insertClass = classifyMessageInsertError(insertError);
   if (insertClass === 'duplicate') {
+    // Advance ONLY if the existing row is confirmed sent. Otherwise park
+    // until reconcile has checked the relay.
+    const { data: existing } = await supabase
+      .from('sms_messages')
+      .select('id, status')
+      .eq('message_sid', stepSid)
+      .maybeSingle();
+
+    const decision = decideOnDuplicateSid(existing?.status);
+    if (decision.action === 'advance') {
+      console.log(
+        `Duplicate sid ${stepSid} confirmed (${existing?.status}) — advancing`
+      );
+      await advanceEnrollment(
+        supabase,
+        enrollmentId,
+        token,
+        enrollment.current_step,
+        steps
+      );
+      return true;
+    }
+
     console.log(
-      `Duplicate sid ${stepSid} — treating as already sent, advancing`
+      `Duplicate sid ${stepSid} status=${existing?.status ?? 'missing'} — parking until reconcile`
     );
-    await advanceEnrollment(
-      supabase,
-      enrollmentId,
-      token,
-      enrollment.current_step,
-      steps
-    );
-    return true;
+    await parkEnrollmentForReconcile(supabase, enrollmentId, token);
+    return false;
   }
   if (insertClass === 'failed') {
     console.error('Failed to insert sending sms_messages row:', insertError);
@@ -495,11 +536,8 @@ export async function sendCampaignSMS(
       .update({ status: 'unknown' })
       .eq('message_sid', stepSid);
 
-    // Do not advance past unknown — leave for reconcile to confirm or requeue.
-    await releaseClaim(supabase, enrollmentId, token, {
-      // Keep current step; retry after stale window once reconciled.
-      nextSendAt: new Date(Date.now() + CLAIM_STALE_MS).toISOString(),
-    });
+    // Park until reconcile confirms or requeues the exact step from the sid.
+    await parkEnrollmentForReconcile(supabase, enrollmentId, token);
     return false;
   }
 }
@@ -597,6 +635,20 @@ async function releaseClaim(
     .eq('id', enrollmentId)
     .eq('status', 'active')
     .eq('claim_token', claimToken);
+}
+
+/**
+ * Park an enrollment with an ambiguous send until reconcile resolves it.
+ * Uses a far-future next_send_at so cron will not reclaim/resend.
+ */
+async function parkEnrollmentForReconcile(
+  supabase: Supabase,
+  enrollmentId: string,
+  claimToken: string
+): Promise<void> {
+  await releaseClaim(supabase, enrollmentId, claimToken, {
+    nextSendAt: parkedNextSendAt(),
+  });
 }
 
 /**
@@ -720,14 +772,18 @@ export type ReconcileResult = {
   stuckSendingCount: number;
   requeued: number;
   confirmed: number;
+  parked: number;
   alert: boolean;
 };
 
 /**
  * Reconcile unknown / stuck 'sending' rows against the relay by idempotency key.
- * - Relay has it → mark queued/sent (confirmed)
- * - Relay missing + stuck sending → free the sid and re-queue the enrollment step
- * - Relay missing + unknown → same safe re-queue (crash before delivery)
+ *
+ * State machine (first principles):
+ * - outcome=sent → mark confirmed; for campaign sids advance that exact step
+ * - outcome=never_sent → abandon sid; requeue the exact step parsed from sid
+ * - outcome=unknown (bare 404, array, missing lookup, errors) → leave parked
+ * - recovery:* sids are handled separately (never mutate campaign current_step)
  */
 export async function reconcileAmbiguousSms(): Promise<ReconcileResult> {
   const supabase = createServerClient();
@@ -748,6 +804,7 @@ export async function reconcileAmbiguousSms(): Promise<ReconcileResult> {
       stuckSendingCount: 0,
       requeued: 0,
       confirmed: 0,
+      parked: 0,
       alert: false,
     };
   }
@@ -756,40 +813,69 @@ export async function reconcileAmbiguousSms(): Promise<ReconcileResult> {
   let stuckSendingCount = 0;
   let requeued = 0;
   let confirmed = 0;
+  let parked = 0;
 
   for (const row of ambiguous || []) {
     if (row.status === 'unknown') unknownCount++;
     if (row.status === 'sending') stuckSendingCount++;
 
     const sid = row.message_sid;
-    let found = false;
+
+    let outcome: 'sent' | 'never_sent' | 'unknown' = 'unknown';
     let providerStatus = 'queued';
 
-    if (adapter.lookupByIdempotencyKey) {
-      try {
-        const lookup = await adapter.lookupByIdempotencyKey(sid);
-        found = lookup.found;
-        providerStatus = lookup.status || 'queued';
-      } catch (err) {
-        console.error(
-          'Relay lookup failed for',
-          sid,
-          err instanceof Error ? err.message : 'unknown'
-        );
-        continue;
-      }
-    }
-
-    if (found) {
-      await supabase
-        .from('sms_messages')
-        .update({ status: providerStatus })
-        .eq('id', row.id);
-      confirmed++;
+    if (!adapter.lookupByIdempotencyKey) {
+      // No lookup capability → cannot decide; keep parked.
+      parked++;
       continue;
     }
 
-    // Not on relay — safe to re-queue: rename sid to free UNIQUE, reschedule enrollment.
+    try {
+      const lookup = await adapter.lookupByIdempotencyKey(sid);
+      outcome = lookup.outcome;
+      if (lookup.outcome === 'sent') {
+        providerStatus = lookup.status || 'queued';
+      }
+    } catch (err) {
+      console.error(
+        'Relay lookup failed for',
+        sid,
+        err instanceof Error ? err.message : 'unknown'
+      );
+      parked++;
+      continue;
+    }
+
+    const decision = decideReconcileRow({
+      sid,
+      outcome,
+      providerStatus,
+    });
+
+    if (decision.action === 'confirm') {
+      await supabase
+        .from('sms_messages')
+        .update({ status: decision.providerStatus })
+        .eq('id', row.id);
+      confirmed++;
+
+      if (decision.parsed.kind === 'campaign') {
+        await advanceEnrollmentAfterConfirmedSend(
+          supabase,
+          decision.parsed.enrollmentId,
+          decision.parsed.campaignId,
+          decision.parsed.stepNumber
+        );
+      }
+      continue;
+    }
+
+    if (decision.action === 'park') {
+      parked++;
+      continue;
+    }
+
+    // Definite never_sent — free the sid and requeue the exact step / recovery.
     const abandonedSid = `${sid}:abandoned:${Date.now()}`;
     await supabase
       .from('sms_messages')
@@ -799,24 +885,23 @@ export async function reconcileAmbiguousSms(): Promise<ReconcileResult> {
       })
       .eq('id', row.id);
 
-    const { data: enrollment } = await supabase
-      .from('campaign_enrollments')
-      .select('id, status')
-      .eq('lead_id', row.lead_id)
-      .eq('status', 'active')
-      .maybeSingle();
-
-    if (enrollment) {
+    if (decision.action === 'requeue_campaign') {
+      const ok = await requeueExactCampaignStep(
+        supabase,
+        decision.enrollmentId,
+        decision.campaignId,
+        decision.stepNumber
+      );
+      if (ok) requeued++;
+    } else if (decision.action === 'requeue_recovery') {
       await supabase
-        .from('campaign_enrollments')
+        .from('leads')
         .update({
-          next_send_at: new Date().toISOString(),
-          claimed_at: null,
-          claim_token: null,
+          sms_outbound_sid: null,
           updated_at: new Date().toISOString(),
         })
-        .eq('id', enrollment.id)
-        .eq('status', 'active');
+        .eq('id', decision.leadId)
+        .eq('sms_outbound_sid', sid);
       requeued++;
     }
   }
@@ -828,11 +913,129 @@ export async function reconcileAmbiguousSms(): Promise<ReconcileResult> {
   const alert = total >= threshold;
   if (alert) {
     console.error(
-      `ALERT: ${total} ambiguous SMS rows (unknown=${unknownCount}, stuck_sending=${stuckSendingCount}) >= threshold ${threshold}`
+      `ALERT: ${total} ambiguous SMS rows (unknown=${unknownCount}, stuck_sending=${stuckSendingCount}, parked=${parked}) >= threshold ${threshold}`
     );
   }
 
-  return { unknownCount, stuckSendingCount, requeued, confirmed, alert };
+  return {
+    unknownCount,
+    stuckSendingCount,
+    requeued,
+    confirmed,
+    parked,
+    alert,
+  };
+}
+
+/**
+ * After reconcile confirms a campaign step was sent, advance past that step
+ * if the enrollment is still active on it (and not mid-claim).
+ */
+async function advanceEnrollmentAfterConfirmedSend(
+  supabase: Supabase,
+  enrollmentId: string,
+  campaignId: string,
+  stepNumber: number
+): Promise<void> {
+  const { data: enrollment } = await supabase
+    .from('campaign_enrollments')
+    .select('id, campaign_id, current_step, status, claim_token')
+    .eq('id', enrollmentId)
+    .eq('status', 'active')
+    .maybeSingle();
+
+  if (!enrollment) return;
+  if (enrollment.campaign_id !== campaignId) return;
+  if (enrollment.current_step !== stepNumber) return;
+  // Don't steal a live claim — the in-flight sender owns advance.
+  if (enrollment.claim_token) return;
+
+  const { data: steps } = await supabase
+    .from('campaign_steps')
+    .select('*')
+    .eq('campaign_id', campaignId)
+    .order('step_number', { ascending: true });
+
+  if (!steps?.length) return;
+
+  const nextStep = steps.find((s) => s.step_number === stepNumber + 1);
+  if (nextStep) {
+    const nextSendAt = new Date(
+      Date.now() + nextStep.delay_minutes * 60 * 1000
+    ).toISOString();
+    await supabase
+      .from('campaign_enrollments')
+      .update({
+        current_step: nextStep.step_number,
+        next_send_at: nextSendAt,
+        claimed_at: null,
+        claim_token: null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', enrollmentId)
+      .eq('status', 'active')
+      .eq('current_step', stepNumber)
+      .is('claim_token', null);
+  } else {
+    await supabase
+      .from('campaign_enrollments')
+      .update({
+        status: 'completed',
+        completed_at: new Date().toISOString(),
+        next_send_at: null,
+        claimed_at: null,
+        claim_token: null,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', enrollmentId)
+      .eq('status', 'active')
+      .eq('current_step', stepNumber)
+      .is('claim_token', null);
+  }
+}
+
+/**
+ * Requeue the exact campaign step encoded in the sid (no skip / reorder).
+ */
+async function requeueExactCampaignStep(
+  supabase: Supabase,
+  enrollmentId: string,
+  campaignId: string,
+  stepNumber: number
+): Promise<boolean> {
+  const { data: enrollment } = await supabase
+    .from('campaign_enrollments')
+    .select('id, campaign_id, status')
+    .eq('id', enrollmentId)
+    .eq('status', 'active')
+    .maybeSingle();
+
+  if (!enrollment || enrollment.campaign_id !== campaignId) {
+    return false;
+  }
+
+  const { data, error } = await supabase
+    .from('campaign_enrollments')
+    .update({
+      current_step: stepNumber,
+      next_send_at: new Date().toISOString(),
+      claimed_at: null,
+      claim_token: null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', enrollmentId)
+    .eq('status', 'active')
+    .eq('campaign_id', campaignId)
+    .select('id');
+
+  if (error || !data?.length) {
+    console.warn(
+      `requeueExactCampaignStep failed for ${enrollmentId} step ${stepNumber}:`,
+      error?.message
+    );
+    return false;
+  }
+  return true;
 }
 
 export async function processDueCampaigns(): Promise<{

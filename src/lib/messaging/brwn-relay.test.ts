@@ -86,4 +86,122 @@ describe('BrwnRelayAdapter.sendMessage', () => {
       adapter.sendMessage({ to: '+1555', body: 'x' })
     ).rejects.toThrow(/BRWN_RELAY_SENDER_TOKEN/);
   });
+
+  it('includes idempotencyKey on send for relay dedupe contract', async () => {
+    process.env.BRWN_RELAY_URL = 'https://relay.example.com';
+    process.env.BRWN_RELAY_SENDER_TOKEN = 'sender-secret';
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ id: 'm1', status: 'queued' }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const adapter = new BrwnRelayAdapter();
+    await adapter.sendMessage({
+      to: '+15551234567',
+      body: 'Hi',
+      idempotencyKey: 'campaign:E1:C1:step:2',
+    });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).idempotencyKey).toBe(
+      'campaign:E1:C1:step:2'
+    );
+  });
+});
+
+describe('BrwnRelayAdapter.lookupByIdempotencyKey contract', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    delete process.env.BRWN_RELAY_URL;
+    delete process.env.BRWN_RELAY_SENDER_TOKEN;
+    resetMessagingAdapterCache();
+  });
+
+  function setup() {
+    process.env.BRWN_RELAY_URL = 'https://relay.example.com';
+    process.env.BRWN_RELAY_SENDER_TOKEN = 'sender-secret';
+    return new BrwnRelayAdapter();
+  }
+
+  it('bare 404 → unknown (NOT never_sent)', async () => {
+    const adapter = setup();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 404,
+        json: async () => ({ error: 'not found' }),
+      })
+    );
+    await expect(adapter.lookupByIdempotencyKey('k1')).resolves.toEqual({
+      outcome: 'unknown',
+      found: false,
+    });
+  });
+
+  it('array body → unknown', async () => {
+    const adapter = setup();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => [{ id: 'x' }],
+      })
+    );
+    await expect(adapter.lookupByIdempotencyKey('k1')).resolves.toEqual({
+      outcome: 'unknown',
+      found: false,
+    });
+  });
+
+  it('missing id / empty object → unknown', async () => {
+    const adapter = setup();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({}),
+      })
+    );
+    await expect(adapter.lookupByIdempotencyKey('k1')).resolves.toEqual({
+      outcome: 'unknown',
+      found: false,
+    });
+  });
+
+  it('explicit { found: false } → never_sent (only safe requeue)', async () => {
+    const adapter = setup();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({ found: false }),
+      })
+    );
+    await expect(adapter.lookupByIdempotencyKey('k1')).resolves.toEqual({
+      outcome: 'never_sent',
+      found: false,
+    });
+  });
+
+  it('{ found: true, id } → sent', async () => {
+    const adapter = setup();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({ found: true, id: 'm9', status: 'queued' }),
+      })
+    );
+    await expect(adapter.lookupByIdempotencyKey('k1')).resolves.toEqual({
+      outcome: 'sent',
+      found: true,
+      id: 'm9',
+      status: 'queued',
+    });
+  });
 });

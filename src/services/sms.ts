@@ -1,6 +1,8 @@
 import { createServerClient } from '@/lib/supabase';
 import { getMessagingAdapter } from '@/lib/messaging';
 import { redactPhone } from '@/lib/pii';
+import { appendOptOutFooter } from '@/lib/templates';
+import { recoveryMessageSid } from '@/services/sms-sid';
 import {
   SuppressionLookupError,
   isPhoneSuppressed,
@@ -20,10 +22,6 @@ const SMS_TEMPLATES: Record<string, string> = {
   electrical: `Hi, this is {business}. We missed your call - what electrical issue can we help with? Reply here and we'll respond quickly!`,
   general: `Hi, this is {business}. Sorry we missed your call! How can we help you today? Reply here or call us back.`,
 };
-
-function recoveryMessageSid(leadId: string): string {
-  return `recovery:${leadId}`;
-}
 
 export async function sendRecoverySMS(
   leadId: string,
@@ -62,7 +60,9 @@ export async function sendRecoverySMS(
     ?.smsTemplate as string | undefined;
   const template =
     customTemplate || SMS_TEMPLATES[business.vertical] || SMS_TEMPLATES.general;
-  const messageBody = template.replace('{business}', business.name);
+  const messageBody = appendOptOutFooter(
+    template.replace('{business}', business.name)
+  );
   const sid = recoveryMessageSid(leadId);
 
   // Insert-before-send for recovery too (UNIQUE message_sid).
@@ -139,9 +139,10 @@ export async function sendFollowUpSMS(
     throw err;
   }
 
-  const messageBody =
+  const messageBody = appendOptOutFooter(
     customMessage ||
-    `Hi, just following up from ${business.name}. Still need help? Reply here or give us a call!`;
+      `Hi, just following up from ${business.name}. Still need help? Reply here or give us a call!`
+  );
 
   try {
     const message = await getMessagingAdapter().sendMessage({

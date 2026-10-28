@@ -3,12 +3,17 @@
  * Multi-touch campaign templates organized by urgency level
  */
 
+import { OPT_OUT_FOOTER } from '@/services/opt-out';
+
 export interface SMSTemplate {
   key: string;
   subject: string;
   body: string;
   variables: string[];  // Available variables: {business}, {name}, {issue}
 }
+
+/** FCC 26-67 (effective 2026-11-25): include opt-out instruction. */
+export { OPT_OUT_FOOTER };
 
 /**
  * Emergency Templates (fast response, urgent tone)
@@ -120,7 +125,9 @@ export function getTemplate(
 
   if (!template) {
     console.warn(`Template not found: ${templateKey}, using fallback`);
-    return `Hi, this is ${variables.business}. We missed your call. How can we help?`;
+    return appendOptOutFooter(
+      `Hi, this is ${variables.business}. We missed your call. How can we help?`
+    );
   }
 
   let message = template.body;
@@ -130,7 +137,14 @@ export function getTemplate(
     message = message.replace(new RegExp(`\\{${key}\\}`, 'g'), value);
   }
 
-  return message;
+  return appendOptOutFooter(message);
+}
+
+/** Ensure FCC 26-67 STOP line is present exactly once. */
+export function appendOptOutFooter(body: string): string {
+  const trimmed = body.trimEnd();
+  if (trimmed.includes(OPT_OUT_FOOTER)) return trimmed;
+  return `${trimmed}\n${OPT_OUT_FOOTER}`;
 }
 
 /**

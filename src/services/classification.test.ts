@@ -7,14 +7,18 @@ import {
 } from './classification';
 
 describe('isOptOutMessage', () => {
-  it('detects STOP / unsubscribe language', () => {
+  it('detects whole-message STOP / UNSUBSCRIBE', () => {
     expect(isOptOutMessage('STOP')).toBe(true);
-    expect(isOptOutMessage('Please unsubscribe me')).toBe(true);
-    expect(isOptOutMessage('wrong number')).toBe(true);
+    expect(isOptOutMessage('UNSUBSCRIBE')).toBe(true);
+    expect(isOptOutMessage('OPT OUT')).toBe(true);
   });
 
-  it('does not flag normal service requests', () => {
+  it('does not false-positive on service language or ambiguous phrases', () => {
     expect(isOptOutMessage('My water heater is leaking')).toBe(false);
+    expect(isOptOutMessage("won't stop leaking HELP")).toBe(false);
+    expect(isOptOutMessage('stop by today')).toBe(false);
+    expect(isOptOutMessage('Please unsubscribe me')).toBe(false);
+    expect(isOptOutMessage('wrong number')).toBe(false);
   });
 });
 
