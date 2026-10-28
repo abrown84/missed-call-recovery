@@ -1,0 +1,181 @@
+/**
+ * Behavioural tests targeting Stryker survivors on opt-out.ts / opt-out-data.ts (QC r7).
+ */
+import { describe, expect, it } from 'vitest';
+import {
+  classifyOptOut,
+  collapseSpacedLetterTokens,
+  compactOptOutText,
+  hasWholeWordStem,
+  isDefiniteOptOut,
+  normalizeOptOutText,
+  wouldBackfillSuppress,
+} from './opt-out';
+import {
+  OPT_OUT_MULTIWORD_STEMS,
+  OPT_OUT_WHOLE_MESSAGE,
+  OPT_OUT_WHOLE_MESSAGE_COMPACT,
+  OPT_OUT_WORD_STEMS,
+  optOutBackfillCompactList,
+  optOutBackfillExactList,
+  sqlQuotedList,
+} from './opt-out-data';
+
+describe('normalizeOptOutText trailing-punctuation anchor (L75)', () => {
+  it('keeps mid-message punctuation (only strips trailing ?!.,…)', () => {
+    expect(normalizeOptOutText('STOP, PLEASE')).toBe('STOP, PLEASE');
+    expect(normalizeOptOutText('HELLO,WORLD')).toBe('HELLO,WORLD');
+  });
+
+  it('comma-separated STOP PLEASE stays ambiguous, not whole-message opt_out', () => {
+    expect(classifyOptOut('STOP, PLEASE')).toEqual({
+      kind: 'ambiguous',
+      reason: 'keyword_in_sentence',
+    });
+    expect(isDefiniteOptOut('STOP, PLEASE')).toBe(false);
+  });
+});
+
+describe('hasWholeWordStem space vs hyphen branch (L87–88)', () => {
+  it('matches hyphenated OPT-OUT via escaped pattern', () => {
+    expect(hasWholeWordStem('PLEASE OPT-OUT NOW', 'OPT-OUT')).toBe(true);
+    expect(classifyOptOut('PLEASE OPT-OUT NOW')).toEqual({
+      kind: 'ambiguous',
+      reason: 'keyword_in_sentence',
+    });
+  });
+
+  it('matches spaced OPT OUT via multiword stem branch', () => {
+    expect(hasWholeWordStem('PLEASE OPT OUT NOW', 'OPT OUT')).toBe(true);
+    expect(classifyOptOut('PLEASE OPT OUT NOW')).toEqual({
+      kind: 'ambiguous',
+      reason: 'keyword_in_sentence',
+    });
+  });
+
+  it('matches single-token stems without escape path', () => {
+    expect(hasWholeWordStem('PLEASE STOP NOW', 'STOP')).toBe(true);
+    expect(hasWholeWordStem('XXXENDYYY', 'END')).toBe(false);
+  });
+
+  it('covers hyphen-only word stem in OPT_OUT_WORD_STEMS', () => {
+    expect(OPT_OUT_WORD_STEMS).toContain('OPT-OUT');
+    expect(hasWholeWordStem('X OPT-OUT Y', 'OPT-OUT')).toBe(true);
+  });
+});
+
+describe('empty normalized early return (L102, L170)', () => {
+  it('emoji-only body normalizes empty → not_opt_out / no backfill', () => {
+    expect(normalizeOptOutText('🛑')).toBe('');
+    expect(classifyOptOut('🛑')).toEqual({ kind: 'not_opt_out' });
+    expect(wouldBackfillSuppress('🛑')).toBe(false);
+  });
+
+  it('whitespace-only → not_opt_out and wouldBackfillSuppress false', () => {
+    expect(wouldBackfillSuppress('')).toBe(false);
+    expect(wouldBackfillSuppress('   \u200b  ')).toBe(false);
+  });
+});
+
+describe('classifyOptOut whole-message OR branches (L112)', () => {
+  it('matches on normalized alone', () => {
+    expect(classifyOptOut('STOP').kind).toBe('opt_out');
+    expect(wouldBackfillSuppress('STOP')).toBe(true);
+  });
+
+  it('matches on compact alone (spaced letters)', () => {
+    expect(classifyOptOut('S T O P').kind).toBe('opt_out');
+    expect(wouldBackfillSuppress('S T O P')).toBe(true);
+    expect(compactOptOutText(normalizeOptOutText('S T O P'))).toBe('STOP');
+  });
+
+  it('matches on collapsed alone (spaced letters + trailing words)', () => {
+    expect(classifyOptOut('S T O P PLEASE').kind).toBe('opt_out');
+    expect(wouldBackfillSuppress('S T O P PLEASE')).toBe(true);
+    expect(collapseSpacedLetterTokens(normalizeOptOutText('S T O P PLEASE'))).toBe(
+      'STOP PLEASE'
+    );
+  });
+
+  it('matches when collapsed compact hits STOPSTOP (collapsed text not in exact set)', () => {
+    const body = 'S T O P S T O P';
+    const normalized = normalizeOptOutText(body);
+    expect(normalized).toBe('S T O P S T O P');
+    expect(collapseSpacedLetterTokens(normalized)).toBe('STOPSTOP');
+    expect(classifyOptOut(body).kind).toBe('opt_out');
+    expect(wouldBackfillSuppress(body)).toBe(true);
+  });
+});
+
+describe('ambiguous stem OR on normalized vs collapsed (L123, L131)', () => {
+  it('STOP stem matches only after collapseSpacedLetterTokens', () => {
+    const body = 'S T O P BY TODAY';
+    const normalized = normalizeOptOutText(body);
+    expect(hasWholeWordStem(normalized, 'STOP')).toBe(false);
+    expect(hasWholeWordStem(collapseSpacedLetterTokens(normalized), 'STOP')).toBe(
+      true
+    );
+    expect(classifyOptOut(body)).toEqual({
+      kind: 'ambiguous',
+      reason: 'keyword_in_sentence',
+    });
+  });
+
+  it('multiword STOP ALL stem matches on collapsed text', () => {
+    const body = 'S T O P  ALL please stop texts';
+    const normalized = normalizeOptOutText(body);
+    expect(hasWholeWordStem(normalized, 'STOP ALL')).toBe(false);
+    expect(
+      hasWholeWordStem(collapseSpacedLetterTokens(normalized), 'STOP ALL')
+    ).toBe(true);
+    expect(classifyOptOut(body)).toEqual({
+      kind: 'ambiguous',
+      reason: 'keyword_in_sentence',
+    });
+    expect(OPT_OUT_MULTIWORD_STEMS).toContain('STOP ALL');
+  });
+});
+
+describe('collapseSpacedLetterTokens regex (L143–144)', () => {
+  it('collapses runs with multiple spaces between letters', () => {
+    expect(collapseSpacedLetterTokens('S  T  O  P')).toBe('STOP');
+    expect(collapseSpacedLetterTokens('S  T  O  P PLEASE')).toBe('STOP PLEASE');
+  });
+
+  it('feeds classifyOptOut when normalize already collapsed outer whitespace', () => {
+    expect(normalizeOptOutText('S  T  O  P')).toBe('S T O P');
+    expect(classifyOptOut('S  T  O  P').kind).toBe('opt_out');
+  });
+});
+
+describe('opt-out-data sqlQuotedList and backfill lists', () => {
+  it('sqlQuotedList doubles apostrophes for SQL literals', () => {
+    expect(sqlQuotedList(["DON'T TEXT ME", 'PLAIN'])).toBe(
+      "'DON''T TEXT ME', 'PLAIN'"
+    );
+    const apostropheTokens = OPT_OUT_WHOLE_MESSAGE.filter((t) => t.includes("'"));
+    expect(apostropheTokens.length).toBeGreaterThan(0);
+    for (const token of apostropheTokens) {
+      const quoted = sqlQuotedList([token]);
+      expect(quoted.startsWith("'")).toBe(true);
+      expect(quoted.endsWith("'")).toBe(true);
+      expect(quoted).toContain("''");
+      expect(quoted).toBe(`'${token.replace(/'/g, "''")}'`);
+    }
+  });
+
+  it('backfill list helpers mirror const arrays (length + contents)', () => {
+    expect(optOutBackfillExactList()).toHaveLength(OPT_OUT_WHOLE_MESSAGE.length);
+    expect(optOutBackfillExactList()).toEqual([...OPT_OUT_WHOLE_MESSAGE]);
+    expect(optOutBackfillCompactList()).toHaveLength(
+      OPT_OUT_WHOLE_MESSAGE_COMPACT.length
+    );
+    expect(optOutBackfillCompactList()).toEqual([
+      ...OPT_OUT_WHOLE_MESSAGE_COMPACT,
+    ]);
+  });
+
+  it('sqlQuotedList joins multiple tokens with comma-space', () => {
+    expect(sqlQuotedList(['A', 'B'])).toBe("'A', 'B'");
+  });
+});
