@@ -45,3 +45,4 @@ coverage/
 
 nul
 .vitest/
+.stryker-tmp/
