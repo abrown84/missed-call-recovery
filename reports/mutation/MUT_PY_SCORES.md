@@ -2,9 +2,8 @@
 
 | Result | Count |
 |--------|------:|
-| KILLED | 63 |
+| KILLED | **63** / 63 applicable |
 | SURVIVED | 0 |
-| NOMATCH | 1 |
+| NOMATCH | 1 (#47 urgency gate intentionally removed for Standard enroll) |
 
-NOMATCH #47 = urgency gate intentionally removed (non-responder Standard enroll).
-Full JSON: `mut-results.json`.
+Retargeted at pure modules after I/O thinning (`decisions`, `campaigns-impl`, `send-io-plans`, `campaign-reconcile-plan`, …).
