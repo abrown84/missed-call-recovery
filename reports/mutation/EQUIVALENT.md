@@ -355,6 +355,14 @@ values, DB writes, or control flow.
 - Behavioural coverage: DST spring/fall, 850 dual-zone `Math.max` (not min),
   HI/AK area codes — see `quiet-hours.r7.test.ts`.
 
+### quiet-hours-nextlocalhour-ceil-plus-one
+
+- file: `src/services/quiet-hours.ts` / mutator: ArithmeticOperator / line: 166
+- original → replacement: `(from.getTime() + 1)` → `(from.getTime() - 1)`
+- justification: brute-force over sub-minute offsets in `America/New_York`
+  (and the 7:59:59.999 alignment case) yields identical `nextLocalHour` results;
+  the `+ 1` ms bump is defensive for minute-grid alignment only. Disabled in source.
+
 ### inbound-missed-call-log-only
 
 - file: `src/services/inbound.ts`, `src/services/missed-call.ts` / mutator:

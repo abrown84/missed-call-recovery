@@ -163,6 +163,7 @@ export function nextLocalHour(
   if (p0.hour === hour && p0.minute === 0 && p0.second === 0) return from;
 
   // Align to the next whole UTC minute (avoids landing on :59 forever).
+  // Stryker disable next-line ArithmeticOperator: +1 vs -1 ms is equivalent for IANA zones (see EQUIVALENT.md)
   let t = Math.ceil((from.getTime() + 1) / 60_000) * 60_000;
   for (let i = 0; i < 60 * 50; i++) {
     const p = localParts(new Date(t), timeZone);
