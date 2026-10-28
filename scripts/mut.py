@@ -11,7 +11,7 @@ RT='src/services/send/reconcile-tally.ts'
 S='src/services/sms.ts'
 M='src/services/send/machine.ts'
 Q='src/services/quiet-hours.ts'
-Z='src/services/quiet-hours-zones.ts'
+Z='src/services/quiet-hours-zones-data.ts'
 G='supabase/migrations/003_campaign_idempotency.sql'
 # Injected advance into campaign outcome interpreters (must break tests).
 ADV="return { type: 'advance' }; // mut"
