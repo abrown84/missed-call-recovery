@@ -388,6 +388,36 @@ describe('sendFollowUpSMSWithDeps (QC r6 P2 suppression restore)', () => {
       'Custom follow'
     );
     expect(send).toHaveBeenCalled();
-    expect(db.calls.some((c) => c.op === 'insert')).toBe(true);
+    const insert = db.calls.find((c) => c.op === 'insert');
+    expect(insert?.args[0]).toEqual({
+      lead_id: 'L',
+      direction: 'outbound',
+      body: expect.stringContaining('Custom follow'),
+      message_sid: 's',
+      status: 'queued',
+    });
+  });
+});
+
+describe('persistDeferredRecovery payload strings', () => {
+  it('insert uses deferred status and outbound direction', async () => {
+    const db = makeDb({ existing: null });
+    await persistDeferredRecoveryWithDeps(deps({ dbImpl: db }), {
+      leadId: 'L',
+      body: 'hello',
+      nextSendAt: '2026-01-01T00:00:00.000Z',
+    });
+    const insert = db.calls.find((c) => c.op === 'insert');
+    expect(insert?.args[0]).toMatchObject({
+      lead_id: 'L',
+      direction: 'outbound',
+      body: 'hello',
+      status: 'deferred',
+      next_retry_at: '2026-01-01T00:00:00.000Z',
+      key_supported_at_send: false,
+    });
+    expect(String((insert?.args[0] as { message_sid: string }).message_sid)).toContain(
+      'mlf:recovery:L'
+    );
   });
 });

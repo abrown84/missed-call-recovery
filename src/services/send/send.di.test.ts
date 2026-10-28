@@ -507,6 +507,26 @@ describe('sendMessageWithDeps', () => {
       (c) => c.table === 'leads' && c.op === 'select'
     );
     expect(sel?.args[0]).toBe('opted_out, timezone, sms_outbound_sid');
+    const insert = db.calls.find(
+      (c) => c.table === 'sms_messages' && c.op === 'insert'
+    );
+    expect(insert?.args[0]).toMatchObject({
+      lead_id: 'L',
+      direction: 'outbound',
+      body: 'hi',
+      status: 'sending',
+      key_supported_at_send: false,
+    });
+    const upd = db.calls.find(
+      (c) =>
+        c.table === 'sms_messages' &&
+        c.op === 'update' &&
+        (c.args[0] as { status?: string })?.status === 'queued'
+    );
+    expect(upd?.args[0]).toMatchObject({
+      status: 'queued',
+      key_supported_at_send: true,
+    });
   });
 });
 

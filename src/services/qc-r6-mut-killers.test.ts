@@ -237,7 +237,9 @@ describe('QC r6 mut.py killers', () => {
 
   it('#49 switchEnrollmentCampaign source uses ENROLLMENT_CLAIM_SELECT', () => {
     expect(ENROLLMENT_CLAIM_SELECT).toBe('id, claim_token, claimed_at');
-    const src = readSrc('src/services/campaigns.ts');
+    const src =
+      readSrc('src/services/campaigns-impl.ts') ||
+      readSrc('src/services/campaigns.ts');
     if (!src) return;
     const switchIdx = src.indexOf('claim_token.is.null,claimed_at.lt.');
     expect(switchIdx).toBeGreaterThan(-1);
@@ -303,7 +305,9 @@ describe('QC r6 mut.py killers', () => {
   });
 
   it('campaigns.ts quiet_hours_deferred releases with nextSendAt', () => {
-    const src = readSrc('src/services/campaigns.ts');
+    const src =
+      readSrc('src/services/campaigns-impl.ts') ||
+      readSrc('src/services/campaigns.ts');
     const decisions = readSrc('src/services/send/decisions.ts');
     const campDec = readSrc('src/services/campaign-decisions.ts');
     if (!src || !decisions || !campDec) return;
@@ -350,7 +354,9 @@ describe('QC r6 mut.py killers', () => {
   });
 
   it('campaigns.ts keeps recovery park / claim / requeue / leadTimezone', () => {
-    const src = readSrc('src/services/campaigns.ts');
+    const src =
+      readSrc('src/services/campaigns-impl.ts') ||
+      readSrc('src/services/campaigns.ts');
     const campDec = readSrc('src/services/campaign-decisions.ts');
     const decisions = readSrc('src/services/send/decisions.ts');
     if (!src || !campDec || !decisions) return;
@@ -425,7 +431,9 @@ describe('QC r6 mut.py killers', () => {
   });
 
   it('#44 advanceEnrollment claim_token checks present on both branches', () => {
-    const src = readSrc('src/services/campaigns.ts');
+    const src =
+      readSrc('src/services/campaigns-impl.ts') ||
+      readSrc('src/services/campaigns.ts');
     if (!src) return;
     // Exact mut.py #44 target — must remain (6-space indent before .eq)
     expect(src).toContain(
