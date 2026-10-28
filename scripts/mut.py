@@ -20,7 +20,7 @@ muts=[
 ('01','r4#2 recovery gate pending',D,"    if (input.recovery === 'pending') {\n      return { kind: 'blocked', reason: 'recovery_pending' };\n    }","    if (false) {\n      return { kind: 'blocked', reason: 'recovery_pending' };\n    }",1),
 ('02','r4#2 recovery resolved_sent skip',D,"    if (input.recovery === 'resolved_sent') {\n      return {\n        kind: 'skipped',\n        reason: 'recovery_already_sent_skip_step_1',\n      };\n    }","    if (false) {\n      return {\n        kind: 'skipped',\n        reason: 'recovery_already_sent_skip_step_1',\n      };\n    }",1),
 ('03','r4#2 enroll park when recovery pending',CD,"  if (input.recoveryState === 'pending' && !input.recoveryConfirmed) {\n    nextSendAt =\n      input.parkedIso ?? parkedNextSendAt(input.now ?? new Date());\n  }","  if (false) {\n    nextSendAt =\n      input.parkedIso ?? parkedNextSendAt(input.now ?? new Date());\n  }",1),
-('04','r4#2 recovery resend removed',CI,"await resendRecoveryIdempotent(supabase, action.leadId, original);","void 0;",1),
+('04','r4#2 recovery resend removed',CI,"await resendRecoveryIdempotent(\n        deps,\n        supabase,\n        action.leadId,\n        original\n      );","void 0;",1),
 ('05','r4#2 skipRecoveryGate forced',CSP,"    skipRecoveryGate: decideSkipRecoveryGate({","    skipRecoveryGate: true || decideSkipRecoveryGate({",1),
 ('06','r4#2 never_sent clears recovery marker',SIO,"export function clearLeadOutboundSidPayload(): Record<string, unknown> {\n  return { sms_outbound_sid: null };\n}","export function clearLeadOutboundSidPayload(): Record<string, unknown> {\n  return {};\n}",1),
 ('07','r4#3 reconcile ORDER BY desc',I,".order(COL.sentAt, { ascending: true })",".order(COL.sentAt, { ascending: false })",1),
