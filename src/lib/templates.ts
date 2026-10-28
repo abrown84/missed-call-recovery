@@ -22,7 +22,8 @@ export const EMERGENCY_TEMPLATES: Record<string, SMSTemplate> = {
   emergency_initial: {
     key: 'emergency_initial',
     subject: 'Emergency Response',
-    body: `🚨 {business} - We got your call! This sounds urgent. What's the emergency? Reply immediately and we'll prioritize your case.`,
+    // Alex flag: emoji removed so body stays GSM-7 (1–2 segments). Confirm copy.
+    body: `{business} - We got your call! This sounds urgent. What's the emergency? Reply immediately and we'll prioritize your case.`,
     variables: ['business'],
   },
   emergency_followup_1: {

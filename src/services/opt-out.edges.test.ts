@@ -15,16 +15,18 @@ describe('opt-out edge killers', () => {
     expect(classifyOptOut('   ')).toEqual({ kind: 'not_opt_out' });
   });
 
-  it('service-talk STOP is not opt-out (exact verdict + helper)', () => {
-    // Exact object shape kills ObjectLiteral→{} on the service-talk return.
+  it('service-talk STOP is ambiguous (needs review), never silent not_opt_out', () => {
     expect(classifyOptOut("won't stop leaking")).toEqual({
-      kind: 'not_opt_out',
+      kind: 'ambiguous',
+      reason: 'needs_human_review',
     });
     expect(classifyOptOut("doesn't stop dripping")).toEqual({
-      kind: 'not_opt_out',
+      kind: 'ambiguous',
+      reason: 'needs_human_review',
     });
     expect(classifyOptOut('stop by the office')).toEqual({
-      kind: 'not_opt_out',
+      kind: 'ambiguous',
+      reason: 'needs_human_review',
     });
     expect(isDefiniteOptOut('never stop trying')).toBe(false);
     expect(isDefiniteOptOut('cant stop the leak')).toBe(false);

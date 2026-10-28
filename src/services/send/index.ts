@@ -310,7 +310,11 @@ async function dispatchToRelay(
   if (req.kind === 'recovery' || req.kind === 'campaign') {
     await supabase
       .from('sms_messages')
-      .update({ status: 'unknown' })
+      .update({
+        status: 'unknown',
+        reconcile_attempts: decision.nextAttempts,
+        next_retry_at: nextRetryAt,
+      })
       .eq('message_sid', sid);
   }
   return {
@@ -361,6 +365,7 @@ export async function reconcileOne(
     status: string;
     reconcile_attempts?: number | null;
     key_supported_at_send?: boolean | null;
+    next_retry_at?: string | null;
   }
 ): Promise<ReconcileOutcome> {
   if (!isSendsEnabled()) {
@@ -434,7 +439,7 @@ export async function reconcileOne(
   if (decision.action === 'needs_review') {
     await supabase
       .from('sms_messages')
-      .update({ status: 'needs_review' })
+      .update({ status: 'needs_review', next_retry_at: null })
       .eq('id', row.id);
     return {
       kind: 'needs_review',
@@ -457,6 +462,7 @@ export async function reconcileOne(
     .update({
       status: 'unknown',
       reconcile_attempts: nextAttempts,
+      next_retry_at: nextRetryAt,
     })
     .eq('id', row.id);
   return {
@@ -486,13 +492,20 @@ export async function reconcileAmbiguousSms(): Promise<{
   }
 
   const cutoff = new Date(Date.now() - STUCK_SENDING_MS).toISOString();
+  const nowIso = new Date().toISOString();
+  // Persist backoff: only reclaim unknown rows whose next_retry_at is due
+  // (or null for legacy rows). ≈2.5h total across 5 attempts before needs_review.
   const { data: rows } = await supabase
     .from('sms_messages')
     .select(
-      'id, lead_id, message_sid, status, sent_at, reconcile_attempts, key_supported_at_send'
+      'id, lead_id, message_sid, status, sent_at, reconcile_attempts, key_supported_at_send, next_retry_at'
     )
     .in('status', ['unknown', 'sending'])
-    .or(`status.eq.unknown,sent_at.lt.${cutoff}`)
+    .or(
+      `and(status.eq.unknown,next_retry_at.is.null),` +
+        `and(status.eq.unknown,next_retry_at.lte.${nowIso}),` +
+        `and(status.eq.sending,sent_at.lt.${cutoff})`
+    )
     .order('sent_at', { ascending: true })
     .limit(50);
 

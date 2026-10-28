@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockFrom = vi.fn();
 const sendRecoverySMS = vi.fn();
+const enrollLeadInCampaign = vi.fn();
 const isPhoneSuppressed = vi.fn();
 
 vi.mock('@/lib/supabase', () => ({
@@ -10,6 +11,10 @@ vi.mock('@/lib/supabase', () => ({
 
 vi.mock('@/services/sms', () => ({
   sendRecoverySMS: (...args: unknown[]) => sendRecoverySMS(...args),
+}));
+
+vi.mock('@/services/campaigns', () => ({
+  enrollLeadInCampaign: (...args: unknown[]) => enrollLeadInCampaign(...args),
 }));
 
 vi.mock('@/services/suppressions', () => ({
@@ -31,18 +36,20 @@ function thenable(result: { data: unknown; error: unknown }) {
   return obj;
 }
 
-describe('processMissedCall (staging evidence b)', () => {
+describe('processMissedCall (QC r6 enroll + recovery)', () => {
   beforeEach(() => {
     mockFrom.mockReset();
     sendRecoverySMS.mockReset();
+    enrollLeadInCampaign.mockReset();
     isPhoneSuppressed.mockReset();
     sendRecoverySMS.mockResolvedValue(undefined);
+    enrollLeadInCampaign.mockResolvedValue({ enrolled: true });
     isPhoneSuppressed.mockResolvedValue(false);
   });
 
   afterEach(() => vi.clearAllMocks());
 
-  it('sends recovery SMS but does NOT enroll while urgency is unset', async () => {
+  it('sends recovery SMS and enrolls exactly once (non-responder path)', async () => {
     const business = {
       id: 'biz-1',
       phone: '+15559999999',
@@ -84,6 +91,8 @@ describe('processMissedCall (staging evidence b)', () => {
 
     expect(result).toEqual({ missedCallId: 'mc-1', leadId: 'lead-1' });
     expect(sendRecoverySMS).toHaveBeenCalledOnce();
+    expect(enrollLeadInCampaign).toHaveBeenCalledOnce();
+    expect(enrollLeadInCampaign).toHaveBeenCalledWith('lead-1');
   });
 
   it('skips recovery SMS when phone is suppressed (prior STOP)', async () => {
@@ -120,5 +129,6 @@ describe('processMissedCall (staging evidence b)', () => {
     });
 
     expect(sendRecoverySMS).not.toHaveBeenCalled();
+    expect(enrollLeadInCampaign).not.toHaveBeenCalled();
   });
 });

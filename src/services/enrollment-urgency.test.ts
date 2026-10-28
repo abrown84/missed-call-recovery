@@ -1,5 +1,6 @@
 /**
- * Staging evidence (b): enrollLeadInCampaign must refuse urgency=null.
+ * QC r6: null urgency enrolls into Standard (non-responder path).
+ * Classification still switches Emergency/High on reply.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -18,6 +19,7 @@ vi.mock('@/services/send', () => ({
 
 vi.mock('@/services/sms', () => ({
   sendRecoverySMS: vi.fn(),
+  processDeferredRecoveries: vi.fn(async () => ({ sent: 0, deferred: 0, errors: 0 })),
 }));
 
 vi.mock('@/services/suppressions', () => ({
@@ -25,12 +27,22 @@ vi.mock('@/services/suppressions', () => ({
   SuppressionLookupError: class extends Error {},
 }));
 
+vi.mock('@/services/quiet-hours', () => ({
+  deferUntilQuietHoursOpen: () => ({
+    allowed: true,
+    zones: ['America/New_York'],
+    endHour: 21,
+  }),
+}));
+
 import { enrollLeadInCampaign } from './campaigns';
 
 function chain(result: { data: unknown; error: unknown }) {
   const obj: Record<string, any> = {};
   const self = () => obj;
-  for (const m of ['select', 'insert', 'update', 'eq', 'single', 'maybeSingle', 'order']) {
+  for (const m of [
+    'select', 'insert', 'update', 'eq', 'single', 'maybeSingle', 'order',
+  ]) {
     obj[m] = vi.fn(self);
   }
   obj.single = vi.fn(async () => result);
@@ -40,10 +52,11 @@ function chain(result: { data: unknown; error: unknown }) {
   return obj;
 }
 
-describe('enrollLeadInCampaign urgency gate (staging b)', () => {
+describe('enrollLeadInCampaign null urgency → Standard (QC r6)', () => {
   beforeEach(() => mockFrom.mockReset());
 
-  it('refuses enrollment when lead.urgency is null', async () => {
+  it('enrolls into Standard when lead.urgency is null', async () => {
+    const inserts: unknown[] = [];
     mockFrom.mockImplementation((table: string) => {
       if (table === 'leads') {
         return chain({
@@ -51,26 +64,56 @@ describe('enrollLeadInCampaign urgency gate (staging b)', () => {
             id: 'L1',
             urgency: null,
             opted_out: false,
+            sms_outbound_sid: null,
             businesses: { id: 'B' },
           },
           error: null,
         });
       }
+      if (table === 'campaign_enrollments') {
+        const c = chain({ data: null, error: null });
+        c.insert = vi.fn((row: unknown) => {
+          inserts.push(row);
+          return c;
+        });
+        c.maybeSingle = vi.fn(async () => ({ data: null, error: null }));
+        return c;
+      }
+      if (table === 'campaigns') {
+        return chain({
+          data: [
+            {
+              id: 'std',
+              name: 'Standard',
+              urgency_filter: null,
+              status: 'active',
+              auto_enroll: true,
+              campaign_steps: [
+                { step_number: 1, delay_minutes: 0, template_key: 'standard_initial' },
+                { step_number: 2, delay_minutes: 60, template_key: 'standard_followup_1' },
+              ],
+            },
+          ],
+          error: null,
+        });
+      }
+      if (table === 'sms_messages') {
+        return chain({ data: null, error: null });
+      }
       return chain({ data: null, error: null });
     });
 
     const result = await enrollLeadInCampaign('L1');
-    expect(result).toEqual({ enrolled: false, reason: 'urgency_unset' });
+    expect(result.enrolled).toBe(true);
+    if (result.enrolled) {
+      expect(result.campaignName).toBe('Standard');
+    }
   });
 
-  it('processMissedCall must not enroll before urgency is set', async () => {
-    // Contract check: missed-call module no longer imports enrollLeadInCampaign.
+  it('processMissedCall enrolls after recovery', async () => {
     const src = await import('fs').then((fs) =>
-      fs.readFileSync(
-        new URL('./missed-call.ts', import.meta.url),
-        'utf8'
-      )
+      fs.readFileSync(new URL('./missed-call.ts', import.meta.url), 'utf8')
     );
-    expect(src).not.toMatch(/enrollLeadInCampaign\s*\(/);
+    expect(src).toMatch(/enrollLeadInCampaign\s*\(/);
   });
 });

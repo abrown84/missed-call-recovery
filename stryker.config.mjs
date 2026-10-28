@@ -4,23 +4,23 @@ const config = {
   reporters: ['clear-text', 'html', 'json'],
   testRunner: 'vitest',
   coverageAnalysis: 'perTest',
+  // QC r6 P0: mutate the real I/O layer + opt-out. No StringLiteral/Regex
+  // exclusions; no-coverage mutants count in the gate denominator.
   mutate: [
+    'src/services/send/index.ts',
     'src/services/send/machine.ts',
     'src/services/send/policy.ts',
-    'src/services/reconcile-logic.ts',
+    'src/services/campaigns.ts',
+    'src/services/sms.ts',
     'src/services/opt-out.ts',
+    'src/services/reconcile-logic.ts',
     'src/services/quiet-hours.ts',
   ],
-  // Reason-string / punctuation-regex mutants are largely equivalent for our
-  // action-level assertions; focus on control-flow kills.
-  mutator: {
-    excludedMutations: ['StringLiteral', 'Regex'],
-  },
   ignoreStatic: true,
   thresholds: {
     high: 90,
-    low: 90,
-    break: null, // per-module gate enforced by scripts/check-mutation-scores.mjs
+    low: 60,
+    break: null,
   },
   timeoutMS: 60_000,
   concurrency: 4,

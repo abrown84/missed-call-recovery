@@ -109,7 +109,7 @@ describe('PGlite: schema + 001 + 002 + 003', () => {
   }, 60_000);
 
   it('abort-only collision script lists collisions and never deletes businesses', async () => {
-    const abortSql = load('supabase/migrations/003_phone_collision_abort.sql');
+    const abortSql = load('supabase/scripts/phone_collision_abort.sql');
     expect(abortSql).toMatch(/ABORT/i);
     expect(abortSql).not.toMatch(/DELETE FROM businesses/i);
     expect(abortSql).not.toMatch(/UPDATE leads SET business_id/i);

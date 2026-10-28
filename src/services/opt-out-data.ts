@@ -1,11 +1,15 @@
-/** Opt-out token / confusable tables (data; not mutation-tested). */
+/**
+ * Opt-out token / confusable tables — single shared list for runtime + 003 backfill.
+ * Per-se FCC keywords: stop, quit, end, revoke, opt out, cancel, unsubscribe.
+ */
 
-
+/** Exact whole-message matches (after normalize). */
 export const OPT_OUT_EXACT = [
   'STOP',
   'STOPALL',
   'STOP ALL',
   'STOP STOP',
+  'STOP STOP STOP',
   'UNSUBSCRIBE',
   'QUIT',
   'END',
@@ -17,21 +21,35 @@ export const OPT_OUT_EXACT = [
   "DON'T TEXT ME AGAIN",
   'DONT TEXT ME AGAIN',
   'DO NOT TEXT ME AGAIN',
+  'DO NOT CONTACT ME',
+  'DONT CONTACT ME',
+  "DON'T CONTACT ME",
   'PLEASE STOP',
   'STOP PLEASE',
   'STOP IT',
-  'UNSUBSCRIBE ME',
-  'CANCEL PLEASE',
-  'LEAVE ME ALONE',
+  'STOP PLS',
+  'STOP TEXTING',
   'STOP TEXTING ME',
   'STOP MESSAGING ME',
+  'STOP SENDING',
+  'STOP ALL TEXTS',
   'PLEASE STOP TEXTING ME',
+  'UNSUBSCRIBE ME',
+  'UNSUBSCRIBE ME PLEASE',
+  'CANCEL PLEASE',
+  'LEAVE ME ALONE',
+  'TAKE ME OFF YOUR LIST',
+  'TAKE ME OFF THE LIST',
+  'DONT TEXT ME',
+  "DON'T TEXT ME",
 ] as const;
 
+/** Spaceless compact forms (S T O P → STOP, STOP STOP → STOPSTOP). */
 export const OPT_OUT_COMPACT = new Set([
   'STOP',
   'STOPALL',
   'STOPSTOP',
+  'STOPSTOPSTOP',
   'UNSUBSCRIBE',
   'QUIT',
   'END',
@@ -40,6 +58,39 @@ export const OPT_OUT_COMPACT = new Set([
   'REVOKE',
 ]);
 
+/**
+ * Per-se keyword stems — if the normalized message CONTAINS one as a word
+ * (or compact contains the stem), treat as opt-out (FCC "any reasonable means").
+ */
+export const OPT_OUT_CONTAINS_KEYWORDS = [
+  'STOP',
+  'QUIT',
+  'END',
+  'REVOKE',
+  'CANCEL',
+  'UNSUBSCRIBE',
+  'OPTOUT',
+  'OPT OUT',
+  'OPT-OUT',
+] as const;
+
+/** Phrase contains-matches (normalized uppercase). */
+export const OPT_OUT_CONTAINS_PHRASES = [
+  'STOP TEXTING',
+  'STOP SENDING',
+  'STOP ALL',
+  'TAKE ME OFF',
+  'DO NOT CONTACT',
+  'DONT CONTACT',
+  "DON'T CONTACT",
+  'DO NOT TEXT',
+  'DONT TEXT',
+  "DON'T TEXT",
+  'REMOVE ME FROM',
+  'OFF YOUR LIST',
+] as const;
+
+/** Service-talk → ambiguous (needs review), never silent not_opt_out. */
 export const AMBIGUOUS = [
   /^no\s+more\s+(texts?|messages?)/i,
   /^remove\s+me\b/i,
@@ -78,10 +129,19 @@ export const CONFUSABLES: Record<string, string> = {
   '\u043E': 'o',
   '\u0440': 'p',
   '\u0441': 'c',
-  '\u0442': 't', // Cyrillic te → t  (ѕтор → stop)
+  '\u0442': 't',
   '\u0443': 'y',
   '\u0445': 'x',
   '\u0456': 'i',
   '\u0405': 'S',
-  '\u0455': 's', // Cyrillic dze → s
+  '\u0455': 's',
 };
+
+/** Shared list for SQL backfill IN (...). */
+export function optOutBackfillExactList(): string[] {
+  return [...OPT_OUT_EXACT];
+}
+
+export function optOutBackfillCompactList(): string[] {
+  return [...OPT_OUT_COMPACT];
+}

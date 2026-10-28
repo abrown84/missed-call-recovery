@@ -190,6 +190,7 @@ export interface Database {
           sent_at: string;
           reconcile_attempts: number;
           key_supported_at_send: boolean;
+          next_retry_at: string | null;
         };
         Insert: {
           id?: string;
@@ -201,6 +202,7 @@ export interface Database {
           sent_at?: string;
           reconcile_attempts?: number;
           key_supported_at_send?: boolean;
+          next_retry_at?: string | null;
         };
         Update: {
           id?: string;
@@ -212,6 +214,7 @@ export interface Database {
           sent_at?: string;
           reconcile_attempts?: number;
           key_supported_at_send?: boolean;
+          next_retry_at?: string | null;
         };
       };
       campaigns: {

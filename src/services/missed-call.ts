@@ -1,6 +1,7 @@
 import { createServerClient } from '@/lib/supabase';
 import { redactPhone } from '@/lib/pii';
 import { normalizeToE164 } from '@/lib/phone';
+import { enrollLeadInCampaign } from '@/services/campaigns';
 import { sendRecoverySMS } from '@/services/sms';
 import {
   SuppressionLookupError,
@@ -119,7 +120,9 @@ export async function processMissedCall(
     return { missedCallId: missedCall.id, leadId: lead.id };
   }
 
-  // Recovery SMS first so sms_outbound_sid is set before enrollment skips step 1.
+  // Recovery SMS first so sms_outbound_sid / deferred row is set before
+  // enrollment skips step 1. Quiet-hours deferrals are persisted and cron
+  // sends when the window opens (QC r6 P0).
   try {
     await sendRecoverySMS(lead.id, business, callerE164);
   } catch (err) {
@@ -129,9 +132,17 @@ export async function processMissedCall(
     );
   }
 
-  // Do NOT enroll here — urgency is still null until classification.
-  // enrollLeadInCampaign gates on urgency; handleClassifiedReplyEnrollment
-  // enrolls/switches after the customer replies and urgency is set.
+  // Enroll into Standard (urgency null → Standard). After-hours non-responders
+  // still get recovery via deferred queue + campaign follow-ups. Classification
+  // switches Emergency/High on reply. Alex: confirm non-responder path.
+  try {
+    await enrollLeadInCampaign(lead.id);
+  } catch (err) {
+    console.error(
+      'Enrollment failed:',
+      err instanceof Error ? err.message : 'unknown'
+    );
+  }
 
   return { missedCallId: missedCall.id, leadId: lead.id };
 }

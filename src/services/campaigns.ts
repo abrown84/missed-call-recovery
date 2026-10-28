@@ -23,7 +23,7 @@ import {
   sendMessage,
   resolveRecoveryOutcome,
 } from '@/services/send';
-import { sendRecoverySMS } from '@/services/sms';
+import { processDeferredRecoveries, sendRecoverySMS } from '@/services/sms';
 import {
   SuppressionLookupError,
   isPhoneSuppressed,
@@ -71,11 +71,10 @@ export async function enrollLeadInCampaign(
     return { enrolled: false, reason: 'opted_out' };
   }
 
-  // Staging evidence (b): never enroll while urgency is still null — otherwise
-  // every missed call lands in Standard before classification.
-  if (lead.urgency == null || String(lead.urgency).trim() === '') {
-    return { enrolled: false, reason: 'urgency_unset' };
-  }
+  // QC r6 P0: enroll non-responders into Standard (urgency null → Standard
+  // campaign). Classification still switches Emergency/High on reply.
+  // Alex flag: confirm non-responder path; urgency gate was dropped for
+  // after-hours recovery persistence via enrollment + deferred recovery.
 
   const existing = await getEnrollmentForLead(leadId);
   if (existing) {
@@ -540,7 +539,8 @@ export async function sendCampaignSMS(
     console.error(
       `ALERT: campaign SMS needs_review ${enrollmentId} sid=${outcome.sid} (${outcome.reason})`
     );
-    await parkEnrollmentForReconcile(supabase, enrollmentId, token);
+    // Terminal status — do not re-park every 30 min (QC r6 P1 #7).
+    await markEnrollmentNeedsReview(supabase, enrollmentId, token, outcome.reason);
     return false;
   }
 
@@ -667,6 +667,31 @@ async function parkEnrollmentForReconcile(
   await releaseClaim(supabase, enrollmentId, claimToken, {
     nextSendAt: opts?.nextSendAt ?? parkedNextSendAt(),
   });
+}
+
+/** Terminal needs_review — clears claim, no 30-min re-alert loop. */
+async function markEnrollmentNeedsReview(
+  supabase: Supabase,
+  enrollmentId: string,
+  claimToken: string,
+  reason: string
+): Promise<void> {
+  await supabase
+    .from('campaign_enrollments')
+    .update({
+      status: 'needs_review',
+      next_send_at: null,
+      claimed_at: null,
+      claim_token: null,
+      paused_at: new Date().toISOString(),
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', enrollmentId)
+    .eq('status', 'active')
+    .eq('claim_token', claimToken);
+  console.error(
+    `Enrollment ${enrollmentId} terminal needs_review (${reason})`
+  );
 }
 
 /**
@@ -1051,6 +1076,9 @@ export async function processDueCampaigns(): Promise<{
     const support = await adapter.checkLookupSupport();
     relayLookupSupported = support.supported;
   }
+
+  // Deferred recoveries first (quiet-hours window may have opened).
+  await processDeferredRecoveries();
 
   const reconcile = await reconcileAmbiguousSms();
 

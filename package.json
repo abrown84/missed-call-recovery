@@ -13,7 +13,7 @@
     "test:mutation": "stryker run"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "dependencies": {
     "@supabase/ssr": "^0.12.7",

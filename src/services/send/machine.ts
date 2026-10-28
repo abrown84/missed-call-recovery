@@ -53,7 +53,8 @@ export type SendMachineDecision =
   | { action: 'resolved'; providerStatus: string; phase: 'resolved' };
 
 export function parkDelayMs(reconcileAttempts: number): number {
-  const exp = Math.max(0, reconcileAttempts);
+  const n = Number(reconcileAttempts);
+  const exp = Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
   const raw = PARK_BASE_MS * 2 ** exp;
   return Math.min(raw, PARK_MAX_MS);
 }
@@ -64,6 +65,20 @@ export function parkNextAt(
 ): Date {
   return new Date(now.getTime() + parkDelayMs(reconcileAttempts));
 }
+
+const FAILED_STATUSES = new Set([
+  'failed',
+  'undelivered',
+  'rejected',
+  'error',
+]);
+
+const CONFIRMED_STATUSES = new Set([
+  'queued',
+  'dispatched',
+  'sent',
+  'delivered',
+]);
 
 /**
  * Apply a send or lookup event to the row state machine.
@@ -138,6 +153,19 @@ function onLookup(
       if (isFailedStatus(signal.status)) {
         return { action: 'needs_review', reason: 'relay_status_failed', phase: 'needs_review' };
       }
+      // Non-terminal / odd statuses on found:true → park (never invent resolved)
+      if (!isConfirmedStatus(signal.status)) {
+        const next = attempts + 1;
+        if (next >= MAX_RECONCILE_ATTEMPTS) {
+          return { action: 'needs_review', reason: 'max_attempts', phase: 'needs_review' };
+        }
+        return {
+          action: 'park_ambiguous',
+          reason: 'lookup_nonterminal',
+          phase: 'ambiguous',
+          nextAttempts: next,
+        };
+      }
       return {
         action: 'resolved',
         providerStatus: signal.status || 'queued',
@@ -156,7 +184,7 @@ function onLookup(
       return { action: 'requeue_never_sent', phase: 'never_sent' };
     case 'unknown':
     default: {
-      const next = attempts + 1;
+      const next = Math.max(0, attempts) + 1;
       if (next >= MAX_RECONCILE_ATTEMPTS) {
         return { action: 'needs_review', reason: 'max_attempts', phase: 'needs_review' };
       }
@@ -171,16 +199,19 @@ function onLookup(
 }
 
 export function isFailedStatus(status: string | null | undefined): boolean {
-  return Boolean(status && String(status).toLowerCase() === 'failed');
+  if (!status) return false;
+  return FAILED_STATUSES.has(String(status).toLowerCase());
 }
 
 export function isConfirmedStatus(status: string | null | undefined): boolean {
   if (!status) return false;
-  return ['queued', 'dispatched', 'sent', 'delivered'].includes(status);
+  return CONFIRMED_STATUSES.has(String(status).toLowerCase());
 }
 
 export function isAmbiguousStatus(status: string | null | undefined): boolean {
-  return Boolean(status && ['sending', 'unknown'].includes(status));
+  if (!status) return false;
+  const s = String(status).toLowerCase();
+  return s === 'sending' || s === 'unknown' || s === 'deferred' || s === 'pending';
 }
 
 /** Recovery resolution used to gate campaign step 1. */
@@ -194,14 +225,17 @@ export function classifyRecoveryStatus(
   status: string | null | undefined
 ): RecoveryResolvedOutcome {
   if (!status) return 'absent';
-  if (isConfirmedStatus(status)) return 'resolved_sent';
-  if (status === 'abandoned_retry') return 'resolved_abandoned';
+  const s = String(status).toLowerCase();
+  if (isConfirmedStatus(s)) return 'resolved_sent';
+  if (s === 'abandoned_retry' || s === 'abandoned_done') return 'resolved_abandoned';
+  if (s === 'deferred') return 'pending';
   if (
-    isAmbiguousStatus(status) ||
-    status === 'needs_review' ||
-    isFailedStatus(status)
+    isAmbiguousStatus(s) ||
+    s === 'needs_review' ||
+    isFailedStatus(s)
   ) {
     return 'pending';
   }
-  return 'absent';
+  // Unknown vocabulary → pending (never treat as absent → no step-1 double send)
+  return 'pending';
 }

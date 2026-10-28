@@ -68,5 +68,28 @@ describe('opt-out whole-message NFKC + confusable', () => {
     expect(isDefiniteOptOut('STOP STOP')).toBe(true);
     expect(isDefiniteOptOut('please stop texting me')).toBe(true);
   });
+
+  it('QC r6: contains-keyword opt-out (FCC any reasonable means)', () => {
+    for (const t of [
+      'stop texting',
+      'stop pls',
+      'dont text me',
+      'Unsubscribe me please',
+      'STOP\nSent from my iPhone',
+      'Stop.  Thanks',
+      'Stop all texts',
+      'Stop sending',
+      'take me off your list',
+      'do not contact me',
+      'STOP STOP STOP',
+      'S T O P please',
+    ]) {
+      const v = classifyOptOut(t);
+      expect(
+        v.kind === 'opt_out' || v.kind === 'ambiguous',
+        `${t} → ${JSON.stringify(v)}`
+      ).toBe(true);
+    }
+  });
 });
 

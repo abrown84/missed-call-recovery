@@ -15,9 +15,11 @@ describe('isOptOutMessage', () => {
 
   it('does not false-positive on service language or ambiguous phrases', () => {
     expect(isOptOutMessage('My water heater is leaking')).toBe(false);
+    // Service talk → ambiguous (not definite opt-out)
     expect(isOptOutMessage("won't stop leaking HELP")).toBe(false);
     expect(isOptOutMessage('stop by today')).toBe(false);
-    expect(isOptOutMessage('Please unsubscribe me')).toBe(false);
+    // Contains-keyword opt-out (QC r6)
+    expect(isOptOutMessage('Please unsubscribe me')).toBe(true);
     expect(isOptOutMessage('wrong number')).toBe(false);
   });
 });

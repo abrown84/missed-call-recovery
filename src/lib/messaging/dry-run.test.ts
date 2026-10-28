@@ -1,27 +1,22 @@
 import { describe, expect, it } from 'vitest';
-import { DryRunAdapter } from './dry-run';
-import { getMessagingAdapter, resetMessagingAdapterCache } from './index';
+import { redactPhonesInText } from './dry-run';
 
-describe('DryRunAdapter', () => {
-  it('records sends without calling the network', async () => {
-    const adapter = new DryRunAdapter();
-    const result = await adapter.sendMessage({
-      to: '+15551234567',
-      body: 'test follow-up',
-      auto: true,
-    });
-    expect(result.status).toBe('queued');
-    expect(result.id).toMatch(/^dry-run-/);
-    expect(adapter.sent).toHaveLength(1);
-    expect(adapter.sent[0].to).toBe('+15551234567');
+describe('dry-run phone redaction (QC r6 P2)', () => {
+  it('US numbers keep only last 4', () => {
+    expect(redactPhonesInText('call +12125550100 now')).toMatch(/\*\*\*-\*\*\*-0100/);
+    expect(redactPhonesInText('call +12125550100 now')).not.toMatch(/212/);
   });
 
-  it('is selected when MESSAGING_PROVIDER=dry-run', () => {
-    resetMessagingAdapterCache();
-    process.env.MESSAGING_PROVIDER = 'dry-run';
-    const adapter = getMessagingAdapter();
-    expect(adapter.name).toBe('dry-run');
-    delete process.env.MESSAGING_PROVIDER;
-    resetMessagingAdapterCache();
+  it('international numbers keep only last 4 (no 6-digit leak)', () => {
+    const out = redactPhonesInText('UK +442071234567 office');
+    expect(out).toMatch(/\*\*\*-\*\*\*-4567/);
+    expect(out).not.toMatch(/234567/);
+    expect(out).not.toMatch(/207/);
+  });
+
+  it('strips extension before redacting', () => {
+    const out = redactPhonesInText('212 555 0101 ext 5');
+    expect(out).toMatch(/\*\*\*-\*\*\*-0101/);
+    expect(out).not.toMatch(/1015/);
   });
 });

@@ -1,14 +1,18 @@
 /**
  * TCPA / carrier opt-out detection.
- * Whole-message match after NFKC + confusable folding + zero-width strip.
- * Shared normalizer is also the source of truth for migration 003 STOP backfill.
+ * Contains-keyword match after NFKC + confusable folding + zero-width strip.
+ * Shared token list is the source of truth for migration 003 STOP backfill.
  */
 
 import {
   AMBIGUOUS,
   CONFUSABLES,
   OPT_OUT_COMPACT,
+  OPT_OUT_CONTAINS_KEYWORDS,
+  OPT_OUT_CONTAINS_PHRASES,
   OPT_OUT_EXACT,
+  optOutBackfillCompactList,
+  optOutBackfillExactList,
 } from './opt-out-data';
 
 export type OptOutVerdict =
@@ -16,7 +20,12 @@ export type OptOutVerdict =
   | { kind: 'ambiguous'; reason: string }
   | { kind: 'not_opt_out' };
 
-export { OPT_OUT_EXACT, OPT_OUT_COMPACT };
+export {
+  OPT_OUT_EXACT,
+  OPT_OUT_COMPACT,
+  OPT_OUT_CONTAINS_KEYWORDS,
+  OPT_OUT_CONTAINS_PHRASES,
+};
 
 const ZERO_WIDTH_RE =
   /[\u200B-\u200D\uFEFF\u2060\u180E\u00AD\u034F\u061C\u115F\u1160\u17B4\u17B5\u3164\uFFA0]/g;
@@ -30,16 +39,15 @@ export function foldConfusables(raw: string): string {
 }
 
 /**
- * Canonical normalizer used by inbound webhook AND migration 003 backfill
- * (SQL approximates the same steps — see 003_campaign_idempotency.sql).
+ * Canonical normalizer used by inbound webhook AND migration 003 backfill.
  */
 export function normalizeOptOutText(raw: string): string {
-  // Stryker disable next-line all -- chained Unicode transforms; covered by fixture strings
   return foldConfusables(raw)
     .normalize('NFKC')
     .replace(ZERO_WIDTH_RE, '')
     .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, '')
     .replace(/\u00a0/g, ' ')
+    .replace(/[\r\n]+/g, ' ')
     .trim()
     .replace(/^["'`“”‘’]+|["'`“”‘’]+$/g, '')
     .replace(/[?!.,…]+$/g, '')
@@ -49,16 +57,15 @@ export function normalizeOptOutText(raw: string): string {
 
 /** Spaceless form so 'S T O P' and 'STOP STOP' compact to STOP / STOPSTOP. */
 export function compactOptOutText(normalized: string): string {
-  return normalized.replace(/ /g, '');
+  return normalized.replace(/[^A-Z0-9]/g, '');
 }
 
 /**
  * Classify an inbound body for opt-out.
- * Exact whole-message match only for auto opt-out.
+ * Any message containing a per-se keyword → opt_out (or ambiguous for service talk).
  */
 export function classifyOptOut(raw: string): OptOutVerdict {
   const normalized = normalizeOptOutText(raw);
-  // Stryker disable next-line conditionalExpression -- empty → not_opt_out is equivalent to fallthrough
   if (!normalized) return { kind: 'not_opt_out' };
 
   for (const token of OPT_OUT_EXACT) {
@@ -68,16 +75,16 @@ export function classifyOptOut(raw: string): OptOutVerdict {
   const compact = compactOptOutText(normalized);
   if (OPT_OUT_COMPACT.has(compact)) return { kind: 'opt_out' };
 
-  // Service-talk short-circuit is equivalent to fallthrough for current
-  // AMBIGUOUS set (both yield not_opt_out); keep the guard for clarity and
-  // ignore equivalent ConditionalExpression/BlockStatement mutants.
-  // Stryker disable next-line ConditionalExpression,BlockStatement
+  // Service talk with STOP → needs human review (never silent not_opt_out)
   if (isServiceTalkWithStop(normalized)) {
-    // Stryker disable next-line ObjectLiteral
-    return { kind: 'not_opt_out' };
+    return { kind: 'ambiguous', reason: 'needs_human_review' };
   }
 
-  // Stryker disable all -- ambiguous regex table + Unicode prep
+  // Contains per-se keyword / phrase (FCC any reasonable means)
+  if (containsOptOutKeyword(normalized, compact)) {
+    return { kind: 'opt_out' };
+  }
+
   const cleanedRaw = foldConfusables(raw)
     .normalize('NFKC')
     .replace(ZERO_WIDTH_RE, '')
@@ -87,19 +94,45 @@ export function classifyOptOut(raw: string): OptOutVerdict {
       return { kind: 'ambiguous', reason: 'needs_human_review' };
     }
   }
-  // Stryker restore all
 
   return { kind: 'not_opt_out' };
 }
 
-/** True when STOP appears inside service language (not an opt-out). */
+/** True when a per-se keyword or phrase appears in the message. */
+export function containsOptOutKeyword(
+  normalized: string,
+  compact: string = compactOptOutText(normalized)
+): boolean {
+  for (const phrase of OPT_OUT_CONTAINS_PHRASES) {
+    if (normalized.includes(phrase)) return true;
+  }
+  for (const kw of OPT_OUT_CONTAINS_KEYWORDS) {
+    if (kw.includes(' ')) {
+      if (normalized.includes(kw)) return true;
+      continue;
+    }
+    // Word-boundary style: keyword as whole token
+    const re = new RegExp(`(?:^|[^A-Z0-9])${kw}(?:[^A-Z0-9]|$)`);
+    if (re.test(normalized)) return true;
+    if (compact.includes(kw) && kw.length >= 3) {
+      // Compact: STOP inside STOPPLEASE / PLEASESTOP / STOPSTOPSTOP
+      if (
+        compact === kw ||
+        compact.startsWith(kw) ||
+        compact.endsWith(kw) ||
+        compact.includes(kw + kw) ||
+        /STOP|QUIT|END|CANCEL|REVOKE|UNSUBSCRIBE|OPTOUT/.test(compact)
+      ) {
+        if (compact.includes(kw)) return true;
+      }
+    }
+  }
+  return false;
+}
+
+/** True when STOP appears inside service language (not an auto opt-out). */
 export function isServiceTalkWithStop(normalized: string): boolean {
-  // Early exits are boolean-equivalent to falling through for bare STOP /
-  // no-STOP inputs (later OR-chain is false). Ignore those mutants; the
-  // OR-chain itself is killed by positive + negative STOP fixtures.
-  // Stryker disable next-line ConditionalExpression
   if (normalized === 'STOP') return false;
-  // Stryker disable next-line ConditionalExpression
   if (!/\bSTOP\b/.test(normalized)) return false;
   return (
     /^(WON'?T|CANT|CAN'T|DOESN'?T|DIDN'?T|NEVER)\b/.test(normalized) ||
@@ -114,11 +147,13 @@ export function isDefiniteOptOut(raw: string): boolean {
 }
 
 /**
- * Tokens (already-normalized) that migration 003 should treat as STOP.
- * Kept in sync with classifyOptOut / OPT_OUT_EXACT + compact forms.
+ * Tokens for migration 003 STOP backfill — same list as runtime.
  */
 export function optOutBackfillTokens(): string[] {
-  const set = new Set<string>([...OPT_OUT_EXACT, ...OPT_OUT_COMPACT]);
+  const set = new Set<string>([
+    ...optOutBackfillExactList(),
+    ...optOutBackfillCompactList(),
+  ]);
   return [...set];
 }
 

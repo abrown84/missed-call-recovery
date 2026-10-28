@@ -142,22 +142,27 @@ A send that timed out on **&lt; 1.7.6** (no key / no capabilities) can look like
 
 **Code rollback after migration 003 rollback:** freeze sends, restore `sms_suppressions` from `sms_suppressions_archive_003` if needed, then unfreeze. Migration 003 **never** merge-deletes businesses — phone collisions abort via `003_phone_collision_abort.sql`.
 
-### Behavior changes (QC r5) — disclose / Alex flags
+### Behavior changes (QC r6) — disclose / Alex flags
 
 | Change | Detail |
 |--------|--------|
-| Single send module | All relay I/O goes through `src/services/send` (`sendMessage` / reconcile). |
-| Enrollment gated on urgency | Missed-call no longer enrolls; `enrollLeadInCampaign` returns `urgency_unset` until classification sets urgency. **Non-responders no longer auto-enroll into Standard** — Alex: confirm desired non-responder path. |
-| Recovery under quiet hours | Recovery SMS now respects TCPA quiet hours (same window as campaigns). **Alex flag:** 47 CFR 64.1200(c)(1) limits *telephone solicitations* to 8:00–21:00 (FL/OK end 20:00) local. A direct reply to an inbound missed call may be informational rather than a solicitation — confirm whether recovery may send outside the window. |
+| Single send module | All relay I/O goes through `src/services/send` (`sendMessage` / reconcile). Stryker mutates `send/index.ts`, `campaigns.ts`, `sms.ts` (no StringLiteral/Regex exclusions; no-cov counted). |
+| Deferred recovery persisted | Quiet-hours block → `sms_messages.status='deferred'` + `next_retry_at`; cron `processDeferredRecoveries` sends when the window opens. **Never drop.** |
+| Missed-call enrolls again | Non-responders enroll into Standard (urgency null). Classification switches Emergency/High on reply. **Alex: confirm non-responder path.** |
+| Recovery under quiet hours | Same TCPA window as campaigns. **Alex flag:** 47 CFR 64.1200(c)(1) solicitation window — confirm whether recovery may send outside it as an informational reply. |
+| Opt-out contains-keyword | Any message containing STOP/QUIT/END/REVOKE/CANCEL/UNSUBSCRIBE (after fold) → opt_out; service-talk → ambiguous. Shared list with 003 backfill. |
+| Backoff persisted | `next_retry_at` on unknown rows; reconcile filters on it. ≈2.5h across 5 attempts then `needs_review`. |
+| Status vocabulary | Case-insensitive; `undelivered`/`rejected`/`error` = failed; non-terminal lookup → park (no step-1 double send). |
+| Terminal needs_review | Enrollment status → `needs_review` (no 30-min re-alert loop). |
+| Migration 003 | Normalize phones **before** STOP backfill; collision listing first; `ON CONFLICT DO NOTHING`; abort script at `supabase/scripts/phone_collision_abort.sql` (not a migration). |
 | 850 dual zones | FL panhandle 850 → Eastern **and** Central; both must be open. |
-| Unmapped area codes | Unresolved (no send, `needs_human_review`); **never** fall back to business timezone. |
-| E.164 on every send | Raw nationals (e.g. `2125550101`) are normalized before the relay (avoids false 409). |
-| Business merge removed | 003 no longer merge-deletes businesses; collisions abort with a listing. |
-| Templates | Original customer copy restored; only STOP footer is appended. GSM-7 multi-segment OK until Alex approves rewrites. |
-| `needs_human_review` | Lead flag for ambiguous opt-out / unresolved timezone. |
-| dry-run | **Test-only**; fakes caps+echo; in-memory idempotency store (not durable). |
-| PGlite | DevDependency for migration integration tests (`schema.sql`→001→002→003). |
-| `ONE_GATEWAY_URL` | Unset anywhere → fail closed (no live gateway call). Production must set it explicitly. |
+| Unmapped area codes | Unresolved; **never** fall back to business timezone. |
+| E.164 on every send | Raw nationals normalized before the relay. |
+| Templates | Emergency 🚨 removed for GSM-7 (1–2 segments). **Alex: confirm emergency copy.** |
+| dry-run | Test-only; international last-4 redaction; in-memory idempotency. |
+| Node | `engines` / `.nvmrc` → ≥22 (Stryker). |
+| `ONE_GATEWAY_URL` | Unset anywhere → fail closed. Production must set explicitly. |
+| `sendFollowUpSMS` | Suppression + opted_out checks restored. |
 
 ---
 
@@ -170,9 +175,9 @@ Webhook: /api/webhooks/brwn/missed-call
 Create lead (skip recovery if phone is SMS-suppressed / opted out)
   ↓
 sendMessage(kind=recovery) via single send module
-  (quiet hours apply; E.164 normalize; SENDS_ENABLED gate)
+  (quiet hours apply; if deferred → persist next_retry_at; E.164; SENDS_ENABLED)
   ↓
-Do NOT enroll yet — urgency is still null
+Enroll into Standard (urgency null OK; switch on classified reply)
 ```
 
 ### **2. Customer Responds → Classify → Enroll / Switch or Pause**

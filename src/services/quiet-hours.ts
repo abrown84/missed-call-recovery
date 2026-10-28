@@ -2,7 +2,9 @@
  * Quiet-hours deferral for outbound SMS.
  * 47 CFR 64.1200(c)(1): generally 8:00–21:00 in the called party's local time.
  * Florida & Oklahoma: end at 20:00.
- * Defer (reschedule next_send_at) — never drop.
+ * Defer (reschedule next_send_at / next_retry_at) — never drop.
+ * Business timezone is accepted for API compat but lead zones are authoritative
+ * (unmapped → unresolved; no business-TZ fallback).
  *
  * When the lead zone is unknown or ambiguous (multiple candidates), require
  * EVERY candidate zone AND the business zone to be open; otherwise defer or

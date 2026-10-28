@@ -8,12 +8,19 @@ import type {
   SendMessageResult,
 } from './types';
 
-/** Replace E.164 / national phone-looking tokens with last-4 redaction. */
+/**
+ * Replace phone-looking tokens with last-4 redaction.
+ * Handles US, international (+44…), and extension suffixes.
+ */
 export function redactPhonesInText(text: string): string {
-  return text.replace(
-    /(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}/g,
-    (m) => redactPhone(m)
+  // International / E.164: + and 8–15 digits (keep last 4 only)
+  let out = text.replace(/\+\d{8,15}/g, (m) => redactPhone(m));
+  // US national with optional formatting / extension
+  out = out.replace(
+    /(?:\+?1[-.\s]?)?\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}(?:\s*(?:ext\.?|x)\s*\d+)?/gi,
+    (m) => redactPhone(m.replace(/\s*(?:ext\.?|x)\s*\d+$/i, ''))
   );
+  return out;
 }
 
 /**
@@ -23,6 +30,9 @@ export function redactPhonesInText(text: string): string {
  * Enable with MESSAGING_PROVIDER=dry-run (forbidden in production runtime).
  * For live send freezes prefer SENDS_ENABLED=false — dry-run fakes
  * capabilities + keyEchoed so it must not be treated as production trust.
+ *
+ * Idempotency store is in-memory only (this.sent) — not durable across
+ * processes; see CAMPAIGNS.md.
  */
 export class DryRunAdapter implements MessagingAdapter {
   readonly name = 'dry-run';
@@ -33,15 +43,11 @@ export class DryRunAdapter implements MessagingAdapter {
   async sendMessage(input: SendMessageInput): Promise<SendMessageResult> {
     this.sent.push(input);
     const id = `dry-run-${Date.now()}-${this.sent.length}`;
-    // Redact phones inside the body (escalation messages embed caller numbers).
     const bodyPreview = redactPhonesInText(input.body).slice(0, 120);
     console.log(
       `[dry-run:test-only] queue SMS to ${redactPhone(input.to)} id=${id} ` +
         `body=${JSON.stringify(bodyPreview)}`
     );
-    // TEST-ONLY: echoes key so unit tests can exercise key_supported paths.
-    // Idempotency store is in-memory only (this.sent) — not durable across
-    // processes; see CAMPAIGNS.md.
     return {
       id,
       status: 'queued',
@@ -63,7 +69,6 @@ export class DryRunAdapter implements MessagingAdapter {
   }
 
   async checkLookupSupport(): Promise<RelayLookupSupport> {
-    // TEST-ONLY: pretends caps.idempotency=true. Not production trust.
     markRelayKeySupportConfirmed();
     return {
       supported: true,
