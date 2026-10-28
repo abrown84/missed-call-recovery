@@ -96,42 +96,44 @@ Tracks leads in campaigns
 ```
 Webhook: /api/webhooks/brwn/missed-call
   ↓
-Create lead in database (urgency still null)
+Create lead (skip recovery if phone is SMS-suppressed / opted out)
   ↓
-sendRecoverySMS  ← instant first text only
+sendRecoverySMS  ← instant first text (insert-before-send, sid=recovery:{leadId})
   ↓
-Do NOT enroll yet (urgency unknown → would always hit Standard)
+enrollLeadInCampaign → Standard (urgency null), skip step 1
+  ↓
+Non-responders still get follow-ups on the Standard cadence
 ```
 
-### **2. Customer Responds → Classify → Enroll**
+### **2. Customer Responds → Classify → Switch or Pause**
 ```
-Webhook: /api/webhooks/brwn/inbound
+Webhook: /api/webhooks/brwn/inbound  (leads older than 7 days ignored)
   ↓
-Record inbound SMS
+classifyUrgency
   ↓
-classifyUrgency (One Gateway / keywords)
+STOP → persist opted_out + sms_suppressions; pause; never text again
   ↓
-Update lead.urgency
-  ↓
-enrollLeadInCampaign(leadId)  ← now matches Emergency / High / Standard
-  ↓
-Skip delay-0 initial step if recovery SMS already sent (no duplicate first text)
-  ↓
-Emergency/high → escalate; later replies → pauseCampaignForLead
+Else handleClassifiedReplyEnrollment:
+  - Standard → Emergency/High when urgency warrants (re-route / switch in place)
+  - Already on matching campaign + active → pause
+  - Already paused/completed on matching campaign → noop (no re-enroll)
+UNIQUE(lead_id) makes concurrent enrolls safe
 ```
 
 ### **3. Cron Job Processes Follow-ups**
 ```
 Every 5 minutes: POST /api/cron/campaigns  (GitHub Actions; see Setup)
   ↓
-Query enrollments where next_send_at <= NOW()
+List due (next_send_at<=now, claimed_at null) OR stale claims (claimed_at > 10m)
   ↓
-Claim each enrollment (clear next_send_at) so concurrent runs cannot double-send
+Claim: set claimed_at=now(), clear next_send_at
   ↓
-For each claimed enrollment:
-  - Skip if campaign:{enrollmentId}:step:{n} already in sms_messages
-  - Queue SMS via BRWN relay (or dry-run on staging)
-  - Advance to next step OR mark completed
+Insert sms_messages (sid=campaign:{id}:step:{n}, status=sending) FIRST
+  - UNIQUE(message_sid) + 23505 → already sent, advance
+  ↓
+Send via BRWN (idempotencyKey=sid) or dry-run
+  - success → status=queued, advance, clear claimed_at
+  - timeout/error → status=unknown, advance, NEVER auto-resend that step
 ```
 
 ---

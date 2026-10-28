@@ -7,53 +7,67 @@
 # processDueCampaigns claims enrollments so double-runs are safe.
 #
 # Required repo secrets:
-#   CRON_APP_URL  — staging or production origin, e.g. https://app.example.com
-#                   (do NOT point at customer-facing prod until ready; prefer staging)
+#   CRON_APP_URL  — staging origin preferred (e.g. https://…vercel.app)
 #   CRON_SECRET   — same value as the app's CRON_SECRET env var
+# Optional:
+#   ALLOW_PROD_CRON=yes — required if CRON_APP_URL contains prod/production
 #
-# Never texts real leads from CI: the app must use MESSAGING_PROVIDER=dry-run
-# on staging, or a designated test number only.
+# Staging apps should set MESSAGING_PROVIDER=dry-run so this never texts
+# real leads. Production dry-run is blocked in-app when VERCEL_ENV=production.
 
 name: Campaign follow-up cron
 
 on:
   schedule:
-    # Every 5 minutes (UTC)
     - cron: '*/5 * * * *'
   workflow_dispatch:
+
+permissions: {}
+
+concurrency:
+  group: campaign-cron
+  cancel-in-progress: false
 
 jobs:
   process-due-campaigns:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - name: Require secrets
-        id: check
+      - name: Require secrets and guard production URL
         env:
           CRON_APP_URL: ${{ secrets.CRON_APP_URL }}
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          ALLOW_PROD_CRON: ${{ secrets.ALLOW_PROD_CRON }}
         run: |
-          if [ -z "$CRON_APP_URL" ] || [ -z "$CRON_SECRET" ]; then
-            echo "missing=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::Skipping: set repo secrets CRON_APP_URL and CRON_SECRET to enable the 5-minute campaign cron."
-            exit 0
+          set -euo pipefail
+          if [ -z "${CRON_APP_URL:-}" ] || [ -z "${CRON_SECRET:-}" ]; then
+            echo "::error::Missing required secrets CRON_APP_URL and/or CRON_SECRET. Follow-ups will not run until they are set."
+            exit 1
           fi
-          echo "missing=false" >> "$GITHUB_OUTPUT"
+          # Soft production guard: refuse URLs with prod/production host labels
+          # unless ALLOW_PROD_CRON=yes. Prefer staging / *.vercel.app previews.
+          lower="$(printf '%s' "$CRON_APP_URL" | tr '[:upper:]' '[:lower:]')"
+          if printf '%s' "$lower" | grep -Eq '(^|[./-])(prod|production)([./-]|$)'; then
+            if [ "${ALLOW_PROD_CRON:-}" != "yes" ]; then
+              echo "::error::CRON_APP_URL looks like production. Set secret ALLOW_PROD_CRON=yes to override, or point at staging."
+              exit 1
+            fi
+          fi
 
       - name: Process due campaign SMS
-        if: steps.check.outputs.missing == 'false'
         env:
           CRON_APP_URL: ${{ secrets.CRON_APP_URL }}
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
         run: |
           set -euo pipefail
           url="${CRON_APP_URL%/}/api/cron/campaigns"
-          echo "POST $url at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "POST ${CRON_APP_URL%/}/api/cron/campaigns at $(date -u +%Y-%m-%dT%H:%M:%SZ)"
           http_code=$(curl -sS -o /tmp/cron-body.json -w '%{http_code}' \
             -X POST "$url" \
             -H "Authorization: Bearer ${CRON_SECRET}" \
             -H "Content-Type: application/json")
           echo "HTTP $http_code"
+          # Response is counts + messagingProvider only (no PII).
           cat /tmp/cron-body.json || true
           echo
           if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then

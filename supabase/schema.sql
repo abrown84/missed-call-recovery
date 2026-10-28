@@ -52,6 +52,8 @@ CREATE TABLE leads (
   escalated_at TIMESTAMPTZ,
   converted_at TIMESTAMPTZ,
   estimated_value DECIMAL(10,2),
+  opted_out BOOLEAN NOT NULL DEFAULT false,
+  opted_out_at TIMESTAMPTZ,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
@@ -62,9 +64,19 @@ CREATE TABLE sms_messages (
   lead_id UUID NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
   direction TEXT NOT NULL CHECK (direction IN ('inbound', 'outbound')),
   body TEXT NOT NULL,
-  message_sid TEXT NOT NULL,
+  message_sid TEXT NOT NULL UNIQUE,
   status TEXT DEFAULT 'sent',
   sent_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Phone-level suppression (STOP / wrong number) across future missed calls
+CREATE TABLE sms_suppressions (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  business_id UUID NOT NULL REFERENCES businesses(id) ON DELETE CASCADE,
+  phone TEXT NOT NULL,
+  reason TEXT,
+  created_at TIMESTAMPTZ DEFAULT NOW(),
+  UNIQUE (business_id, phone)
 );
 
 -- Emergency keywords by vertical

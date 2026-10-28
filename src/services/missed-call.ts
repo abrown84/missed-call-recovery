@@ -1,6 +1,8 @@
 import { createServerClient } from '@/lib/supabase';
 import { redactPhone } from '@/lib/pii';
 import { sendRecoverySMS } from '@/services/sms';
+import { enrollLeadInCampaign } from '@/services/campaigns';
+import { isPhoneSuppressed } from '@/services/suppressions';
 
 export interface MissedCallEvent {
   /** Caller's phone (E.164 preferred). */
@@ -18,9 +20,9 @@ export interface MissedCallResult {
 }
 
 /**
- * Record a missed call, create a lead, enqueue recovery SMS.
- * Campaign enrollment happens AFTER urgency classification on the first
- * inbound reply (see processInboundSms) so Emergency / High sequences match.
+ * Record a missed call, create a lead, send recovery SMS, enroll in the
+ * Standard (catch-all) campaign skipping step 1 so non-responders still get
+ * follow-ups. Urgency-specific campaigns are switched on classified reply.
  */
 export async function processMissedCall(
   event: MissedCallEvent
@@ -53,7 +55,6 @@ export async function processMissedCall(
     .single();
 
   if (callError) {
-    // Unique violation on call_sid → idempotent retry
     if (callError.code === '23505') {
       const { data: existing } = await supabase
         .from('missed_calls')
@@ -75,13 +76,17 @@ export async function processMissedCall(
     throw new MissedCallError('Failed to record call', 500);
   }
 
+  const suppressed = await isPhoneSuppressed(business.id, event.callerPhone);
+
   const { data: lead, error: leadError } = await supabase
     .from('leads')
     .insert({
       business_id: business.id,
       missed_call_id: missedCall.id,
       caller_phone: event.callerPhone,
-      status: 'pending',
+      status: suppressed ? 'spam' : 'pending',
+      opted_out: suppressed,
+      opted_out_at: suppressed ? new Date().toISOString() : null,
     })
     .select()
     .single();
@@ -91,10 +96,26 @@ export async function processMissedCall(
     throw new MissedCallError('Failed to create lead', 500);
   }
 
-  // Instant first text only — do NOT enroll here (urgency is still null).
-  sendRecoverySMS(lead.id, business, event.callerPhone).catch((err) => {
+  if (suppressed) {
+    console.log(
+      `Skipping recovery SMS; phone suppressed: ${redactPhone(event.callerPhone)}`
+    );
+    return { missedCallId: missedCall.id, leadId: lead.id };
+  }
+
+  // Recovery SMS first so sms_outbound_sid is set before enrollment skips step 1.
+  try {
+    await sendRecoverySMS(lead.id, business, event.callerPhone);
+  } catch (err) {
     console.error(
       'SMS send failed:',
+      err instanceof Error ? err.message : 'unknown'
+    );
+  }
+
+  enrollLeadInCampaign(lead.id).catch((err) => {
+    console.error(
+      'Campaign enrollment failed:',
       err instanceof Error ? err.message : 'unknown'
     );
   });

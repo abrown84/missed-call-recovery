@@ -3,16 +3,21 @@ import { getMessagingAdapter } from '@/lib/messaging';
 import { getTemplate } from '@/lib/templates';
 import type { Database } from '@/types/database';
 import {
+  CLAIM_STALE_MS,
   campaignStepMessageSid,
+  classifyMessageInsertError,
+  decideReplyEnrollmentAction,
   planEnrollmentStart,
   selectCampaignForUrgency,
-  shouldSendCampaignStep,
 } from '@/services/campaign-logic';
+import { isPhoneSuppressed } from '@/services/suppressions';
 
 type Business = Database['public']['Tables']['businesses']['Row'];
 type Lead = Database['public']['Tables']['leads']['Row'];
 type Campaign = Database['public']['Tables']['campaigns']['Row'];
 type CampaignStep = Database['public']['Tables']['campaign_steps']['Row'];
+type CampaignEnrollment =
+  Database['public']['Tables']['campaign_enrollments']['Row'];
 
 export type EnrollmentResult =
   | {
@@ -22,19 +27,16 @@ export type EnrollmentResult =
       currentStep: number;
       nextSendAt: string;
       skippedInitial: boolean;
+      switched?: boolean;
     }
   | { enrolled: false; reason: string };
 
-/**
- * Campaign Service
- * Handles multi-touch SMS campaign enrollment and execution
- */
+type Supabase = ReturnType<typeof createServerClient>;
 
 /**
- * Auto-enroll a lead in the campaign matching its urgency.
- * Call only after urgency is set (inbound classification), so Emergency /
- * High sequences can match. Skips a delay-0 initial step when the missed-
- * call recovery SMS already covered that first touch.
+ * Enroll a lead in the campaign matching its urgency (null → Standard).
+ * Skips delay-0 initial when recovery SMS already covers that touch.
+ * UNIQUE(lead_id) makes concurrent enrolls safe (23505 → already enrolled).
  */
 export async function enrollLeadInCampaign(
   leadId: string
@@ -50,6 +52,19 @@ export async function enrollLeadInCampaign(
   if (leadError || !lead) {
     console.error('Failed to fetch lead for enrollment:', leadError);
     return { enrolled: false, reason: 'lead_not_found' };
+  }
+
+  if (lead.opted_out) {
+    return { enrolled: false, reason: 'opted_out' };
+  }
+
+  // Any prior enrollment (active/paused/completed) blocks a fresh insert.
+  const existing = await getEnrollmentForLead(leadId);
+  if (existing) {
+    return {
+      enrolled: false,
+      reason: `already_enrolled:${existing.status}`,
+    };
   }
 
   const { data: campaigns, error: campaignError } = await supabase
@@ -75,7 +90,9 @@ export async function enrollLeadInCampaign(
 
   const steps = (
     (selectedCampaign.campaign_steps as unknown as CampaignStep[]) || []
-  ).slice().sort((a, b) => a.step_number - b.step_number);
+  )
+    .slice()
+    .sort((a, b) => a.step_number - b.step_number);
 
   if (steps.length === 0) {
     console.error('Campaign has no steps');
@@ -85,7 +102,6 @@ export async function enrollLeadInCampaign(
   const recoveryAlreadySent = Boolean(lead.sms_outbound_sid);
   const plan = planEnrollmentStart(steps, { recoveryAlreadySent });
 
-  // Nothing left after skipping the initial recovery touch.
   if (
     plan.skippedInitial &&
     plan.currentStep === steps[0].step_number &&
@@ -104,22 +120,13 @@ export async function enrollLeadInCampaign(
       current_step: plan.currentStep,
       status: 'active',
       next_send_at: nextSendAt,
+      claimed_at: null,
     });
 
   if (enrollError) {
-    // Unique (lead_id, campaign_id) — already enrolled; treat as success.
     if (enrollError.code === '23505') {
-      console.log(
-        `Lead ${leadId} already enrolled in campaign ${selectedCampaign.name}`
-      );
-      return {
-        enrolled: true,
-        campaignId: selectedCampaign.id,
-        campaignName: selectedCampaign.name,
-        currentStep: plan.currentStep,
-        nextSendAt,
-        skippedInitial: plan.skippedInitial,
-      };
+      console.log(`Lead ${leadId} already has an enrollment (unique lead_id)`);
+      return { enrolled: false, reason: 'already_enrolled:unique' };
     }
     console.error('Failed to enroll lead:', enrollError);
     return { enrolled: false, reason: 'insert_failed' };
@@ -142,7 +149,162 @@ export async function enrollLeadInCampaign(
 }
 
 /**
- * Send SMS for a campaign step (idempotent per enrollment+step).
+ * Switch an existing enrollment to a different urgency campaign (re-route).
+ * Keeps UNIQUE(lead_id); updates in place and skips delay-0 initial.
+ */
+export async function switchEnrollmentCampaign(
+  leadId: string,
+  targetCampaignId: string
+): Promise<EnrollmentResult> {
+  const supabase = createServerClient();
+
+  const { data: lead, error: leadError } = await supabase
+    .from('leads')
+    .select('*')
+    .eq('id', leadId)
+    .single();
+
+  if (leadError || !lead) {
+    return { enrolled: false, reason: 'lead_not_found' };
+  }
+
+  const { data: campaign, error: campError } = await supabase
+    .from('campaigns')
+    .select('*, campaign_steps(*)')
+    .eq('id', targetCampaignId)
+    .single();
+
+  if (campError || !campaign) {
+    return { enrolled: false, reason: 'campaign_not_found' };
+  }
+
+  const steps = (
+    (campaign.campaign_steps as unknown as CampaignStep[]) || []
+  )
+    .slice()
+    .sort((a, b) => a.step_number - b.step_number);
+
+  if (steps.length === 0) {
+    return { enrolled: false, reason: 'no_steps' };
+  }
+
+  const plan = planEnrollmentStart(steps, {
+    recoveryAlreadySent: Boolean(lead.sms_outbound_sid),
+  });
+  const nextSendAt = plan.nextSendAt.toISOString();
+
+  const { data: updated, error: updateError } = await supabase
+    .from('campaign_enrollments')
+    .update({
+      campaign_id: targetCampaignId,
+      current_step: plan.currentStep,
+      status: 'active',
+      next_send_at: nextSendAt,
+      claimed_at: null,
+      paused_at: null,
+      completed_at: null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('lead_id', leadId)
+    .select('id')
+    .maybeSingle();
+
+  if (updateError || !updated) {
+    console.error('Failed to switch enrollment:', updateError);
+    return { enrolled: false, reason: 'switch_failed' };
+  }
+
+  console.log(
+    `Lead ${leadId} switched to campaign ${campaign.name}, ` +
+      `step=${plan.currentStep}, next send: ${nextSendAt}`
+  );
+
+  return {
+    enrolled: true,
+    campaignId: targetCampaignId,
+    campaignName: campaign.name,
+    currentStep: plan.currentStep,
+    nextSendAt,
+    skippedInitial: plan.skippedInitial,
+    switched: true,
+  };
+}
+
+/**
+ * After classification: switch to urgency campaign, pause, or noop.
+ * Never inserts a second enrollment (anti ping-pong).
+ */
+export async function handleClassifiedReplyEnrollment(
+  leadId: string,
+  urgency: string | null
+): Promise<{ action: string; campaignName?: string }> {
+  const supabase = createServerClient();
+
+  const enrollment = await getEnrollmentForLead(leadId);
+
+  const { data: campaigns } = await supabase
+    .from('campaigns')
+    .select('id, name, urgency_filter')
+    .eq('status', 'active')
+    .eq('auto_enroll', true);
+
+  const target = selectCampaignForUrgency(campaigns || [], urgency);
+  const decision = decideReplyEnrollmentAction(
+    enrollment
+      ? {
+          id: enrollment.id,
+          campaign_id: enrollment.campaign_id,
+          status: enrollment.status,
+        }
+      : null,
+    target
+  );
+
+  if (decision.action === 'switch' && target) {
+    const result = await switchEnrollmentCampaign(leadId, target.id);
+    return {
+      action: 'switch',
+      campaignName: result.enrolled ? result.campaignName : target.name,
+    };
+  }
+
+  if (decision.action === 'pause') {
+    await pauseCampaignForLead(leadId);
+    return { action: 'pause' };
+  }
+
+  // No enrollment yet (shouldn't happen if missed-call enrolls) — enroll once.
+  if (!enrollment) {
+    const result = await enrollLeadInCampaign(leadId);
+    return {
+      action: result.enrolled ? 'enroll' : `skip:${result.reason}`,
+      campaignName: result.enrolled ? result.campaignName : undefined,
+    };
+  }
+
+  return { action: 'noop' };
+}
+
+export async function getEnrollmentForLead(
+  leadId: string
+): Promise<CampaignEnrollment | null> {
+  const supabase = createServerClient();
+  const { data, error } = await supabase
+    .from('campaign_enrollments')
+    .select('*')
+    .eq('lead_id', leadId)
+    .maybeSingle();
+
+  if (error) {
+    console.error('Failed to fetch enrollment for lead:', error);
+    return null;
+  }
+  return data;
+}
+
+/**
+ * Send SMS for a campaign step.
+ * Insert-before-send with UNIQUE(message_sid); never auto-resend on timeout.
  */
 export async function sendCampaignSMS(
   enrollmentId: string
@@ -151,9 +313,7 @@ export async function sendCampaignSMS(
 
   const { data: enrollment, error: enrollError } = await supabase
     .from('campaign_enrollments')
-    .select(
-      '*, leads!inner(*, businesses(*)), campaigns!inner(*)'
-    )
+    .select('*, leads!inner(*, businesses(*)), campaigns!inner(*)')
     .eq('id', enrollmentId)
     .single();
 
@@ -166,6 +326,17 @@ export async function sendCampaignSMS(
   const business = lead.businesses;
   const campaign = (enrollment as any).campaigns as Campaign;
 
+  if (lead.opted_out) {
+    await pauseCampaignForLead(lead.id);
+    return true;
+  }
+
+  if (await isPhoneSuppressed(business.id, lead.caller_phone)) {
+    console.log(`Suppressed phone for enrollment ${enrollmentId}; pausing`);
+    await pauseCampaignForLead(lead.id);
+    return true;
+  }
+
   const { data: steps, error: stepsError } = await supabase
     .from('campaign_steps')
     .select('*')
@@ -174,6 +345,7 @@ export async function sendCampaignSMS(
 
   if (stepsError || !steps || steps.length === 0) {
     console.error('Failed to fetch campaign steps:', stepsError);
+    await releaseClaimWithoutReschedule(supabase, enrollmentId);
     return false;
   }
 
@@ -183,35 +355,11 @@ export async function sendCampaignSMS(
 
   if (!currentStep) {
     console.error(`Step ${enrollment.current_step} not found`);
+    await releaseClaimWithoutReschedule(supabase, enrollmentId);
     return false;
   }
 
-  const stepSid = campaignStepMessageSid(
-    enrollmentId,
-    enrollment.current_step
-  );
-
-  const { data: priorMessages } = await supabase
-    .from('sms_messages')
-    .select('message_sid')
-    .eq('lead_id', lead.id)
-    .eq('direction', 'outbound');
-
-  const existingSids = [
-    lead.sms_outbound_sid,
-    ...(priorMessages || []).map((m) => m.message_sid),
-  ];
-
-  // Idempotency: never re-send the same enrollment step.
-  if (!shouldSendCampaignStep(enrollmentId, enrollment.current_step, existingSids)) {
-    console.log(
-      `Skipping duplicate campaign step ${enrollment.current_step} for ${enrollmentId}`
-    );
-    await advanceEnrollment(supabase, enrollmentId, enrollment.current_step, steps);
-    return true;
-  }
-
-  // Extra guard: delay-0 initial while recovery SMS already sent.
+  // Skip delay-0 initial when recovery already sent.
   if (
     currentStep.delay_minutes === 0 &&
     lead.sms_outbound_sid &&
@@ -220,31 +368,66 @@ export async function sendCampaignSMS(
     console.log(
       `Skipping initial campaign SMS for ${enrollmentId}; recovery SMS already sent`
     );
-    await advanceEnrollment(supabase, enrollmentId, enrollment.current_step, steps);
+    await advanceEnrollment(
+      supabase,
+      enrollmentId,
+      enrollment.current_step,
+      steps
+    );
     return true;
   }
 
-  try {
-    const messageBody = getTemplate(currentStep.template_key, {
-      business: business.name,
-      name: '',
-      issue: lead.issue || '',
-    });
+  const stepSid = campaignStepMessageSid(
+    enrollmentId,
+    enrollment.current_step
+  );
 
+  const messageBody = getTemplate(currentStep.template_key, {
+    business: business.name,
+    name: '',
+    issue: lead.issue || '',
+  });
+
+  // Insert-before-send: UNIQUE(message_sid) is the source of truth.
+  const { error: insertError } = await supabase.from('sms_messages').insert({
+    lead_id: lead.id,
+    direction: 'outbound',
+    body: messageBody,
+    message_sid: stepSid,
+    status: 'sending',
+  });
+
+  const insertClass = classifyMessageInsertError(insertError);
+  if (insertClass === 'duplicate') {
+    console.log(
+      `Duplicate sid ${stepSid} — treating as already sent, advancing`
+    );
+    await advanceEnrollment(
+      supabase,
+      enrollmentId,
+      enrollment.current_step,
+      steps
+    );
+    return true;
+  }
+  if (insertClass === 'failed') {
+    console.error('Failed to insert sending sms_messages row:', insertError);
+    await releaseClaimWithoutReschedule(supabase, enrollmentId);
+    return false;
+  }
+
+  try {
     const message = await getMessagingAdapter().sendMessage({
       to: lead.caller_phone,
       body: messageBody,
       auto: true,
+      idempotencyKey: stepSid,
     });
 
-    await supabase.from('sms_messages').insert({
-      lead_id: lead.id,
-      direction: 'outbound',
-      body: messageBody,
-      // Prefer stable sid for idempotency; keep provider id in status notes via body log.
-      message_sid: stepSid,
-      status: message.status,
-    });
+    await supabase
+      .from('sms_messages')
+      .update({ status: message.status || 'queued' })
+      .eq('message_sid', stepSid);
 
     await advanceEnrollment(
       supabase,
@@ -260,22 +443,25 @@ export async function sendCampaignSMS(
 
     return true;
   } catch (error) {
-    console.error('Failed to send campaign SMS:', error);
-    // Re-queue shortly so a transient failure retries on the next cron tick.
+    console.error('Failed to send campaign SMS (no auto-resend):', error);
+    // Ambiguous delivery — mark unknown and do NOT requeue this step.
     await supabase
-      .from('campaign_enrollments')
-      .update({
-        next_send_at: new Date(Date.now() + 60 * 1000).toISOString(),
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', enrollmentId)
-      .eq('status', 'active');
+      .from('sms_messages')
+      .update({ status: 'unknown' })
+      .eq('message_sid', stepSid);
+
+    await advanceEnrollment(
+      supabase,
+      enrollmentId,
+      enrollment.current_step,
+      steps
+    );
     return false;
   }
 }
 
 async function advanceEnrollment(
-  supabase: ReturnType<typeof createServerClient>,
+  supabase: Supabase,
   enrollmentId: string,
   currentStepNumber: number,
   steps: CampaignStep[]
@@ -293,6 +479,7 @@ async function advanceEnrollment(
       .update({
         current_step: nextStepNumber,
         next_send_at: nextSendAt,
+        claimed_at: null,
         updated_at: new Date().toISOString(),
       })
       .eq('id', enrollmentId);
@@ -307,6 +494,7 @@ async function advanceEnrollment(
         status: 'completed',
         completed_at: new Date().toISOString(),
         next_send_at: null,
+        claimed_at: null,
         updated_at: new Date().toISOString(),
       })
       .eq('id', enrollmentId);
@@ -315,9 +503,24 @@ async function advanceEnrollment(
   }
 }
 
-/**
- * Pause campaign enrollment (called when lead responds again after enrollment).
- */
+/** Clear a stuck claim without scheduling a retry (used on hard failures). */
+async function releaseClaimWithoutReschedule(
+  supabase: Supabase,
+  enrollmentId: string
+): Promise<void> {
+  const retryAt = new Date(Date.now() + CLAIM_STALE_MS).toISOString();
+  await supabase
+    .from('campaign_enrollments')
+    .update({
+      claimed_at: null,
+      // Far enough that a flapping failure does not tight-loop; not a 60s resend.
+      next_send_at: retryAt,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', enrollmentId)
+    .eq('status', 'active');
+}
+
 export async function pauseCampaignForLead(leadId: string): Promise<void> {
   const supabase = createServerClient();
 
@@ -327,6 +530,7 @@ export async function pauseCampaignForLead(leadId: string): Promise<void> {
       status: 'paused',
       paused_at: new Date().toISOString(),
       next_send_at: null,
+      claimed_at: null,
       updated_at: new Date().toISOString(),
     })
     .eq('lead_id', leadId)
@@ -337,101 +541,140 @@ export async function pauseCampaignForLead(leadId: string): Promise<void> {
     return;
   }
 
-  console.log(`Campaign paused for lead ${leadId} (responded)`);
+  console.log(`Campaign paused for lead ${leadId}`);
 }
 
-/**
- * True when the lead already has an active enrollment (used to distinguish
- * first classified reply — enroll — from later replies — pause).
- */
+/** @deprecated Prefer getEnrollmentForLead — any status, not only active. */
 export async function leadHasActiveEnrollment(
   leadId: string
 ): Promise<boolean> {
-  const supabase = createServerClient();
-  const { data, error } = await supabase
-    .from('campaign_enrollments')
-    .select('id')
-    .eq('lead_id', leadId)
-    .eq('status', 'active')
-    .limit(1);
-
-  if (error) {
-    console.error('Failed to check enrollment:', error);
-    return false;
-  }
-  return (data?.length ?? 0) > 0;
+  const enrollment = await getEnrollmentForLead(leadId);
+  return enrollment?.status === 'active';
 }
 
 /**
- * Atomically claim a due enrollment so concurrent cron workers do not
- * double-send. Clears next_send_at only if it is still due and active.
+ * Atomically claim a due (or stale-claimed) enrollment.
+ * Sets claimed_at=now(), clears next_send_at.
  */
 export async function claimDueEnrollment(
   enrollmentId: string
 ): Promise<boolean> {
   const supabase = createServerClient();
-  const now = new Date().toISOString();
+  const now = new Date();
+  const nowIso = now.toISOString();
+  const staleBefore = new Date(now.getTime() - CLAIM_STALE_MS).toISOString();
 
-  const { data, error } = await supabase
+  // Path A: due and unclaimed (or claim already cleared).
+  const due = await supabase
     .from('campaign_enrollments')
     .update({
       next_send_at: null,
-      updated_at: now,
+      claimed_at: nowIso,
+      updated_at: nowIso,
     })
     .eq('id', enrollmentId)
     .eq('status', 'active')
-    .lte('next_send_at', now)
+    .lte('next_send_at', nowIso)
+    .is('claimed_at', null)
     .select('id');
 
-  if (error) {
-    console.error('Failed to claim enrollment:', error);
+  if (!due.error && (due.data?.length ?? 0) > 0) {
+    return true;
+  }
+
+  // Path B: reclaim stale claim (crash left next_send_at null + old claimed_at).
+  const stale = await supabase
+    .from('campaign_enrollments')
+    .update({
+      claimed_at: nowIso,
+      updated_at: nowIso,
+    })
+    .eq('id', enrollmentId)
+    .eq('status', 'active')
+    .is('next_send_at', null)
+    .lt('claimed_at', staleBefore)
+    .select('id');
+
+  if (stale.error) {
+    console.error('Failed to reclaim stale enrollment:', stale.error);
     return false;
   }
-  return (data?.length ?? 0) > 0;
+  return (stale.data?.length ?? 0) > 0;
 }
 
 /**
- * Process all due campaign messages (called by cron).
- * Claims each enrollment before send for concurrent-run safety.
+ * List enrollments that are due or have a reclaimable stale claim.
  */
+export async function listClaimableEnrollmentIds(
+  limit = 100
+): Promise<string[]> {
+  const supabase = createServerClient();
+  const now = new Date();
+  const nowIso = now.toISOString();
+  const staleBefore = new Date(now.getTime() - CLAIM_STALE_MS).toISOString();
+
+  const { data: due, error: dueError } = await supabase
+    .from('campaign_enrollments')
+    .select('id')
+    .eq('status', 'active')
+    .lte('next_send_at', nowIso)
+    .is('claimed_at', null)
+    .order('next_send_at', { ascending: true })
+    .limit(limit);
+
+  if (dueError) {
+    console.error('Failed to fetch due enrollments:', dueError);
+  }
+
+  const { data: stale, error: staleError } = await supabase
+    .from('campaign_enrollments')
+    .select('id')
+    .eq('status', 'active')
+    .is('next_send_at', null)
+    .lt('claimed_at', staleBefore)
+    .limit(limit);
+
+  if (staleError) {
+    console.error('Failed to fetch stale claims:', staleError);
+  }
+
+  const ids = new Set<string>();
+  for (const row of due || []) ids.add(row.id);
+  for (const row of stale || []) ids.add(row.id);
+  return [...ids].slice(0, limit);
+}
+
 export async function processDueCampaigns(): Promise<{
   processed: number;
   errors: number;
   skipped: number;
+  messagingProvider: string;
 }> {
-  const supabase = createServerClient();
-  const now = new Date().toISOString();
+  const adapter = getMessagingAdapter();
+  const ids = await listClaimableEnrollmentIds(100);
 
-  const { data: enrollments, error } = await supabase
-    .from('campaign_enrollments')
-    .select('id, next_send_at')
-    .eq('status', 'active')
-    .lte('next_send_at', now)
-    .order('next_send_at', { ascending: true })
-    .limit(100);
-
-  if (error) {
-    console.error('Failed to fetch due enrollments:', error);
-    return { processed: 0, errors: 0, skipped: 0 };
-  }
-
-  if (!enrollments || enrollments.length === 0) {
+  if (ids.length === 0) {
     console.log('No due campaigns to process');
-    return { processed: 0, errors: 0, skipped: 0 };
+    return {
+      processed: 0,
+      errors: 0,
+      skipped: 0,
+      messagingProvider: adapter.name,
+    };
   }
 
   let processed = 0;
   let errors = 0;
   let skipped = 0;
 
-  for (const enrollment of enrollments) {
-    const claimed = await claimDueEnrollment(enrollment.id);
+  for (const id of ids) {
+    const claimed = await claimDueEnrollment(id);
     if (!claimed) {
       skipped++;
       continue;
     }
 
-    const success = await sendCampaignSMS(enrollment.id);
+    const success = await sendCampaignSMS(id);
     if (success) {
       processed++;
     } else {
@@ -443,8 +686,13 @@ export async function processDueCampaigns(): Promise<{
 
   console.log(
     `Processed ${processed} campaigns, ${errors} errors, ${skipped} skipped ` +
-      `out of ${enrollments.length} due (at ${now})`
+      `out of ${ids.length} candidates (provider=${adapter.name})`
   );
 
-  return { processed, errors, skipped };
+  return {
+    processed,
+    errors,
+    skipped,
+    messagingProvider: adapter.name,
+  };
 }

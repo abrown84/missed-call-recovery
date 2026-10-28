@@ -100,6 +100,8 @@ export interface Database {
           escalated_at: string | null;
           converted_at: string | null;
           estimated_value: number | null;
+          opted_out: boolean;
+          opted_out_at: string | null;
           created_at: string;
           updated_at: string;
         };
@@ -117,6 +119,8 @@ export interface Database {
           escalated_at?: string | null;
           converted_at?: string | null;
           estimated_value?: number | null;
+          opted_out?: boolean;
+          opted_out_at?: string | null;
           created_at?: string;
           updated_at?: string;
         };
@@ -134,8 +138,33 @@ export interface Database {
           escalated_at?: string | null;
           converted_at?: string | null;
           estimated_value?: number | null;
+          opted_out?: boolean;
+          opted_out_at?: string | null;
           created_at?: string;
           updated_at?: string;
+        };
+      };
+      sms_suppressions: {
+        Row: {
+          id: string;
+          business_id: string;
+          phone: string;
+          reason: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          business_id: string;
+          phone: string;
+          reason?: string | null;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          business_id?: string;
+          phone?: string;
+          reason?: string | null;
+          created_at?: string;
         };
       };
       sms_messages: {
@@ -236,6 +265,7 @@ export interface Database {
           current_step: number;
           status: string;
           next_send_at: string | null;
+          claimed_at: string | null;
           enrolled_at: string;
           paused_at: string | null;
           completed_at: string | null;
@@ -249,6 +279,7 @@ export interface Database {
           current_step?: number;
           status?: string;
           next_send_at?: string | null;
+          claimed_at?: string | null;
           enrolled_at?: string;
           paused_at?: string | null;
           completed_at?: string | null;
@@ -262,6 +293,7 @@ export interface Database {
           current_step?: number;
           status?: string;
           next_send_at?: string | null;
+          claimed_at?: string | null;
           enrolled_at?: string;
           paused_at?: string | null;
           completed_at?: string | null;

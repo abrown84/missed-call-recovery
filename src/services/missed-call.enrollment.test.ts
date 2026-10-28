@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 const mockFrom = vi.fn();
 const sendRecoverySMS = vi.fn();
 const enrollLeadInCampaign = vi.fn();
+const isPhoneSuppressed = vi.fn();
 
 vi.mock('@/lib/supabase', () => ({
   createServerClient: () => ({ from: (...args: unknown[]) => mockFrom(...args) }),
@@ -12,9 +13,12 @@ vi.mock('@/services/sms', () => ({
   sendRecoverySMS: (...args: unknown[]) => sendRecoverySMS(...args),
 }));
 
-// If someone re-imports enroll by mistake, fail loudly.
 vi.mock('@/services/campaigns', () => ({
   enrollLeadInCampaign: (...args: unknown[]) => enrollLeadInCampaign(...args),
+}));
+
+vi.mock('@/services/suppressions', () => ({
+  isPhoneSuppressed: (...args: unknown[]) => isPhoneSuppressed(...args),
 }));
 
 import { processMissedCall } from './missed-call';
@@ -32,17 +36,20 @@ function thenable(result: { data: unknown; error: unknown }) {
   return obj;
 }
 
-describe('processMissedCall does not enroll before urgency', () => {
+describe('processMissedCall enrolls Standard (skip step 1 via recovery)', () => {
   beforeEach(() => {
     mockFrom.mockReset();
     sendRecoverySMS.mockReset();
     enrollLeadInCampaign.mockReset();
+    isPhoneSuppressed.mockReset();
     sendRecoverySMS.mockResolvedValue(undefined);
+    enrollLeadInCampaign.mockResolvedValue({ enrolled: true });
+    isPhoneSuppressed.mockResolvedValue(false);
   });
 
   afterEach(() => vi.clearAllMocks());
 
-  it('sends recovery SMS and does not call enrollLeadInCampaign', async () => {
+  it('sends recovery SMS then enrolls so non-responders get follow-ups', async () => {
     const business = {
       id: 'biz-1',
       phone: '+15559999999',
@@ -83,9 +90,45 @@ describe('processMissedCall does not enroll before urgency', () => {
     });
 
     expect(result).toEqual({ missedCallId: 'mc-1', leadId: 'lead-1' });
-    // Allow microtask for fire-and-forget recovery SMS
-    await new Promise((r) => setTimeout(r, 0));
     expect(sendRecoverySMS).toHaveBeenCalledOnce();
+    await new Promise((r) => setTimeout(r, 0));
+    expect(enrollLeadInCampaign).toHaveBeenCalledWith('lead-1');
+  });
+
+  it('skips recovery SMS when phone is suppressed (prior STOP)', async () => {
+    isPhoneSuppressed.mockResolvedValue(true);
+    const business = {
+      id: 'biz-1',
+      phone: '+15559999999',
+      name: 'Acme',
+      vertical: 'plumbing',
+      settings: {},
+    };
+    mockFrom.mockImplementation((table: string) => {
+      if (table === 'businesses') return thenable({ data: business, error: null });
+      if (table === 'missed_calls') {
+        const obj = thenable({ data: { id: 'mc-2' }, error: null });
+        obj.insert = vi.fn(() => obj);
+        return obj;
+      }
+      if (table === 'leads') {
+        const obj = thenable({
+          data: { id: 'lead-2', opted_out: true },
+          error: null,
+        });
+        obj.insert = vi.fn(() => obj);
+        return obj;
+      }
+      return thenable({ data: null, error: null });
+    });
+
+    await processMissedCall({
+      callerPhone: '+15551234567',
+      businessPhone: '+15559999999',
+      callId: 'call-2',
+    });
+
+    expect(sendRecoverySMS).not.toHaveBeenCalled();
     expect(enrollLeadInCampaign).not.toHaveBeenCalled();
   });
 });

@@ -17,6 +17,12 @@ export function getMessagingAdapter(): MessagingAdapter {
     .toLowerCase();
 
   if (provider === 'dry-run') {
+    // Never silently no-op live traffic in production.
+    if (process.env.VERCEL_ENV === 'production') {
+      throw new Error(
+        'MESSAGING_PROVIDER=dry-run is forbidden when VERCEL_ENV=production'
+      );
+    }
     cached = new DryRunAdapter();
     return cached;
   }

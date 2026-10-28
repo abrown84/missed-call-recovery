@@ -15,6 +15,8 @@ export interface SendMessageInput {
   body: string;
   /** When true (default), relay treats the message as automated. */
   auto?: boolean;
+  /** Stable idempotency key (campaign step sid / recovery sid) if the relay supports it. */
+  idempotencyKey?: string;
 }
 
 export interface SendMessageResult {

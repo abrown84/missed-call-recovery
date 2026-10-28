@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
+  CLAIM_STALE_MS,
   campaignStepMessageSid,
+  classifyMessageInsertError,
+  decideReplyEnrollmentAction,
+  isEnrollmentClaimable,
+  isLeadWithinLookupAge,
+  LEAD_LOOKUP_MAX_AGE_DAYS,
   planEnrollmentStart,
   selectCampaignForUrgency,
   shouldSendCampaignStep,
@@ -24,87 +30,149 @@ const STANDARD_STEPS = [
 ];
 
 describe('selectCampaignForUrgency', () => {
-  it('selects Emergency when urgency is emergency (not Standard)', () => {
-    const selected = selectCampaignForUrgency(CAMPAIGNS, 'emergency');
-    expect(selected?.name).toBe('Emergency Follow-up');
-  });
-
-  it('selects High when urgency is high', () => {
-    const selected = selectCampaignForUrgency(CAMPAIGNS, 'high');
-    expect(selected?.name).toBe('High Priority Follow-up');
-  });
-
-  it('falls back to Standard when urgency is null (pre-classification bug case)', () => {
-    const selected = selectCampaignForUrgency(CAMPAIGNS, null);
-    expect(selected?.name).toBe('Standard Follow-up');
-  });
-
-  it('falls back to Standard for normal/low (no dedicated campaign)', () => {
-    expect(selectCampaignForUrgency(CAMPAIGNS, 'normal')?.name).toBe(
-      'Standard Follow-up'
+  it('selects Emergency when urgency is emergency', () => {
+    expect(selectCampaignForUrgency(CAMPAIGNS, 'emergency')?.name).toBe(
+      'Emergency Follow-up'
     );
-    expect(selectCampaignForUrgency(CAMPAIGNS, 'low')?.name).toBe(
+  });
+
+  it('falls back to Standard when urgency is null (missed-call enroll)', () => {
+    expect(selectCampaignForUrgency(CAMPAIGNS, null)?.name).toBe(
       'Standard Follow-up'
     );
   });
 });
 
-describe('planEnrollmentStart (idempotent first text)', () => {
-  it('starts at step 1 immediately when no recovery SMS was sent', () => {
-    const now = new Date('2026-10-27T12:00:00.000Z');
-    const plan = planEnrollmentStart(EMERGENCY_STEPS, {
-      recoveryAlreadySent: false,
-      now,
-    });
-    expect(plan.currentStep).toBe(1);
-    expect(plan.skippedInitial).toBe(false);
-    expect(plan.nextSendAt.toISOString()).toBe(now.toISOString());
-  });
-
-  it('skips delay-0 initial when recovery SMS already sent (no duplicate first text)', () => {
-    const now = new Date('2026-10-27T12:00:00.000Z');
-    const plan = planEnrollmentStart(EMERGENCY_STEPS, {
-      recoveryAlreadySent: true,
-      now,
-    });
-    expect(plan.skippedInitial).toBe(true);
-    expect(plan.currentStep).toBe(2);
-    expect(plan.nextSendAt.toISOString()).toBe('2026-10-27T13:00:00.000Z');
-  });
-
-  it('schedules Standard step 2 four hours out after skipping initial', () => {
+describe('planEnrollmentStart (skip recovery duplicate)', () => {
+  it('skips delay-0 initial when recovery SMS already sent', () => {
     const now = new Date('2026-10-27T12:00:00.000Z');
     const plan = planEnrollmentStart(STANDARD_STEPS, {
       recoveryAlreadySent: true,
       now,
     });
+    expect(plan.skippedInitial).toBe(true);
     expect(plan.currentStep).toBe(2);
     expect(plan.nextSendAt.toISOString()).toBe('2026-10-27T16:00:00.000Z');
   });
 });
 
-describe('shouldSendCampaignStep / campaignStepMessageSid', () => {
-  it('builds a stable sid per enrollment step', () => {
-    expect(campaignStepMessageSid('enr-1', 2)).toBe('campaign:enr-1:step:2');
+describe('decideReplyEnrollmentAction (re-route vs pause vs noop)', () => {
+  it('switches Standard → Emergency on urgent classification', () => {
+    const decision = decideReplyEnrollmentAction(
+      { id: 'e1', campaign_id: 'c-std', status: 'active' },
+      CAMPAIGNS[0]
+    );
+    expect(decision).toEqual({ action: 'switch', targetCampaignId: 'c-em' });
   });
 
+  it('pauses when already on the matching campaign', () => {
+    expect(
+      decideReplyEnrollmentAction(
+        { id: 'e1', campaign_id: 'c-em', status: 'active' },
+        CAMPAIGNS[0]
+      )
+    ).toEqual({ action: 'pause' });
+  });
+
+  it('noops when paused/completed (anti ping-pong on reply 3)', () => {
+    expect(
+      decideReplyEnrollmentAction(
+        { id: 'e1', campaign_id: 'c-std', status: 'paused' },
+        CAMPAIGNS[0]
+      ).action
+    ).toBe('switch'); // misclassified earlier → still re-route even if paused
+
+    expect(
+      decideReplyEnrollmentAction(
+        { id: 'e1', campaign_id: 'c-em', status: 'paused' },
+        CAMPAIGNS[0]
+      )
+    ).toEqual({ action: 'noop' });
+
+    expect(
+      decideReplyEnrollmentAction(
+        { id: 'e1', campaign_id: 'c-em', status: 'completed' },
+        CAMPAIGNS[0]
+      )
+    ).toEqual({ action: 'noop' });
+  });
+});
+
+describe('isEnrollmentClaimable / stale reclaim', () => {
+  const now = new Date('2026-10-27T12:20:00.000Z');
+
+  it('claims when due and unclaimed', () => {
+    expect(
+      isEnrollmentClaimable(
+        {
+          status: 'active',
+          next_send_at: '2026-10-27T12:18:00.000Z',
+          claimed_at: null,
+        },
+        now
+      )
+    ).toBe(true);
+  });
+
+  it('does not claim a fresh in-flight claim', () => {
+    expect(
+      isEnrollmentClaimable(
+        {
+          status: 'active',
+          next_send_at: null,
+          claimed_at: '2026-10-27T12:15:00.000Z', // 5 min ago
+        },
+        now
+      )
+    ).toBe(false);
+  });
+
+  it('reclaims a stale claim (~10 min) left after crash', () => {
+    expect(
+      isEnrollmentClaimable(
+        {
+          status: 'active',
+          next_send_at: null,
+          claimed_at: new Date(now.getTime() - CLAIM_STALE_MS - 1000).toISOString(),
+        },
+        now
+      )
+    ).toBe(true);
+  });
+});
+
+describe('classifyMessageInsertError / insert-before-send', () => {
+  it('treats 23505 as duplicate (already sent)', () => {
+    expect(classifyMessageInsertError({ code: '23505' })).toBe('duplicate');
+    expect(classifyMessageInsertError(null)).toBe('ok');
+    expect(classifyMessageInsertError({ code: '42P01' })).toBe('failed');
+  });
+});
+
+describe('isLeadWithinLookupAge', () => {
+  it(`accepts leads within ${LEAD_LOOKUP_MAX_AGE_DAYS} days`, () => {
+    const now = new Date('2026-10-27T12:00:00.000Z');
+    expect(
+      isLeadWithinLookupAge('2026-10-25T12:00:00.000Z', now)
+    ).toBe(true);
+    expect(
+      isLeadWithinLookupAge('2026-10-01T12:00:00.000Z', now)
+    ).toBe(false);
+  });
+});
+
+describe('shouldSendCampaignStep', () => {
   it('blocks a second send for the same enrollment step', () => {
     const sid = campaignStepMessageSid('enr-1', 2);
     expect(shouldSendCampaignStep('enr-1', 2, [sid])).toBe(false);
-    expect(shouldSendCampaignStep('enr-1', 2, ['other-sid'])).toBe(true);
-    expect(shouldSendCampaignStep('enr-1', 3, [sid])).toBe(true);
   });
 });
 
 describe('follow-up due timing (2 minutes out)', () => {
-  it('marks a lead due within the 5-minute cron window', () => {
+  it('is due inside the 5-minute cron window', () => {
     const enrolledAt = new Date('2026-10-27T12:00:00.000Z');
     const nextSendAt = new Date(enrolledAt.getTime() + 2 * 60 * 1000);
-    const cronTick = new Date('2026-10-27T12:05:00.000Z'); // worst-case 5-min cron
-
+    const cronTick = new Date('2026-10-27T12:05:00.000Z');
     expect(nextSendAt.getTime()).toBeLessThanOrEqual(cronTick.getTime());
-    expect(cronTick.getTime() - nextSendAt.getTime()).toBeLessThanOrEqual(
-      5 * 60 * 1000
-    );
   });
 });

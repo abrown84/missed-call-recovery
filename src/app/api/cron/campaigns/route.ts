@@ -39,7 +39,10 @@ export async function GET(request: NextRequest) {
     return NextResponse.json({
       success: true,
       timestamp: new Date().toISOString(),
-      ...result,
+      processed: result.processed,
+      errors: result.errors,
+      skipped: result.skipped,
+      messagingProvider: result.messagingProvider,
     });
   } catch (error) {
     console.error(

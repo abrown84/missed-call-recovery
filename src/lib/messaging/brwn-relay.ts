@@ -75,6 +75,9 @@ export class BrwnRelayAdapter implements MessagingAdapter {
           to: input.to,
           body: input.body,
           auto: input.auto ?? true,
+          ...(input.idempotencyKey
+            ? { idempotencyKey: input.idempotencyKey }
+            : {}),
         }),
         signal: controller.signal,
       });
