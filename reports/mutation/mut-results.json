@@ -1,7 +1,12 @@
 [
  [
-  "44",
-  "claim check on advance removed",
+  "04",
+  "r4#2 recovery resend removed",
+  "KILLED"
+ ],
+ [
+  "57",
+  "recovery non-stable key",
   "KILLED"
  ]
 ]

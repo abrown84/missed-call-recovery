@@ -11,6 +11,7 @@ import {
   type SmsLogger,
 } from './sms';
 import { SuppressionLookupError } from '@/services/suppressions';
+import { recoveryMessageSid } from '@/services/sms-sid';
 import type { SendOutcome } from '@/services/send/types';
 import {
   COL,
@@ -410,6 +411,9 @@ describe('processDeferredRecoveriesWithDeps', () => {
         sendMessage: async (req) => {
           expect(req.kind).toBe(KIND_RECOVERY);
           expect(req.skipQuietHours).toBe(false);
+          // mut.py #57 — stable recovery sid, not Date.now()
+          expect(req.idempotencyKey).toBe(recoveryMessageSid(lead.id));
+          expect(req.idempotencyKey).not.toMatch(/:\d{10,}$/);
           return {
             kind: 'sent',
             sid: 's',
