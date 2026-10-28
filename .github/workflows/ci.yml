@@ -10,6 +10,22 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
+    services:
+      # QC r10: two-connection deferred-claim race (sendMessageWithDeps).
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: race
+          POSTGRES_PASSWORD: race
+          POSTGRES_DB: race_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U race -d race_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
     env:
       # Placeholder env so Next can compile without real credentials.
       # No secrets — values are fake and only used for build/typecheck.
@@ -22,6 +38,7 @@ jobs:
       BRWN_DEFAULT_BUSINESS_PHONE: '+15555550100'
       NEXT_PUBLIC_APP_URL: http://localhost:3000
       CRON_SECRET: ci-cron-secret-not-real
+      RACE_DATABASE_URL: postgres://race:race@localhost:5432/race_test
 
     steps:
       - name: Checkout
@@ -30,11 +47,20 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '22'
+          node-version: '22.12'
           cache: npm
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Guard rolldown optional binding pin
+        run: npm run check:rolldown-pin
+
+      - name: Opt-out SQL list parity (mig 003 ↔ opt-out-data)
+        run: npm run check:opt-out-sql
+
+      - name: NANP zones snapshot vs libphonenumber map_data
+        run: npm run check:nanp-zones
 
       - name: Lint
         run: npm run lint
@@ -47,3 +73,41 @@ jobs:
 
       - name: Production build
         run: npm run build
+
+  mutation:
+    runs-on: ubuntu-latest
+    # QC r9: quiet-hours-zones back under mutate (static map is expensive).
+    timeout-minutes: 90
+    needs: build-and-test
+    # No postgres here — two-conn race is covered in build-and-test; Stryker
+    # dry-run skips the PG describe when RACE_DATABASE_URL is unset.
+    env:
+      NEXT_PUBLIC_SUPABASE_URL: https://example.supabase.co
+      NEXT_PUBLIC_SUPABASE_ANON_KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.placeholder
+      SUPABASE_SERVICE_ROLE_KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.service-role-placeholder
+      BRWN_RELAY_URL: https://relay.example.com
+      BRWN_RELAY_SENDER_TOKEN: ci-sender-token-not-real
+      BRWN_WEBHOOK_SECRET: ci-webhook-secret-not-real
+      BRWN_DEFAULT_BUSINESS_PHONE: '+15555550100'
+      NEXT_PUBLIC_APP_URL: http://localhost:3000
+      CRON_SECRET: ci-cron-secret-not-real
+      # Gate floors/caps are hardcoded when CI=true (see check-mutation-scores.mjs);
+      # do not set MUTATION_* overrides here — they cannot loosen the gate in CI.
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22.12'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Stryker mutation
+        run: npm run test:mutation
+
+      - name: Mutation score gate (≥90, ignored disclosed)
+        run: node scripts/check-mutation-scores.mjs

@@ -7,14 +7,20 @@ import {
 } from './classification';
 
 describe('isOptOutMessage', () => {
-  it('detects STOP / unsubscribe language', () => {
+  it('detects whole-message STOP / UNSUBSCRIBE', () => {
     expect(isOptOutMessage('STOP')).toBe(true);
-    expect(isOptOutMessage('Please unsubscribe me')).toBe(true);
-    expect(isOptOutMessage('wrong number')).toBe(true);
+    expect(isOptOutMessage('UNSUBSCRIBE')).toBe(true);
+    expect(isOptOutMessage('OPT OUT')).toBe(true);
   });
 
-  it('does not flag normal service requests', () => {
+  it('does not false-positive on service language or ambiguous phrases', () => {
     expect(isOptOutMessage('My water heater is leaking')).toBe(false);
+    // Service talk → ambiguous (not definite opt-out)
+    expect(isOptOutMessage("won't stop leaking HELP")).toBe(false);
+    expect(isOptOutMessage('stop by today')).toBe(false);
+    // Contains-keyword opt-out (QC r6)
+    expect(isOptOutMessage('Please unsubscribe me')).toBe(true);
+    expect(isOptOutMessage('wrong number')).toBe(false);
   });
 });
 

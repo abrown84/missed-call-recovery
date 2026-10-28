@@ -41,6 +41,11 @@ const bodySchema = z.object({
  * Configure on the relay via set_webhook.sh:
  *   WEBHOOK_URL=https://YOUR-APP/api/webhooks/brwn/inbound
  *   WEBHOOK_AUTH=Bearer <same as BRWN_WEBHOOK_SECRET>
+ *
+ * Fail-closed (QC r10): pause / owner-notify failures throw → HTTP 5xx.
+ * **The BRWN relay MUST retry inbound webhooks on 5xx** so TCPA pause+notify
+ * eventually lands; without relay retries, a transient notify failure leaves
+ * the campaign paused but the owner unalerted until the next customer reply.
  */
 export async function POST(request: NextRequest) {
   const denied = authorizeBrwnWebhook(request);

@@ -100,6 +100,12 @@ export interface Database {
           escalated_at: string | null;
           converted_at: string | null;
           estimated_value: number | null;
+          opted_out: boolean;
+          opted_out_at: string | null;
+          needs_human_review: boolean;
+          needs_human_review_at: string | null;
+          needs_human_review_reason: string | null;
+          timezone: string | null;
           created_at: string;
           updated_at: string;
         };
@@ -117,6 +123,12 @@ export interface Database {
           escalated_at?: string | null;
           converted_at?: string | null;
           estimated_value?: number | null;
+          opted_out?: boolean;
+          opted_out_at?: string | null;
+          needs_human_review?: boolean;
+          needs_human_review_at?: string | null;
+          needs_human_review_reason?: string | null;
+          timezone?: string | null;
           created_at?: string;
           updated_at?: string;
         };
@@ -134,8 +146,37 @@ export interface Database {
           escalated_at?: string | null;
           converted_at?: string | null;
           estimated_value?: number | null;
+          opted_out?: boolean;
+          opted_out_at?: string | null;
+          needs_human_review?: boolean;
+          needs_human_review_at?: string | null;
+          needs_human_review_reason?: string | null;
+          timezone?: string | null;
           created_at?: string;
           updated_at?: string;
+        };
+      };
+      sms_suppressions: {
+        Row: {
+          id: string;
+          business_id: string;
+          phone: string;
+          reason: string | null;
+          created_at: string;
+        };
+        Insert: {
+          id?: string;
+          business_id: string;
+          phone: string;
+          reason?: string | null;
+          created_at?: string;
+        };
+        Update: {
+          id?: string;
+          business_id?: string;
+          phone?: string;
+          reason?: string | null;
+          created_at?: string;
         };
       };
       sms_messages: {
@@ -147,6 +188,9 @@ export interface Database {
           message_sid: string;
           status: string;
           sent_at: string;
+          reconcile_attempts: number;
+          key_supported_at_send: boolean;
+          next_retry_at: string | null;
         };
         Insert: {
           id?: string;
@@ -156,6 +200,9 @@ export interface Database {
           message_sid: string;
           status?: string;
           sent_at?: string;
+          reconcile_attempts?: number;
+          key_supported_at_send?: boolean;
+          next_retry_at?: string | null;
         };
         Update: {
           id?: string;
@@ -165,6 +212,9 @@ export interface Database {
           message_sid?: string;
           status?: string;
           sent_at?: string;
+          reconcile_attempts?: number;
+          key_supported_at_send?: boolean;
+          next_retry_at?: string | null;
         };
       };
       campaigns: {
@@ -236,6 +286,8 @@ export interface Database {
           current_step: number;
           status: string;
           next_send_at: string | null;
+          claimed_at: string | null;
+          claim_token: string | null;
           enrolled_at: string;
           paused_at: string | null;
           completed_at: string | null;
@@ -249,6 +301,8 @@ export interface Database {
           current_step?: number;
           status?: string;
           next_send_at?: string | null;
+          claimed_at?: string | null;
+          claim_token?: string | null;
           enrolled_at?: string;
           paused_at?: string | null;
           completed_at?: string | null;
@@ -262,6 +316,8 @@ export interface Database {
           current_step?: number;
           status?: string;
           next_send_at?: string | null;
+          claimed_at?: string | null;
+          claim_token?: string | null;
           enrolled_at?: string;
           paused_at?: string | null;
           completed_at?: string | null;

@@ -3,12 +3,17 @@
  * Multi-touch campaign templates organized by urgency level
  */
 
+import { OPT_OUT_FOOTER } from '@/services/opt-out';
+
 export interface SMSTemplate {
   key: string;
   subject: string;
   body: string;
   variables: string[];  // Available variables: {business}, {name}, {issue}
 }
+
+/** FCC 26-67 (effective 2026-11-25): include opt-out instruction. */
+export { OPT_OUT_FOOTER };
 
 /**
  * Emergency Templates (fast response, urgent tone)
@@ -17,7 +22,8 @@ export const EMERGENCY_TEMPLATES: Record<string, SMSTemplate> = {
   emergency_initial: {
     key: 'emergency_initial',
     subject: 'Emergency Response',
-    body: `🚨 {business} - We got your call! This sounds urgent. What's the emergency? Reply immediately and we'll prioritize your case.`,
+    // Alex flag: emoji removed so body stays GSM-7 (1–2 segments). Confirm copy.
+    body: `{business} - We got your call! This sounds urgent. What's the emergency? Reply immediately and we'll prioritize your case.`,
     variables: ['business'],
   },
   emergency_followup_1: {
@@ -120,7 +126,9 @@ export function getTemplate(
 
   if (!template) {
     console.warn(`Template not found: ${templateKey}, using fallback`);
-    return `Hi, this is ${variables.business}. We missed your call. How can we help?`;
+    return appendOptOutFooter(
+      `Hi, this is ${variables.business}. We missed your call. How can we help?`
+    );
   }
 
   let message = template.body;
@@ -130,7 +138,14 @@ export function getTemplate(
     message = message.replace(new RegExp(`\\{${key}\\}`, 'g'), value);
   }
 
-  return message;
+  return appendOptOutFooter(message);
+}
+
+/** Ensure FCC 26-67 STOP line is present exactly once. */
+export function appendOptOutFooter(body: string): string {
+  const trimmed = body.trimEnd();
+  if (trimmed.includes(OPT_OUT_FOOTER)) return trimmed;
+  return `${trimmed}\n${OPT_OUT_FOOTER}`;
 }
 
 /**
@@ -159,4 +174,33 @@ export function getTemplateByUrgency(
     'standard_followup_4',
   ];
   return keys[stepNumber - 1] || keys[keys.length - 1];
+}
+
+/** GSM-7 single-segment limit. */
+export const GSM7_SEGMENT_LIMIT = 160;
+
+/** Rough GSM-7 length (escapes count as 2). Non-GSM chars inflate toward UCS-2. */
+export function gsm7Length(text: string): number {
+  const gsm =
+    '@£$¥èéùìòÇ\nØø\rÅåΔ_ΦΓΛΩΠΨΣΘΞÆæßÉ !"#¤%&\'()*+,-./0123456789:;<=>?' +
+    '¡ABCDEFGHIJKLMNOPQRSTUVWXYZÄÖÑÜ§¿abcdefghijklmnopqrstuvwxyzäöñüà';
+  const ext = '^{}\\[~]|€';
+  let len = 0;
+  for (const ch of text) {
+    if (gsm.includes(ch)) len += 1;
+    else if (ext.includes(ch)) len += 2;
+    else return Infinity;
+  }
+  return len;
+}
+
+export function smsSegmentCount(text: string): number {
+  const gsmLen = gsm7Length(text);
+  if (gsmLen !== Infinity) {
+    if (gsmLen <= 160) return 1;
+    return Math.ceil(gsmLen / 153);
+  }
+  const n = [...text].length;
+  if (n <= 70) return 1;
+  return Math.ceil(n / 67);
 }

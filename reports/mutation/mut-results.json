@@ -1,0 +1,322 @@
+[
+ [
+  "01",
+  "r4#2 recovery gate pending",
+  "KILLED"
+ ],
+ [
+  "02",
+  "r4#2 recovery resolved_sent skip",
+  "KILLED"
+ ],
+ [
+  "03",
+  "r4#2 enroll park when recovery pending",
+  "KILLED"
+ ],
+ [
+  "04",
+  "r4#2 recovery resend removed",
+  "KILLED"
+ ],
+ [
+  "05",
+  "r4#2 skipRecoveryGate forced",
+  "KILLED"
+ ],
+ [
+  "06",
+  "r4#2 never_sent clears recovery marker",
+  "KILLED"
+ ],
+ [
+  "07",
+  "r4#3 reconcile ORDER BY desc",
+  "KILLED"
+ ],
+ [
+  "08",
+  "r4#3 attempts never increment",
+  "KILLED"
+ ],
+ [
+  "09",
+  "r4#3 alert on needs_review",
+  "KILLED"
+ ],
+ [
+  "10",
+  "r4#4 cron per-row catch rethrows",
+  "KILLED"
+ ],
+ [
+  "11",
+  "r4#4 quiet unresolved treated as allowed",
+  "KILLED"
+ ],
+ [
+  "12",
+  "r4#4 unresolved -> campaign release w/o review",
+  "KILLED"
+ ],
+ [
+  "13",
+  "r4#5 850 Central only",
+  "KILLED"
+ ],
+ [
+  "14",
+  "r4#5 unmapped -> business TZ",
+  "KILLED"
+ ],
+ [
+  "15",
+  "r4#5 OK dropped from 8pm rule",
+  "KILLED"
+ ],
+ [
+  "16",
+  "r4#5 leadTimezone not passed (campaign)",
+  "KILLED"
+ ],
+ [
+  "17",
+  "r4#5 leadTimezone ignored (module)",
+  "KILLED"
+ ],
+ [
+  "18",
+  "r4#6 confusable fold removed",
+  "KILLED"
+ ],
+ [
+  "19",
+  "r4#6 compact form removed",
+  "KILLED"
+ ],
+ [
+  "20",
+  "r4#6 opted_out gate in module",
+  "KILLED"
+ ],
+ [
+  "21",
+  "r4#6 suppression gate in module",
+  "KILLED"
+ ],
+ [
+  "22",
+  "r4#7 backfill ON CONFLICT dropped",
+  "KILLED"
+ ],
+ [
+  "23",
+  "r4#7 enrollment dedupe prefers non-active",
+  "KILLED"
+ ],
+ [
+  "24",
+  "r4#7 NULLS LAST -> FIRST",
+  "KILLED"
+ ],
+ [
+  "25",
+  "r4#7 NFKC removed from backfill",
+  "KILLED"
+ ],
+ [
+  "26",
+  "r4#7 STOPPLEASE compact removed from backfill",
+  "KILLED"
+ ],
+ [
+  "27",
+  "r4b A caps probe removed",
+  "KILLED"
+ ],
+ [
+  "28",
+  "r4b A echo-only gate",
+  "KILLED"
+ ],
+ [
+  "29",
+  "r4b A caps-only gate",
+  "KILLED"
+ ],
+ [
+  "30",
+  "r4b A keyEchoed always true",
+  "KILLED"
+ ],
+ [
+  "31",
+  "r4b A key_supported persisted true",
+  "KILLED"
+ ],
+ [
+  "32",
+  "r4b A reconcile trusts key support",
+  "KILLED"
+ ],
+ [
+  "33",
+  "r4b B 409 ignored",
+  "KILLED"
+ ],
+ [
+  "34",
+  "r4b B needs_review -> advance (campaign)",
+  "KILLED"
+ ],
+ [
+  "35",
+  "r4b B needs_review not persisted",
+  "KILLED"
+ ],
+ [
+  "36",
+  "r4b C failed status ignored",
+  "KILLED"
+ ],
+ [
+  "37",
+  "r4b C dup-sid failed -> needs_review",
+  "KILLED"
+ ],
+ [
+  "38",
+  "r4b C dup-sid confirmed short-circuit",
+  "KILLED"
+ ],
+ [
+  "39",
+  "r4b D 429 ambiguous ignored",
+  "KILLED"
+ ],
+ [
+  "40",
+  "r4b D ambiguous -> advance (campaign)",
+  "KILLED"
+ ],
+ [
+  "41",
+  "r4b D park status unknown not set",
+  "KILLED"
+ ],
+ [
+  "42",
+  "E.164 normalization removed",
+  "KILLED"
+ ],
+ [
+  "43",
+  "E.164 raw to relay",
+  "KILLED"
+ ],
+ [
+  "44",
+  "claim check on advance removed",
+  "KILLED"
+ ],
+ [
+  "45",
+  "recovery_pending -> advance",
+  "KILLED"
+ ],
+ [
+  "46",
+  "requeue exact step removed",
+  "KILLED"
+ ],
+ [
+  "47",
+  "(b) urgency gate removed",
+  "NOMATCH"
+ ],
+ [
+  "48",
+  "(c) ENROLLMENT_CLAIM_SELECT -> id",
+  "KILLED"
+ ],
+ [
+  "49",
+  "(c) switch uses select(id)",
+  "KILLED"
+ ],
+ [
+  "50",
+  "SSL rejectUnauthorized forced false",
+  "KILLED"
+ ],
+ [
+  "51",
+  "dry-run redaction removed",
+  "KILLED"
+ ],
+ [
+  "52",
+  "dry-run to redaction removed",
+  "KILLED"
+ ],
+ [
+  "53",
+  "ONE_GATEWAY_URL unset non-prod uses default",
+  "KILLED"
+ ],
+ [
+  "54",
+  "ONE_GATEWAY_URL unset prod uses default",
+  "KILLED"
+ ],
+ [
+  "55",
+  "recovery quiet hours skipped",
+  "KILLED"
+ ],
+ [
+  "56",
+  "quiet hours gate removed in module",
+  "KILLED"
+ ],
+ [
+  "57",
+  "recovery non-stable key",
+  "KILLED"
+ ],
+ [
+  "58",
+  "SENDS_ENABLED gate removed (send)",
+  "KILLED"
+ ],
+ [
+  "59",
+  "SENDS_ENABLED gate removed (reconcile)",
+  "KILLED"
+ ],
+ [
+  "60",
+  "missed-call enrolls again",
+  "KILLED"
+ ],
+ [
+  "61",
+  "maintenance mapped to rate_limit",
+  "KILLED"
+ ],
+ [
+  "62",
+  "campaign suppressed/opted_out -> release not pause",
+  "KILLED"
+ ],
+ [
+  "63",
+  "campaign quiet deferred -> release w/o nextSendAt",
+  "KILLED"
+ ],
+ [
+  "64",
+  "advanceAfterConfirmed steals live claim",
+  "KILLED"
+ ]
+]

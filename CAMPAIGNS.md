@@ -10,8 +10,9 @@ Automated multi-touch SMS follow-up campaigns that dramatically increase respons
 ✅ **Urgency-Based Sequences** - Different cadences for emergency, high, and normal priority leads
 ✅ **Smart Templates** - Context-aware SMS templates for each step
 ✅ **Auto-Pause** - Campaigns pause when customer responds
-✅ **Scheduled Delivery** - Vercel cron processes follow-ups every 5 minutes
+✅ **Scheduled Delivery** - Follow-ups processed every 5 minutes (GitHub Actions cron; see below)
 ✅ **Rate Limiting** - Built-in delays to respect SMS best practices
+✅ **Idempotent sends** - Recovery SMS + campaign step 1 never double-fire; cron claims enrollments
 
 ---
 
@@ -89,46 +90,152 @@ Tracks leads in campaigns
 
 ---
 
+## Environment knobs
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| `SENDS_ENABLED` | `true` | App-side kill switch. `false`/`0`/`off` blocks **every** outbound path (recovery, campaign, escalation, manual). Prefer this for freezes over dry-run. |
+| `CAMPAIGN_REPLY_MODE` | `pause` | After a classified reply on the **matching** campaign: `pause` stops follow-ups; `continue` keeps the sequence running. |
+| `UNKNOWN_SMS_ALERT_THRESHOLD` | `5` | Cron alerts when ambiguous (`unknown` + stuck `sending`) rows in a reconcile pass meet/exceed this count. |
+| `MESSAGING_PROVIDER` | `brwn-relay` | `dry-run` is **test-only** (forbidden in production runtime). Fakes capabilities + key echo; idempotency store is **in-memory only**. |
+| `ONE_GATEWAY_URL` | *(required outside prod)* | Unset outside production → fail closed (no external call). Production should set explicitly. |
+
+### BRWN Text relay version
+
+**Requeue / reconcile requires relay >= v1.7.6.** That release adds:
+
+- `GET /api/capabilities` (sender Bearer) → `{ relay, version, idempotency: true }` — authoritative probe before trusting keys.
+- `POST /api/messages` JSON: `to`, `body`, `auto`, optional `idempotencyKey` (body field, not a header). Keys are always prefixed `mlf:…`. Success echoes `idempotencyKey`. Duplicate key → `200 { id, status, duplicate: true, idempotencyKey }`. Key reused with different recipient/body → **`409 { error: 'idempotency_conflict', idempotencyKey }`** → **needs_review** (never success).
+- `GET /api/messages?idempotencyKey=<key>` → `{ found: false }` or `{ found: true, id, toLast4, status, error, created, updated, attempts, auto }` (`toLast4`, not `to`).
+- Rate limit: **`429 { error: 'recent_send' }`**. Keyed 429 → **unknown (park)**, not a hard error.
+- Freeze: **`503 { error: 'maintenance' }`** → park (ambiguous), **never** counted as failure.
+- Older relays lack `/api/capabilities` or return 405 on GET lookup → cron logs a loud alert; parked rows stay visible.
+
+**`key_supported_at_send` is set only when both are true for that row:**
+1. `GET /api/capabilities` returned `idempotency: true` *before* the send, and
+2. the send response echoed `idempotencyKey`.
+
+Trust `found:false` / `never_sent` **only** for those rows. Everything else → `needs_review` (never auto-requeue).
+
+### Parked retry cadence
+
+Ambiguous (`unknown` / stuck `sending`) rows retry with exponential backoff:
+
+- delay = `min(5min × 2^attempts, 6h)`
+- after **5** reconcile attempts → `needs_review` (stop auto-retry)
+
+Justification: 5 minutes absorbs brief relay blips; doubling avoids stampeding a recovering node; 6h cap keeps overnight parks from waiting a full day; 5 attempts ≈ ~2.5h of active retry before human review.
+
+### Relay upgrade / rollback freeze (required)
+
+A send that timed out on **&lt; 1.7.6** (no key / no capabilities) can look like `{ found: false }` after an upgrade — auto-requeue would double-text. Same risk on rollback.
+
+**Before any relay upgrade or rollback:**
+
+1. **Send freeze** — set `SENDS_ENABLED=false` (preferred) and/or pause the GHA campaign cron. Do **not** rely on dry-run for production freezes (it fakes caps/echo).
+2. **Drain parked rows** — keep running cron / reconcile until no actionable `unknown` / stuck `sending` backlog (or move leftovers to `needs_review` by hand).
+3. Deploy / roll the relay to the target version (**>= 1.7.6** for upgrades). Relay `503 maintenance` during cutover parks sends safely.
+4. Confirm `GET /api/capabilities` returns `{ …, idempotency: true }` on the target version.
+5. Resume with `SENDS_ENABLED=true`. New rows that also get a key echo receive `key_supported_at_send=true`.
+
+**Rollback of the relay** (e.g. 1.7.6 → older): freeze + drain first. After rollback, capabilities will not report `idempotency:true`; any subsequent `found:false` on pre-rollback keys goes to `needs_review` (safe).
+
+**Code rollback after migration 003 rollback:** freeze sends, restore `sms_suppressions` from `sms_suppressions_archive_003` if needed, then unfreeze. Migration 003 **never** merge-deletes businesses — phone collisions abort via `003_phone_collision_abort.sql`.
+
+### Behavior changes (QC r6) — disclose / Alex flags
+
+| Change | Detail |
+|--------|--------|
+| Single send module | All relay I/O goes through `src/services/send` (`sendMessage` / reconcile). Stryker mutates `send/index.ts`, `campaigns.ts`, `sms.ts` (no StringLiteral/Regex exclusions; no-cov counted). |
+| Deferred recovery persisted | Quiet-hours block → `sms_messages.status='deferred'` + `next_retry_at`; cron `processDeferredRecoveries` sends when the window opens. **Never drop.** |
+| Missed-call enrolls again | Non-responders enroll into Standard (urgency null). Classification switches Emergency/High on reply. **Alex: confirm non-responder path.** |
+| Staging (c) Emergency step 1 | Switch / urgency enroll does **not** treat recovery as the Emergency initial (`treatRecoveryAsInitial: false`). Step 1 goes out immediately. Standard still skips delay-0 when recovery was sent. |
+| Evidence script default caller | `+12135550100` (mapped 213 + fictional 555-01xx). Unmapped `+1555…` correctly fails closed as unresolved. |
+| Recovery under quiet hours | Same TCPA window as campaigns. **Alex flag:** 47 CFR 64.1200(c)(1) solicitation window — confirm whether recovery may send outside it as an informational reply. |
+| Opt-out contains-keyword | Any message containing STOP/QUIT/END/REVOKE/CANCEL/UNSUBSCRIBE (after fold) → opt_out; service-talk → ambiguous. Shared list with 003 backfill. |
+| Backoff persisted | `next_retry_at` on unknown rows; reconcile filters on it. ≈2.5h across 5 attempts then `needs_review`. |
+| Status vocabulary | Case-insensitive; `undelivered`/`rejected`/`error` = failed; non-terminal lookup → park (no step-1 double send). |
+| Terminal needs_review | Enrollment status → `needs_review` (no 30-min re-alert loop). |
+| Migration 003 | Normalize phones **before** STOP backfill; collision listing first; `ON CONFLICT DO NOTHING`; abort script at `supabase/scripts/phone_collision_abort.sql` (not a migration). |
+| 850 dual zones | FL panhandle 850 → Eastern **and** Central; both must be open. |
+| Unmapped area codes | Unresolved; **never** fall back to business timezone. |
+| E.164 on every send | Raw nationals normalized before the relay. |
+| Templates | Emergency 🚨 removed for GSM-7 (1–2 segments). **Alex: confirm emergency copy.** |
+| dry-run | Test-only; international last-4 redaction; in-memory idempotency. |
+| Node | `engines` / `.nvmrc` → ≥22 (Stryker). |
+| `ONE_GATEWAY_URL` | Unset anywhere → fail closed. Production must set explicitly. |
+| `sendFollowUpSMS` | Suppression + opted_out checks restored. |
+
+---
+
 ## How It Works
 
 ### **1. Lead Created (Missed Call)**
 ```
 Webhook: /api/webhooks/brwn/missed-call
   ↓
-Create lead in database
+Create lead (skip recovery if phone is SMS-suppressed / opted out)
   ↓
-enrollLeadInCampaign(leadId)
+sendMessage(kind=recovery) via single send module
+  (quiet hours apply; if deferred → persist next_retry_at; E.164; SENDS_ENABLED)
   ↓
-Match campaign by urgency
-  ↓
-Create enrollment with next_send_at timestamp
+Enroll into Standard (urgency null OK; switch on classified reply)
 ```
 
-### **2. Cron Job Processes Follow-ups**
+### **2. Customer Responds → Classify → Enroll / Switch or Pause**
 ```
-Every 5 minutes: /api/cron/campaigns
+Webhook: /api/webhooks/brwn/inbound  (leads older than 7 days ignored)
   ↓
-Query enrollments where next_send_at <= NOW()
+STOP / opt-out (whole-message NFKC + confusable fold) FIRST
   ↓
-For each enrollment:
-  - Get template for current step
-  - Queue SMS via BRWN relay
-  - Record in sms_messages
-  - Advance to next step OR mark completed
+Ambiguous opt-out → persist needs_human_review + pause (no auto-suppress)
+  ↓
+classifyUrgency → handleClassifiedReplyEnrollment
+  (enrollLeadInCampaign requires urgency set; may switch Standard→Emergency)
 ```
 
-### **3. Customer Responds**
+### **3. Cron Job Processes Follow-ups**
 ```
-Webhook: /api/webhooks/brwn/inbound
+Every 5 minutes: POST /api/cron/campaigns
   ↓
-Record inbound SMS
+Probe relay lookup; reconcileAmbiguousSms() ORDER BY sent_at ASC
   ↓
-pauseCampaignForLead(leadId)
+Quiet-hours (all candidate zones must be open when ambiguous)
   ↓
-Set enrollment status = 'paused'
+Claim → insert sms_messages (mlf:campaign:…, key_supported_at_send)
   ↓
-No more follow-ups sent
+Send via BRWN
+  - success / duplicate:true (non-failed) → advance
+  - duplicate/failed / 409 → needs_review (never advance)
+  - 429 {error:recent_send} keyed → unknown, PARK
+  - timeout → unknown, PARK
 ```
+
+### **Send / reconcile state machine**
+
+Sids (always `mlf:` prefixed):
+- Campaign: `mlf:campaign:{enrollmentId}:{campaignId}:step:{n}`
+- Recovery: `mlf:recovery:{leadId}`
+
+| Relay lookup outcome | Action |
+|----------------------|--------|
+| `sent` (non-failed) | Confirm; advance exact campaign step from sid |
+| `failed` | **needs_review** — never advance |
+| `never_sent` + `key_supported_at_send` | Abandon sid; requeue exact step / resend recovery |
+| `never_sent` without key support | **needs_review** — never requeue (pre-upgrade / rollback safety) |
+| `unknown` | Park; bump `reconcile_attempts`; after N → needs_review |
+
+Alert on **any** parked/needs_review in a pass (and on backlog ≥ threshold).
+
+Contract tests: `brwn-relay.test.ts` / `sms-sid.test.ts` / `qc-r4*.test.ts`.
+
+---
+
+## Quiet hours & opt-out
+
+- **Quiet hours:** 08:00–21:00 lead-local (FL/OK end 20:00). Area-code map includes FL 239/448/645/656/689/728 and OK 572; **850 is Eastern AND Central** (both must be open). Unmapped codes are unresolved (no business-TZ fallback).
+- **Opt-out:** whole-message after NFKC, zero-width strip, confusable fold (`STOP?`, emoji, Greek/Cyrillic look-alikes, “unsubscribe me”, “leave me alone”, …). Ambiguous → persisted `needs_human_review`.
+- Templates trimmed so body + `Reply STOP to opt out.` fit one GSM-7 segment where possible.
 
 ---
 
@@ -136,16 +243,16 @@ No more follow-ups sent
 
 ### **Campaign Service** (`src/services/campaigns.ts`)
 
-#### `enrollLeadInCampaign(leadId: string): Promise<void>`
+#### `enrollLeadInCampaign(leadId: string): Promise<EnrollmentResult>`
 Auto-enrolls lead in appropriate campaign based on urgency.
 
-**Called by**: BRWN missed-call webhook after lead creation
+**Called by**: BRWN inbound webhook **after** urgency classification (not on missed call)
 
 **Logic:**
-1. Fetch lead with urgency level
-2. Find active campaign matching urgency
-3. Calculate first step's next_send_at
-4. Create enrollment record
+1. Fetch lead with urgency level (must already be set)
+2. Find active campaign matching urgency (else Standard / null filter)
+3. If recovery SMS already sent, skip delay-0 initial step
+4. Create enrollment with next_send_at for the first *remaining* step
 
 ---
 
@@ -273,19 +380,24 @@ This creates:
 - Indexes for performance
 - Seeded campaigns with default sequences
 
-### **2. Configure Vercel Cron**
+### **2. Configure 5-minute follow-up cron**
 
-`vercel.json` already configured:
-```json
-{
-  "crons": [{
-    "path": "/api/cron/campaigns",
-    "schedule": "*/5 * * * *"
-  }]
-}
-```
+**Why not `*/5 * * * *` in `vercel.json`?**
+Vercel Hobby only allows once-per-day cron; a `*/5` expression **fails the deploy**.
+The daily entry in `vercel.json` (`0 9 * * *`) is kept as a Hobby-safe safety net.
 
-Runs every 5 minutes in production.
+**Chosen mechanism:** GitHub Actions workflow `.github/workflows/campaign-cron.yml`
+runs every 5 minutes and `POST`s `/api/cron/campaigns` with `CRON_SECRET`.
+That keeps send latency within minutes of `next_send_at` without requiring Vercel Pro.
+`processDueCampaigns` claims enrollments before send, so overlapping triggers are safe.
+
+If the project is upgraded to **Vercel Pro**, you may also set
+`"schedule": "*/5 * * * *"` in `vercel.json` (per-minute precision). Prefer
+staging URL + `MESSAGING_PROVIDER=dry-run` while validating.
+
+**Repo secrets for the Actions cron:**
+- `CRON_APP_URL` — staging (preferred) or production origin
+- `CRON_SECRET` — same value as the app env var
 
 ### **3. Deploy to Vercel**
 
@@ -315,9 +427,9 @@ curl http://localhost:3000/api/cron/campaigns -X POST
 
 ## Testing Campaign Flow
 
-### **Test Auto-Enrollment**
+### **Test Auto-Enrollment (after urgency)**
 
-1. Simulate missed call via BRWN device webhook:
+1. Simulate missed call (creates lead + recovery SMS; **no** enrollment yet):
 ```bash
 curl -X POST http://localhost:3000/api/webhooks/brwn/missed-call \
   -H "Authorization: Bearer $BRWN_WEBHOOK_SECRET" \
@@ -325,13 +437,26 @@ curl -X POST http://localhost:3000/api/webhooks/brwn/missed-call \
   -d '{"callerPhone":"+15551234567","businessPhone":"+15559999999","callId":"TEST123","ringDurationSeconds":12}'
 ```
 
-2. Check database:
-```sql
-SELECT * FROM campaign_enrollments
-WHERE lead_id = (SELECT id FROM leads ORDER BY created_at DESC LIMIT 1);
+2. Simulate urgent reply (classifies + enrolls):
+```bash
+curl -X POST http://localhost:3000/api/webhooks/brwn/inbound \
+  -H "Authorization: Bearer $BRWN_WEBHOOK_SECRET" \
+  -H "Content-Type: application/json" \
+  -d '{"from":"+15551234567","to":"+15559999999","body":"Emergency flood in basement","messageId":"MSG123"}'
 ```
 
-Should see enrollment with `status = 'active'` and `next_send_at` set.
+3. Check database:
+```sql
+SELECT c.name, ce.status, ce.current_step, ce.next_send_at, l.urgency
+FROM campaign_enrollments ce
+JOIN campaigns c ON c.id = ce.campaign_id
+JOIN leads l ON l.id = ce.lead_id
+ORDER BY ce.enrolled_at DESC
+LIMIT 5;
+```
+
+Should see **Emergency Follow-up** (not Standard) with `current_step = 2` (initial skipped)
+and `next_send_at` about +1 hour.
 
 ---
 

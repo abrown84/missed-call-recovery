@@ -10,7 +10,9 @@ Automated missed-call recovery for service businesses. The client's phone (BRWN 
 - **Delivery status** updates via `POST /api/webhooks/brwn/status`
 - **AI urgency sorting** via [One Gateway](https://github.com/abrown84/one-gateway) (default model `gemini-3.8-flash`) plus keyword fallback
 - **Escalation** of emergency and high-urgency leads (SMS via the same relay)
-- **Multi-touch follow-up campaigns** with Vercel cron (`/api/cron/campaigns`) protected by `CRON_SECRET`
+- **Multi-touch follow-up campaigns** via `/api/cron/campaigns` (`CRON_SECRET`); GitHub Actions runs it every 5 minutes (Vercel Hobby cannot schedule `*/5`)
+- **Urgency-routed enrollment** after inbound classification (Emergency / High / Standard)
+- **Dry-run sender** for staging (`MESSAGING_PROVIDER=dry-run`) — never hits the relay
 - **Dashboard** with stats, leads, detail panel, Supabase Realtime
 - **Auth** with Supabase email/password — middleware gates UI; dashboard APIs require a session
 
@@ -24,7 +26,8 @@ Customer calls business phone → device detects miss
   → Android node long-polls relay → sends SMS
   → customer replies → relay stores inbound → fires webhook
   → POST /api/webhooks/brwn/inbound → One Gateway classifies urgency
-  → emergency/high? escalate; pause campaign
+  → enroll in Emergency / High / Standard campaign (skip duplicate initial text)
+  → emergency/high? escalate; later replies pause campaign
 ```
 
 > **Gap:** Missed-call *detection* lives in the BRWN Android app (not this repo). This app only consumes the authenticated event and drives recovery. A Mac node for iPhone users is planned later.

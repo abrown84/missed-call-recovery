@@ -71,6 +71,7 @@ CRON_SECRET=xxx
 - Relay inbound webhook: `https://YOUR-DOMAIN/api/webhooks/brwn/inbound` with `Authorization: Bearer $BRWN_WEBHOOK_SECRET`
 - Device missed-call events: `https://YOUR-DOMAIN/api/webhooks/brwn/missed-call` (same Bearer)
 - Optional status: `https://YOUR-DOMAIN/api/webhooks/brwn/status`
+- **Inbound fail-closed (5xx):** Ambiguous opt-out paths pause the campaign then notify the owner. If pause or owner-notify fails after retries, the webhook returns HTTP 5xx. **Fail-closed depends on the BRWN relay retrying inbound webhooks on 5xx** so the notify eventually lands; without relay retries a transient notify failure can leave the campaign paused with the owner unalerted until the next customer reply.
 
 ### 4. Development
 ```bash

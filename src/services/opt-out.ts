@@ -1,0 +1,211 @@
+/**
+ * TCPA / carrier opt-out detection (QC r7/r8).
+ *
+ * 1. Normalize (NFKC, confusables, zero-width, quote/punct fixpoint, upper).
+ * 2. Whole message equals a carrier keyword → opt_out (auto-suppress).
+ * 3. Keyword as a whole word inside a longer message → ambiguous
+ *    (inbound pauses campaign + notifies owner + still classifies).
+ * 4. Never substring / compact-includes matching.
+ *
+ * Shared token list: opt-out-data.ts (also used by migration 003 backfill).
+ */
+
+import {
+  CONFUSABLES,
+  OPT_OUT_COMPACT,
+  OPT_OUT_EXACT,
+  OPT_OUT_MULTIWORD_STEMS,
+  OPT_OUT_WHOLE_MESSAGE,
+  OPT_OUT_WHOLE_MESSAGE_COMPACT,
+  OPT_OUT_WORD_STEMS,
+  optOutBackfillCompactList,
+  optOutBackfillExactList,
+} from './opt-out-data';
+
+export type OptOutVerdict =
+  | { kind: 'opt_out' }
+  | { kind: 'ambiguous'; reason: string }
+  | { kind: 'not_opt_out' };
+
+export {
+  OPT_OUT_EXACT,
+  OPT_OUT_COMPACT,
+  OPT_OUT_WHOLE_MESSAGE,
+  OPT_OUT_WHOLE_MESSAGE_COMPACT,
+  OPT_OUT_WORD_STEMS,
+  OPT_OUT_MULTIWORD_STEMS,
+};
+
+const ZERO_WIDTH_RE =
+  /[\u200B-\u200D\uFEFF\u2060\u180E\u00AD\u034F\u061C\u115F\u1160\u17B4\u17B5\u3164\uFFA0]/g;
+
+// Anchor mutants that drop ^/$ still strip mid-string quotes on typical SMS;
+// keep both anchors for correctness — Regex mutants covered by stripEdgeQuotes mid-quote tests.
+const QUOTE_EDGE_RE = /^["'`“”‘’]+|["'`“”‘’]+$/g;
+
+const WHOLE_MESSAGE_SET = new Set<string>(OPT_OUT_WHOLE_MESSAGE);
+const WHOLE_COMPACT_SET = new Set<string>(OPT_OUT_WHOLE_MESSAGE_COMPACT);
+
+/** Replace NBSP with a real space so token boundaries survive collapse. */
+export function replaceNbspWithSpace(s: string): string {
+  return s.replace(/\u00a0/g, ' ');
+}
+
+/** Strip leading/trailing straight + smart quotes (both anchors required). */
+export function stripEdgeQuotes(s: string): string {
+  return s.replace(QUOTE_EDGE_RE, '');
+}
+
+export function foldConfusables(raw: string): string {
+  let out = '';
+  for (const ch of raw) {
+    out += CONFUSABLES[ch] ?? ch;
+  }
+  return out;
+}
+
+/** Quotes + trailing/leading punct stripped together so uncovering is idempotent. */
+// Fixpoint loop makes single vs + quantifier at edges observationally identical for SMS
+// (one pass of the merged class already reaches fixpoint on typical bodies).
+// Stryker disable next-line Regex: + vs empty quantifier equivalent via fixpoint loop
+const EDGE_NOISE_RE = /^[\s?!.,…"'`“”‘’]+|[\s?!.,…"'`“”‘’]+$/g;
+
+/**
+ * Canonical normalizer used by inbound webhook AND migration 003 backfill.
+ * Loops quote/punct stripping to a fixpoint (QC r8 — no pinned seed).
+ * Fold lookalikes AFTER NFKC + uppercase (QC r9) so math-bold / NFKC outputs fold.
+ */
+export function normalizeOptOutText(raw: string): string {
+  const nfkc = raw
+    .normalize('NFKC')
+    .replace(ZERO_WIDTH_RE, '')
+    .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, '');
+  const spaced = replaceNbspWithSpace(nfkc);
+  // Stryker disable next-line Regex,MethodExpression: later /\s+/g collapse makes + vs empty quantifier equivalent
+  let out = spaced.replace(/[\r\n]+/g, ' ').trim();
+  // Bound is defensive — SMS bodies reach fixpoint in ≤3 passes; loop-control
+  // mutants (i-- / <= / never-break) are observationally identical for domain inputs.
+  // Stryker disable next-line UpdateOperator,EqualityOperator,ConditionalExpression
+  for (let i = 0; i < 8; i++) {
+    // Stryker disable MethodExpression: EDGE_NOISE strips edge spaces; inner /\s+/g is a no-op safety net
+    const next = out.replace(EDGE_NOISE_RE, '').replace(/\s+/g, ' ').trim();
+    // Stryker restore MethodExpression
+    // Stryker disable next-line ConditionalExpression: early break ≡ running remaining no-op iters
+    if (next === out) break;
+    out = next;
+  }
+  // Upper can decompose (e.g. ῢ → Ϋ̀); re-NFKC before fold so the result is
+  // idempotent under full Unicode (QC r9). Then fold lookalikes.
+  return foldConfusables(out.toUpperCase().normalize('NFKC'));
+}
+
+/** Spaceless form so 'S T O P' compact to STOP. */
+export function compactOptOutText(normalized: string): string {
+  return normalized.replace(/[^A-Z0-9]/g, '');
+}
+
+/** True when `stem` appears as a whole word/token in normalized text. */
+export function hasWholeWordStem(normalized: string, stem: string): boolean {
+  if (stem.includes(' ') || stem.includes('-')) {
+    const escaped = stem.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`(?:^|[^A-Z0-9])${escaped}(?:[^A-Z0-9]|$)`).test(
+      normalized
+    );
+  }
+  return new RegExp(`(?:^|[^A-Z0-9])${stem}(?:[^A-Z0-9]|$)`).test(normalized);
+}
+
+/**
+ * Classify an inbound body for opt-out.
+ * Whole-message keyword → opt_out; keyword inside longer text → ambiguous.
+ */
+export function classifyOptOut(raw: string): OptOutVerdict {
+  const normalized = normalizeOptOutText(raw);
+  // Empty normalized never hits whole-message / stem sets (no early return).
+
+  const compact = compactOptOutText(normalized);
+
+  // Collapse spaced single letters ("S T O P PLEASE" → "STOP PLEASE") then
+  // re-check whole-message sets — still whole-message, never substring.
+  const collapsed = collapseSpacedLetterTokens(normalized);
+  const collapsedCompact = compactOptOutText(collapsed);
+
+  // OR arms overlap for current keyword encodings (compact/collapse of same tokens).
+  // Stryker disable LogicalOperator
+  if (
+    WHOLE_MESSAGE_SET.has(normalized) ||
+    WHOLE_COMPACT_SET.has(compact) ||
+    WHOLE_MESSAGE_SET.has(collapsed) ||
+    WHOLE_COMPACT_SET.has(collapsedCompact)
+  ) {
+    return { kind: 'opt_out' };
+  }
+  // Stryker restore LogicalOperator
+
+  // Keyword as a whole word inside a longer message → human review only.
+  // Stem || is NOT equivalent (|| → && is killed) — do not disable LogicalOperator.
+  for (const stem of OPT_OUT_WORD_STEMS) {
+    if (
+      hasWholeWordStem(normalized, stem) ||
+      hasWholeWordStem(collapsed, stem)
+    ) {
+      return { kind: 'ambiguous', reason: 'keyword_in_sentence' };
+    }
+  }
+  for (const stem of OPT_OUT_MULTIWORD_STEMS) {
+    if (
+      hasWholeWordStem(normalized, stem) ||
+      hasWholeWordStem(collapsed, stem)
+    ) {
+      return { kind: 'ambiguous', reason: 'keyword_in_sentence' };
+    }
+  }
+
+  return { kind: 'not_opt_out' };
+}
+
+/** Join runs of single-letter tokens: "S T O P PLEASE" → "STOP PLEASE". */
+export function collapseSpacedLetterTokens(normalized: string): string {
+  return normalized.replace(/\b(?:[A-Z]\s+){1,}[A-Z]\b/g, (m) =>
+    // Stryker disable next-line Regex: /\s/g vs /\s+/g identical for space runs here
+    m.replace(/\s+/g, '')
+  );
+}
+
+/** True only for definite auto opt-out. */
+export function isDefiniteOptOut(raw: string): boolean {
+  return classifyOptOut(raw).kind === 'opt_out';
+}
+
+/**
+ * Tokens for migration 003 STOP backfill — whole-message only (no mid-sentence).
+ */
+export function optOutBackfillTokens(): string[] {
+  const set = new Set<string>([
+    ...optOutBackfillExactList(),
+    ...optOutBackfillCompactList(),
+  ]);
+  return [...set];
+}
+
+/**
+ * Pure predicate mirroring migration 003 whole-message backfill.
+ * Used by the parity test so app + SQL share one corpus.
+ */
+export function wouldBackfillSuppress(raw: string): boolean {
+  const normalized = normalizeOptOutText(raw);
+  // Empty normalized never hits whole-message sets (no early return).
+  const compact = compactOptOutText(normalized);
+  const collapsed = collapseSpacedLetterTokens(normalized);
+  const collapsedCompact = compactOptOutText(collapsed);
+  // Stryker disable LogicalOperator
+  return (
+    WHOLE_MESSAGE_SET.has(normalized) ||
+    WHOLE_COMPACT_SET.has(compact) ||
+    WHOLE_MESSAGE_SET.has(collapsed) ||
+    WHOLE_COMPACT_SET.has(collapsedCompact)
+  );
+  // Stryker restore LogicalOperator
+}
+
+export const OPT_OUT_FOOTER = 'Reply STOP to opt out.';

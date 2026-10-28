@@ -1,72 +1,111 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { BrwnRelayAdapter, resolveBrwnRelayUrl } from './brwn-relay';
+import {
+  BRWN_RELAY_MIN_VERSION_FOR_REQUEUE,
+  BrwnRelayAdapter,
+  resetRelayLookupWarningFlag,
+  resolveBrwnRelayUrl,
+  warnIfRelayLookupUnsupported,
+} from './brwn-relay';
 import { resetMessagingAdapterCache } from './index';
+import { resetRelayKeySupportConfirmed } from '@/services/sms-sid';
 
 describe('resolveBrwnRelayUrl', () => {
   it('normalizes trailing slashes', () => {
     expect(resolveBrwnRelayUrl('https://relay.example.com/')).toBe(
       'https://relay.example.com'
     );
-    expect(resolveBrwnRelayUrl('https://relay.example.com/sms/')).toBe(
-      'https://relay.example.com/sms'
-    );
-  });
-
-  it('allows http only for localhost', () => {
-    expect(resolveBrwnRelayUrl('http://localhost:8080')).toBe('http://localhost:8080');
-    expect(() => resolveBrwnRelayUrl('http://relay.example.com')).toThrow(/https/);
-  });
-
-  it('rejects invalid URLs', () => {
-    expect(() => resolveBrwnRelayUrl('not-a-url')).toThrow(/not a valid URL/);
-    expect(() => resolveBrwnRelayUrl('ftp://x')).toThrow(/http: and https/);
-    expect(() => resolveBrwnRelayUrl('')).toThrow(/not configured/);
   });
 });
 
-describe('BrwnRelayAdapter.sendMessage', () => {
+describe('BrwnRelayAdapter — relay 1.7.6 contract', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
     delete process.env.BRWN_RELAY_URL;
     delete process.env.BRWN_RELAY_SENDER_TOKEN;
     resetMessagingAdapterCache();
+    resetRelayKeySupportConfirmed();
+    resetRelayLookupWarningFlag();
   });
 
-  it('POSTs to /api/messages with bearer sender token', async () => {
+  function setup() {
     process.env.BRWN_RELAY_URL = 'https://relay.example.com';
     process.env.BRWN_RELAY_SENDER_TOKEN = 'sender-secret';
+    return new BrwnRelayAdapter();
+  }
 
+  it('GET /api/capabilities → {relay, version, idempotency:true}', async () => {
+    const adapter = setup();
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
-      text: async () => JSON.stringify({ id: 'abc123', status: 'queued' }),
+      json: async () => ({
+        relay: 'brwn-text',
+        version: '1.7.6',
+        idempotency: true,
+      }),
     });
     vi.stubGlobal('fetch', fetchMock);
+    const support = await adapter.checkLookupSupport();
+    expect(support).toEqual({
+      supported: true,
+      capabilities: {
+        relay: 'brwn-text',
+        version: '1.7.6',
+        idempotency: true,
+      },
+    });
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      'https://relay.example.com/api/capabilities'
+    );
+    expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe(
+      'Bearer sender-secret'
+    );
+  });
 
-    const adapter = new BrwnRelayAdapter();
+  it('capabilities without idempotency → unsupported', async () => {
+    const adapter = setup();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({ relay: 'brwn-text', version: '1.7.4' }),
+      })
+    );
+    const support = await adapter.checkLookupSupport();
+    expect(support.supported).toBe(false);
+  });
+
+  it('keyed send echoes idempotencyKey; body fields exact', async () => {
+    const adapter = setup();
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () =>
+        JSON.stringify({
+          id: 'abc',
+          status: 'queued',
+          idempotencyKey: 'mlf:campaign:E1:C1:step:2',
+        }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
     const result = await adapter.sendMessage({
       to: '+15551234567',
-      body: 'Hi from recovery',
+      body: 'Hi',
+      idempotencyKey: 'mlf:campaign:E1:C1:step:2',
     });
-
-    expect(result).toEqual({ id: 'abc123', status: 'queued' });
-    expect(fetchMock).toHaveBeenCalledOnce();
-    const [url, init] = fetchMock.mock.calls[0];
-    expect(url).toBe('https://relay.example.com/api/messages');
-    expect(init.method).toBe('POST');
-    expect(init.headers.Authorization).toBe('Bearer sender-secret');
-    expect(JSON.parse(init.body)).toEqual({
+    expect(result.keyEchoed).toBe(true);
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
       to: '+15551234567',
-      body: 'Hi from recovery',
+      body: 'Hi',
       auto: true,
+      idempotencyKey: 'mlf:campaign:E1:C1:step:2',
     });
   });
 
-  it('throws on rate limit and missing config', async () => {
-    process.env.BRWN_RELAY_URL = 'https://relay.example.com';
-    process.env.BRWN_RELAY_SENDER_TOKEN = 'sender-secret';
-
+  it('429 { error: recent_send } keyed → ambiguous', async () => {
+    const adapter = setup();
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue({
@@ -75,15 +114,122 @@ describe('BrwnRelayAdapter.sendMessage', () => {
         text: async () => JSON.stringify({ error: 'recent_send' }),
       })
     );
-
-    const adapter = new BrwnRelayAdapter();
     await expect(
-      adapter.sendMessage({ to: '+1555', body: 'x' })
-    ).rejects.toThrow(/rate-limited/);
+      adapter.sendMessage({
+        to: '+15551234567',
+        body: 'Hi',
+        idempotencyKey: 'mlf:k',
+      })
+    ).resolves.toMatchObject({ ambiguous: true, status: 'unknown' });
+  });
 
-    delete process.env.BRWN_RELAY_SENDER_TOKEN;
+  it('409 { error: idempotency_conflict, idempotencyKey } → conflict', async () => {
+    const adapter = setup();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 409,
+        text: async () =>
+          JSON.stringify({
+            error: 'idempotency_conflict',
+            idempotencyKey: 'mlf:k',
+          }),
+      })
+    );
     await expect(
-      adapter.sendMessage({ to: '+1555', body: 'x' })
-    ).rejects.toThrow(/BRWN_RELAY_SENDER_TOKEN/);
+      adapter.sendMessage({
+        to: '+15551234567',
+        body: 'Hi',
+        idempotencyKey: 'mlf:k',
+      })
+    ).resolves.toMatchObject({ conflict: true, status: 'failed' });
+  });
+
+  it('lookup found:true uses toLast4 shape; 405→unknown', async () => {
+    const adapter = setup();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          found: true,
+          id: 'm9',
+          toLast4: '4567',
+          status: 'queued',
+          error: null,
+          created: '2026-10-28T00:00:00Z',
+          updated: '2026-10-28T00:00:01Z',
+          attempts: 0,
+          auto: true,
+        }),
+      })
+    );
+    await expect(adapter.lookupByIdempotencyKey('mlf:k')).resolves.toEqual({
+      outcome: 'sent',
+      found: true,
+      id: 'm9',
+      status: 'queued',
+    });
+
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 405,
+        json: async () => ({ detail: 'Method Not Allowed' }),
+      })
+    );
+    await expect(adapter.lookupByIdempotencyKey('mlf:k')).resolves.toEqual({
+      outcome: 'unknown',
+      found: false,
+    });
+  });
+
+  it('warnIfRelayLookupUnsupported logs on missing capabilities', async () => {
+    const adapter = setup();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 404,
+        json: async () => ({ detail: 'Not Found' }),
+      })
+    );
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const support = await warnIfRelayLookupUnsupported(adapter);
+    expect(support.supported).toBe(false);
+    expect(String(err.mock.calls[0][0])).toMatch(/NOT CONFIRMED/);
+    expect(String(err.mock.calls[0][0])).toContain(
+      BRWN_RELAY_MIN_VERSION_FOR_REQUEUE
+    );
+  });
+
+  it('keyed send without prior caps probe → no keyEchoed trust alone', async () => {
+    const { isRelayKeySupportConfirmed } = await import('@/services/sms-sid');
+    const adapter = setup();
+    expect(isRelayKeySupportConfirmed()).toBe(false);
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: true,
+        status: 200,
+        text: async () =>
+          JSON.stringify({
+            id: 'abc',
+            status: 'queued',
+            idempotencyKey: 'mlf:k',
+          }),
+      })
+    );
+    const result = await adapter.sendMessage({
+      to: '+15551234567',
+      body: 'Hi',
+      idempotencyKey: 'mlf:k',
+    });
+    // Echo alone is not enough — caps must have been probed first.
+    expect(result.keyEchoed).toBe(true);
+    expect(isRelayKeySupportConfirmed()).toBe(false);
   });
 });

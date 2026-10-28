@@ -44,3 +44,5 @@ coverage/
 .vercel
 
 nul
+.vitest/
+.stryker-tmp/

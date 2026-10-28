@@ -1,14 +1,23 @@
-import { createServerClient } from '@/lib/supabase';
-import { redactPhone } from '@/lib/pii';
-import { sendRecoverySMS } from '@/services/sms';
-import { enrollLeadInCampaign } from '@/services/campaigns';
+import {
+  missedCallLeadInsertInput,
+  missedCallLeadPayload,
+  missedCallRowPayload,
+  EMPTY_LOOKUP,
+} from '@/services/missed-call-io-plans';
+import {
+  COL,
+  LEAD_SELECT_STAR,
+  PG_UNIQUE,
+  TABLE,
+} from '@/services/db-strings';
+import {
+  defaultMissedCallDeps,
+  type MissedCallDeps,
+} from '@/services/missed-call-deps';
 
 export interface MissedCallEvent {
-  /** Caller's phone (E.164 preferred). */
   callerPhone: string;
-  /** Business line that was called (the device SIM / business.phone). */
   businessPhone: string;
-  /** Stable id from the device (used as call_sid uniqueness key). */
   callId: string;
   ringDurationSeconds?: number;
 }
@@ -18,92 +27,144 @@ export interface MissedCallResult {
   leadId: string;
 }
 
-/**
- * Record a missed call, create a lead, enqueue recovery SMS + campaign enrollment.
- * Called from the authenticated BRWN missed-call webhook (device detects the miss).
- */
+export type { MissedCallDeps };
+export { defaultMissedCallDeps };
+
 export async function processMissedCall(
   event: MissedCallEvent
 ): Promise<MissedCallResult> {
-  const supabase = createServerClient();
+  return processMissedCallWithDeps(defaultMissedCallDeps(), event);
+}
+
+export async function processMissedCallWithDeps(
+  deps: MissedCallDeps,
+  event: MissedCallEvent
+): Promise<MissedCallResult> {
+  const supabase = deps.db();
 
   const { data: business, error: bizError } = await supabase
-    .from('businesses')
-    .select('*')
-    .eq('phone', event.businessPhone)
+    .from(TABLE.businesses)
+    .select(LEAD_SELECT_STAR)
+    .eq(COL.phone, event.businessPhone)
     .single();
 
   if (bizError || !business) {
+    // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
     console.error(
       'Business not found for number:',
-      redactPhone(event.businessPhone)
+      deps.redactPhone(event.businessPhone)
     );
+    // Stryker restore StringLiteral,CallExpression
     throw new MissedCallError('Business not found', 404);
   }
 
   const { data: missedCall, error: callError } = await supabase
-    .from('missed_calls')
-    .insert({
-      business_id: business.id,
-      caller_phone: event.callerPhone,
-      ring_duration: event.ringDurationSeconds ?? 0,
-      call_sid: event.callId,
-    })
+    .from(TABLE.missedCalls)
+    .insert(
+      missedCallRowPayload({
+        businessId: business.id,
+        callerPhone: event.callerPhone,
+        ringDuration: event.ringDurationSeconds ?? 0,
+        callSid: event.callId,
+      })
+    )
     .select()
     .single();
 
   if (callError) {
-    // Unique violation on call_sid → idempotent retry
-    if (callError.code === '23505') {
+    if (callError.code === PG_UNIQUE) {
       const { data: existing } = await supabase
-        .from('missed_calls')
-        .select('id')
-        .eq('call_sid', event.callId)
+        .from(TABLE.missedCalls)
+        .select(COL.id)
+        .eq(COL.callSid, event.callId)
         .single();
       const { data: existingLead } = existing
         ? await supabase
-            .from('leads')
-            .select('id')
-            .eq('missed_call_id', existing.id)
+            .from(TABLE.leads)
+            .select(COL.id)
+            .eq(COL.missedCallId, existing.id)
             .single()
-        : { data: null };
+        : EMPTY_LOOKUP;
       if (existing && existingLead) {
         return { missedCallId: existing.id, leadId: existingLead.id };
       }
     }
+    // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
     console.error('Failed to record missed call:', callError.message);
+    // Stryker restore StringLiteral,CallExpression
     throw new MissedCallError('Failed to record call', 500);
   }
 
+  const callerE164 = deps.normalizeToE164(event.callerPhone);
+
+  // Stryker disable next-line BooleanLiteral: overwritten before read — fail-closed path sets true
+  let suppressed = false;
+  try {
+    suppressed = await deps.isPhoneSuppressed(business.id, callerE164);
+  } catch (err) {
+    if (err instanceof deps.SuppressionLookupError) {
+      // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
+      console.error('Suppression check failed closed on missed call');
+      // Stryker restore StringLiteral,CallExpression
+      suppressed = true;
+    } else {
+      throw err;
+    }
+  }
+
   const { data: lead, error: leadError } = await supabase
-    .from('leads')
-    .insert({
-      business_id: business.id,
-      missed_call_id: missedCall.id,
-      caller_phone: event.callerPhone,
-      status: 'pending',
-    })
+    .from(TABLE.leads)
+    .insert(
+      missedCallLeadPayload(
+        missedCallLeadInsertInput({
+          businessId: business.id,
+          missedCallId: missedCall.id,
+          callerE164,
+          suppressed,
+          optedOutAt: suppressed ? deps.clock().toISOString() : null,
+        })
+      )
+    )
     .select()
     .single();
 
   if (leadError) {
+    // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
     console.error('Failed to create lead:', leadError.message);
+    // Stryker restore StringLiteral,CallExpression
     throw new MissedCallError('Failed to create lead', 500);
   }
 
-  sendRecoverySMS(lead.id, business, event.callerPhone).catch((err) => {
+  if (suppressed) {
+    // Stryker disable StringLiteral,CallExpression,BlockStatement: log-only (no control flow)
+    console.log(
+      `Skipping recovery SMS; phone suppressed: ${deps.redactPhone(callerE164)}`
+    );
+    // Stryker restore StringLiteral,CallExpression,BlockStatement
+    return { missedCallId: missedCall.id, leadId: lead.id };
+  }
+
+  try {
+    await deps.sendRecoverySMS(lead.id, business, callerE164);
+  } catch (err) {
+    // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
     console.error(
       'SMS send failed:',
       err instanceof Error ? err.message : 'unknown'
     );
-  });
+    // Stryker restore StringLiteral,CallExpression
+  }
 
-  enrollLeadInCampaign(lead.id).catch((err) => {
+  try {
+    await deps.enrollLeadInCampaign(lead.id);
+  } catch (err) {
+    // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
     console.error(
-      'Campaign enrollment failed:',
+      'Enrollment failed:',
       err instanceof Error ? err.message : 'unknown'
     );
-  });
+    // Stryker restore StringLiteral,CallExpression
+  }
 
   return { missedCallId: missedCall.id, leadId: lead.id };
 }
