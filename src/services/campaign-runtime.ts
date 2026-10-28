@@ -169,9 +169,9 @@ export async function enrollLeadInCampaignWithDeps(
   });
 
   if (plan.type === 'reject') {
-    // Stryker disable StringLiteral,CallExpression,BlockStatement: log-only (no control flow)
+    // Stryker disable StringLiteral,CallExpression,BlockStatement,LogicalOperator,OptionalChaining,ConditionalExpression,EqualityOperator,ObjectLiteral,BooleanLiteral: log-only (no control flow)
     console.warn('enroll_reject', plan.reason, leadError);
-    // Stryker restore StringLiteral,CallExpression,BlockStatement
+    // Stryker restore StringLiteral,CallExpression,BlockStatement,LogicalOperator,OptionalChaining,ConditionalExpression,EqualityOperator,ObjectLiteral,BooleanLiteral
     return { enrolled: false, reason: plan.reason };
   }
 
@@ -183,19 +183,19 @@ export async function enrollLeadInCampaignWithDeps(
     if (enrollError.code === PG_UNIQUE) {
       return { enrolled: false, reason: 'already_enrolled:unique' };
     }
-    // Stryker disable StringLiteral,CallExpression,BlockStatement: log-only (no control flow)
+    // Stryker disable StringLiteral,CallExpression,BlockStatement,LogicalOperator,OptionalChaining,ConditionalExpression,EqualityOperator,ObjectLiteral,BooleanLiteral: log-only (no control flow)
     console.error('Failed to enroll lead:', enrollError);
-    // Stryker restore StringLiteral,CallExpression,BlockStatement
+    // Stryker restore StringLiteral,CallExpression,BlockStatement,LogicalOperator,OptionalChaining,ConditionalExpression,EqualityOperator,ObjectLiteral,BooleanLiteral
     return { enrolled: false, reason: 'insert_failed' };
   }
 
-  // Stryker disable StringLiteral,CallExpression,BlockStatement: log-only (no control flow)
+  // Stryker disable StringLiteral,CallExpression,BlockStatement,LogicalOperator,OptionalChaining,ConditionalExpression,EqualityOperator,ObjectLiteral,BooleanLiteral: log-only (no control flow)
   console.log(
     `Lead ${leadId} enrolled in campaign ${plan.result.campaignName} ` +
       `(urgency=${lead?.urgency ?? 'null'}, step=${plan.result.currentStep}` +
       `${plan.result.skippedInitial ? ', skipped initial' : ''}), next send: ${plan.result.nextSendAt}`
   );
-  // Stryker restore StringLiteral,CallExpression,BlockStatement
+  // Stryker restore StringLiteral,CallExpression,BlockStatement,LogicalOperator,OptionalChaining,ConditionalExpression,EqualityOperator,ObjectLiteral,BooleanLiteral
 
   return plan.result;
 }
@@ -270,18 +270,18 @@ export async function switchEnrollmentCampaignWithDeps(
     .maybeSingle();
 
   if (updateError || !updated) {
-    // Stryker disable StringLiteral,CallExpression,BlockStatement: log-only (no control flow)
+    // Stryker disable StringLiteral,CallExpression,BlockStatement,LogicalOperator,OptionalChaining,ConditionalExpression,EqualityOperator,ObjectLiteral,BooleanLiteral: log-only (no control flow)
     console.error('Failed to switch enrollment (maybe mid-send):', updateError);
-    // Stryker restore StringLiteral,CallExpression,BlockStatement
+    // Stryker restore StringLiteral,CallExpression,BlockStatement,LogicalOperator,OptionalChaining,ConditionalExpression,EqualityOperator,ObjectLiteral,BooleanLiteral
     return { enrolled: false, reason: 'deferred_or_switch_failed' };
   }
 
-  // Stryker disable StringLiteral,CallExpression,BlockStatement: log-only (no control flow)
+  // Stryker disable StringLiteral,CallExpression,BlockStatement,LogicalOperator,OptionalChaining,ConditionalExpression,EqualityOperator,ObjectLiteral,BooleanLiteral: log-only (no control flow)
   console.log(
     `Lead ${leadId} switched to campaign ${plan.result.campaignName}, ` +
       `step=${plan.result.currentStep}, next send: ${plan.result.nextSendAt}`
   );
-  // Stryker restore StringLiteral,CallExpression,BlockStatement
+  // Stryker restore StringLiteral,CallExpression,BlockStatement,LogicalOperator,OptionalChaining,ConditionalExpression,EqualityOperator,ObjectLiteral,BooleanLiteral
 
   return plan.result;
 }
@@ -327,7 +327,7 @@ export async function handleClassifiedReplyEnrollmentWithDeps(
   });
 
   if (plan.type === 'defer_switch') {
-    // Stryker disable next-line StringLiteral,CallExpression: log-only (no control flow)
+    // Stryker disable next-line StringLiteral,CallExpression,LogicalOperator,OptionalChaining,ConditionalExpression: log-only (no control flow)
     console.log(
       `Deferring switch for lead ${leadId}; fresh claim held (mid-send)`
     );
@@ -383,9 +383,9 @@ export async function getEnrollmentForLeadWithDeps(
     .maybeSingle();
 
   if (error) {
-    // Stryker disable StringLiteral,CallExpression,BlockStatement: log-only (no control flow)
+    // Stryker disable StringLiteral,CallExpression,BlockStatement,LogicalOperator,OptionalChaining,ConditionalExpression,EqualityOperator,ObjectLiteral,BooleanLiteral: log-only (no control flow)
     console.error('Failed to fetch enrollment for lead:', error);
-    // Stryker restore StringLiteral,CallExpression,BlockStatement
+    // Stryker restore StringLiteral,CallExpression,BlockStatement,LogicalOperator,OptionalChaining,ConditionalExpression,EqualityOperator,ObjectLiteral,BooleanLiteral
     return null;
   }
   return data;
@@ -439,9 +439,9 @@ export async function sendCampaignSMSWithDeps(
       );
     } catch (err) {
       if (err instanceof deps.SuppressionLookupError) {
-        // Stryker disable StringLiteral,CallExpression,BlockStatement: log-only (no control flow)
+        // Stryker disable StringLiteral,CallExpression,BlockStatement,LogicalOperator,OptionalChaining,ConditionalExpression,EqualityOperator,ObjectLiteral,BooleanLiteral: log-only (no control flow)
         console.error('Suppression check failed closed:', err.message);
-        // Stryker restore StringLiteral,CallExpression,BlockStatement
+        // Stryker restore StringLiteral,CallExpression,BlockStatement,LogicalOperator,OptionalChaining,ConditionalExpression,EqualityOperator,ObjectLiteral,BooleanLiteral
         suppressionLookupFailed = true;
       } else {
         throw err;
@@ -473,29 +473,29 @@ export async function sendCampaignSMSWithDeps(
   });
 
   if (pre.type === 'fail') {
-    // Stryker disable StringLiteral,CallExpression,BlockStatement: log-only (no control flow)
+    // Stryker disable StringLiteral,CallExpression,BlockStatement,LogicalOperator,OptionalChaining,ConditionalExpression,EqualityOperator,ObjectLiteral,BooleanLiteral: log-only (no control flow)
     console.error('campaign_send_fail', enrollmentId, pre.reason, enrollError);
-    // Stryker restore StringLiteral,CallExpression,BlockStatement
+    // Stryker restore StringLiteral,CallExpression,BlockStatement,LogicalOperator,OptionalChaining,ConditionalExpression,EqualityOperator,ObjectLiteral,BooleanLiteral
     return pre.success;
   }
 
   if (pre.type === 'pause') {
-    // Stryker disable StringLiteral,CallExpression,BlockStatement: log-only (no control flow)
+    // Stryker disable StringLiteral,CallExpression,BlockStatement,LogicalOperator,OptionalChaining,ConditionalExpression,EqualityOperator,ObjectLiteral,BooleanLiteral: log-only (no control flow)
     console.log('campaign_send_pause', enrollmentId, pre.reason, suppressed);
-    // Stryker restore StringLiteral,CallExpression,BlockStatement
+    // Stryker restore StringLiteral,CallExpression,BlockStatement,LogicalOperator,OptionalChaining,ConditionalExpression,EqualityOperator,ObjectLiteral,BooleanLiteral
     await pauseCampaignForLeadWithDeps(deps, lead!.id);
     return pre.success;
   }
 
   if (pre.type === 'release_fail') {
-    // Stryker disable StringLiteral,CallExpression,BlockStatement: log-only (no control flow)
+    // Stryker disable StringLiteral,CallExpression,BlockStatement,LogicalOperator,OptionalChaining,ConditionalExpression,EqualityOperator,ObjectLiteral,BooleanLiteral: log-only (no control flow)
     console.error(
       'campaign_send_release_fail',
       enrollmentId,
       pre.reason,
       stepsError
     );
-    // Stryker restore StringLiteral,CallExpression,BlockStatement
+    // Stryker restore StringLiteral,CallExpression,BlockStatement,LogicalOperator,OptionalChaining,ConditionalExpression,EqualityOperator,ObjectLiteral,BooleanLiteral
     await releaseClaim(supabase, enrollmentId, token!, deps.clock);
     return pre.success;
   }
@@ -547,7 +547,7 @@ export async function sendCampaignSMSWithDeps(
         steps as CampaignStep[],
         deps.clock
       );
-      // Stryker disable StringLiteral,CallExpression,BlockStatement: log-only (no control flow)
+      // Stryker disable StringLiteral,CallExpression,BlockStatement,LogicalOperator,OptionalChaining,ConditionalExpression,EqualityOperator,ObjectLiteral,BooleanLiteral: log-only (no control flow)
       console.log(
         'campaign_send_advance',
         enrollmentId,
@@ -555,7 +555,7 @@ export async function sendCampaignSMSWithDeps(
         advanced,
         outcome.kind
       );
-      // Stryker restore StringLiteral,CallExpression,BlockStatement
+      // Stryker restore StringLiteral,CallExpression,BlockStatement,LogicalOperator,OptionalChaining,ConditionalExpression,EqualityOperator,ObjectLiteral,BooleanLiteral
     },
     release: async (nextSendAt) => {
       await releaseClaim(supabase, enrollmentId, token!, deps.clock, {
@@ -563,9 +563,9 @@ export async function sendCampaignSMSWithDeps(
       });
     },
     flagUnresolvedTz: async (nextSendAt) => {
-      // Stryker disable StringLiteral,CallExpression,BlockStatement: log-only (no control flow)
+      // Stryker disable StringLiteral,CallExpression,BlockStatement,LogicalOperator,OptionalChaining,ConditionalExpression,EqualityOperator,ObjectLiteral,BooleanLiteral: log-only (no control flow)
       console.error('campaign_send_unresolved_tz', enrollmentId);
-      // Stryker restore StringLiteral,CallExpression,BlockStatement
+      // Stryker restore StringLiteral,CallExpression,BlockStatement,LogicalOperator,OptionalChaining,ConditionalExpression,EqualityOperator,ObjectLiteral,BooleanLiteral
       await supabase
         .from(TABLE.leads)
         .update(
@@ -587,22 +587,22 @@ export async function sendCampaignSMSWithDeps(
         deps.clock,
         { nextSendAt }
       );
-      // Stryker disable StringLiteral,CallExpression,BlockStatement: log-only (no control flow)
+      // Stryker disable StringLiteral,CallExpression,BlockStatement,LogicalOperator,OptionalChaining,ConditionalExpression,EqualityOperator,ObjectLiteral,BooleanLiteral: log-only (no control flow)
       console.warn('campaign_send_park', enrollmentId, outcome.kind);
-      // Stryker restore StringLiteral,CallExpression,BlockStatement
+      // Stryker restore StringLiteral,CallExpression,BlockStatement,LogicalOperator,OptionalChaining,ConditionalExpression,EqualityOperator,ObjectLiteral,BooleanLiteral
     },
     pauseOptOut: async () => {
       await pauseCampaignForLeadWithDeps(deps, lead!.id);
     },
     needsReviewTerminal: async (reason) => {
-      // Stryker disable StringLiteral,CallExpression,BlockStatement: log-only (no control flow)
+      // Stryker disable StringLiteral,CallExpression,BlockStatement,LogicalOperator,OptionalChaining,ConditionalExpression,EqualityOperator,ObjectLiteral,BooleanLiteral: log-only (no control flow)
       console.error(
         'campaign_send_needs_review',
         enrollmentId,
         reason,
         outcome.kind
       );
-      // Stryker restore StringLiteral,CallExpression,BlockStatement
+      // Stryker restore StringLiteral,CallExpression,BlockStatement,LogicalOperator,OptionalChaining,ConditionalExpression,EqualityOperator,ObjectLiteral,BooleanLiteral
       await markEnrollmentNeedsReview(
         supabase,
         enrollmentId,
@@ -646,20 +646,20 @@ export async function advanceEnrollment(
     .select(ENROLLMENT_CLAIM_SELECT);
 
   if (!ownershipHit(error, data)) {
-    // Stryker disable StringLiteral,CallExpression,BlockStatement: log-only (no control flow)
+    // Stryker disable StringLiteral,CallExpression,BlockStatement,LogicalOperator,OptionalChaining,ConditionalExpression,EqualityOperator,ObjectLiteral,BooleanLiteral: log-only (no control flow)
     console.warn('advance_ownership_miss', enrollmentId, plan.type, error);
-    // Stryker restore StringLiteral,CallExpression,BlockStatement
+    // Stryker restore StringLiteral,CallExpression,BlockStatement,LogicalOperator,OptionalChaining,ConditionalExpression,EqualityOperator,ObjectLiteral,BooleanLiteral
     return false;
   }
 
-  // Stryker disable StringLiteral,CallExpression,BlockStatement: log-only (no control flow)
+  // Stryker disable StringLiteral,CallExpression,BlockStatement,LogicalOperator,OptionalChaining,ConditionalExpression,EqualityOperator,ObjectLiteral,BooleanLiteral: log-only (no control flow)
   console.log(
     'campaign_advanced',
     enrollmentId,
     plan.type,
     plan.type === 'advance' ? plan.nextSendAt : undefined
   );
-  // Stryker restore StringLiteral,CallExpression,BlockStatement
+  // Stryker restore StringLiteral,CallExpression,BlockStatement,LogicalOperator,OptionalChaining,ConditionalExpression,EqualityOperator,ObjectLiteral,BooleanLiteral
   return true;
 }
 
@@ -719,11 +719,11 @@ async function markEnrollmentNeedsReview(
     .eq(COL.id, enrollmentId)
     .eq(COL.status, ENROLLMENT_STATUS.active)
     .eq(COL.claimToken, claimToken);
-  // Stryker disable StringLiteral,CallExpression,BlockStatement: log-only (no control flow)
+  // Stryker disable StringLiteral,CallExpression,BlockStatement,LogicalOperator,OptionalChaining,ConditionalExpression,EqualityOperator,ObjectLiteral,BooleanLiteral: log-only (no control flow)
   console.error(
     `Enrollment ${enrollmentId} terminal needs_review (${reason})`
   );
-  // Stryker restore StringLiteral,CallExpression,BlockStatement
+  // Stryker restore StringLiteral,CallExpression,BlockStatement,LogicalOperator,OptionalChaining,ConditionalExpression,EqualityOperator,ObjectLiteral,BooleanLiteral
 }
 
 /**
@@ -753,15 +753,15 @@ export async function pauseCampaignForLeadWithDeps(
     .eq(COL.status, ENROLLMENT_STATUS.active);
 
   if (error) {
-    // Stryker disable StringLiteral,CallExpression,BlockStatement: log-only (no control flow)
+    // Stryker disable StringLiteral,CallExpression,BlockStatement,LogicalOperator,OptionalChaining,ConditionalExpression,EqualityOperator,ObjectLiteral,BooleanLiteral: log-only (no control flow)
     console.error('Failed to pause campaign:', error);
-    // Stryker restore StringLiteral,CallExpression,BlockStatement
+    // Stryker restore StringLiteral,CallExpression,BlockStatement,LogicalOperator,OptionalChaining,ConditionalExpression,EqualityOperator,ObjectLiteral,BooleanLiteral
     return;
   }
 
-  // Stryker disable StringLiteral,CallExpression,BlockStatement: log-only (no control flow)
+  // Stryker disable StringLiteral,CallExpression,BlockStatement,LogicalOperator,OptionalChaining,ConditionalExpression,EqualityOperator,ObjectLiteral,BooleanLiteral: log-only (no control flow)
   console.log(`Campaign paused for lead ${leadId}`);
-  // Stryker restore StringLiteral,CallExpression,BlockStatement
+  // Stryker restore StringLiteral,CallExpression,BlockStatement,LogicalOperator,OptionalChaining,ConditionalExpression,EqualityOperator,ObjectLiteral,BooleanLiteral
 }
 
 export async function leadHasActiveEnrollment(
@@ -822,9 +822,9 @@ export async function claimDueEnrollmentWithDeps(
     .select(ENROLLMENT_CLAIM_SELECT);
 
   if (stale.error) {
-    // Stryker disable StringLiteral,CallExpression,BlockStatement: log-only (no control flow)
+    // Stryker disable StringLiteral,CallExpression,BlockStatement,LogicalOperator,OptionalChaining,ConditionalExpression,EqualityOperator,ObjectLiteral,BooleanLiteral: log-only (no control flow)
     console.error('Failed to reclaim stale enrollment:', stale.error);
-    // Stryker restore StringLiteral,CallExpression,BlockStatement
+    // Stryker restore StringLiteral,CallExpression,BlockStatement,LogicalOperator,OptionalChaining,ConditionalExpression,EqualityOperator,ObjectLiteral,BooleanLiteral
   }
 
   return decideClaimTokenResult({
@@ -1021,12 +1021,12 @@ async function resendRecoveryIdempotent(
   try {
     await deps.sendRecoverySMS(leadId, business!, lead!.caller_phone);
   } catch (err) {
-    // Stryker disable StringLiteral,CallExpression,BlockStatement: log-only
+    // Stryker disable StringLiteral,CallExpression,BlockStatement,LogicalOperator,OptionalChaining,ConditionalExpression,EqualityOperator,ObjectLiteral,BooleanLiteral: log-only
     console.error(
       `Recovery resend failed for ${leadId}:`,
       err instanceof Error ? err.message : 'unknown'
     );
-    // Stryker restore StringLiteral,CallExpression,BlockStatement
+    // Stryker restore StringLiteral,CallExpression,BlockStatement,LogicalOperator,OptionalChaining,ConditionalExpression,EqualityOperator,ObjectLiteral,BooleanLiteral
   }
 }
 
@@ -1116,14 +1116,14 @@ async function requeueExactCampaignStep(
     .select(ENROLLMENT_CLAIM_SELECT);
 
   if (!ownershipHit(error, data)) {
-    // Stryker disable StringLiteral,CallExpression,BlockStatement: log-only (no control flow)
+    // Stryker disable StringLiteral,CallExpression,BlockStatement,LogicalOperator,OptionalChaining,ConditionalExpression,EqualityOperator,ObjectLiteral,BooleanLiteral: log-only (no control flow)
     console.warn(
       'requeue_failed',
       enrollmentId,
       stepNumber,
       error
     );
-    // Stryker restore StringLiteral,CallExpression,BlockStatement
+    // Stryker restore StringLiteral,CallExpression,BlockStatement,LogicalOperator,OptionalChaining,ConditionalExpression,EqualityOperator,ObjectLiteral,BooleanLiteral
     return false;
   }
   return true;
@@ -1178,9 +1178,9 @@ export async function processDueCampaignsWithDeps(deps: CampaignDeps): Promise<{
   const ids = await listClaimableEnrollmentIdsWithDeps(deps, 100);
 
   if (ids.length === 0) {
-    // Stryker disable StringLiteral,CallExpression,BlockStatement: log-only (no control flow)
+    // Stryker disable StringLiteral,CallExpression,BlockStatement,LogicalOperator,OptionalChaining,ConditionalExpression,EqualityOperator,ObjectLiteral,BooleanLiteral: log-only (no control flow)
     console.log('No due campaigns to process');
-    // Stryker restore StringLiteral,CallExpression,BlockStatement
+    // Stryker restore StringLiteral,CallExpression,BlockStatement,LogicalOperator,OptionalChaining,ConditionalExpression,EqualityOperator,ObjectLiteral,BooleanLiteral
     return {
       processed: 0,
       errors: 0,
@@ -1206,12 +1206,12 @@ export async function processDueCampaignsWithDeps(deps: CampaignDeps): Promise<{
     } catch (err) {
       // Isolate per-enrollment failures (e.g. invalid timezone) so one bad
       // lead cannot 500 the whole cron run.
-      // Stryker disable StringLiteral,CallExpression,BlockStatement: log-only (no control flow)
+      // Stryker disable StringLiteral,CallExpression,BlockStatement,LogicalOperator,OptionalChaining,ConditionalExpression,EqualityOperator,ObjectLiteral,BooleanLiteral: log-only (no control flow)
       console.error(
         `Campaign send failed for ${id}:`,
         err instanceof Error ? err.message : 'unknown'
       );
-      // Stryker restore StringLiteral,CallExpression,BlockStatement
+      // Stryker restore StringLiteral,CallExpression,BlockStatement,LogicalOperator,OptionalChaining,ConditionalExpression,EqualityOperator,ObjectLiteral,BooleanLiteral
       counts = noteSendFailure(counts);
       try {
         const supabase = deps.db();
@@ -1234,12 +1234,12 @@ export async function processDueCampaignsWithDeps(deps: CampaignDeps): Promise<{
     await deps.sleep(200);
   }
 
-  // Stryker disable StringLiteral,CallExpression,BlockStatement: log-only (no control flow)
+  // Stryker disable StringLiteral,CallExpression,BlockStatement,LogicalOperator,OptionalChaining,ConditionalExpression,EqualityOperator,ObjectLiteral,BooleanLiteral: log-only (no control flow)
   console.log(
     `Processed ${counts.processed} campaigns, ${counts.errors} errors, ${counts.skipped} skipped ` +
       `out of ${ids.length} candidates (provider=${adapter.name})`
   );
-  // Stryker restore StringLiteral,CallExpression,BlockStatement
+  // Stryker restore StringLiteral,CallExpression,BlockStatement,LogicalOperator,OptionalChaining,ConditionalExpression,EqualityOperator,ObjectLiteral,BooleanLiteral
 
   return {
     ...counts,

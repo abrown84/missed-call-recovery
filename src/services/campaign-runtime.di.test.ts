@@ -252,8 +252,26 @@ describe('campaign-runtime DI send path', () => {
     ).toBe(true);
   });
 
-  it('never_sent → noop_release clears claim', async () => {
+  it('never_sent → park clears claim (not advance)', async () => {
     await expect(run({ kind: 'never_sent', sid: 's' })).resolves.toBe(false);
+    expect(
+      updates.some(
+        (u) =>
+          u.table === 'campaign_enrollments' &&
+          (u.payload as { claim_token?: unknown })?.claim_token === null
+      )
+    ).toBe(true);
+    expect(
+      updates.every(
+        (u) => !('current_step' in ((u.payload as object) || {}))
+      )
+    ).toBe(true);
+  });
+
+  it('blocked unknown reason → noop_release clears claim (kills empty noop handler)', async () => {
+    await expect(
+      run({ kind: 'blocked', reason: 'totally_unknown' as any })
+    ).resolves.toBe(false);
     expect(
       updates.some(
         (u) =>
@@ -263,7 +281,14 @@ describe('campaign-runtime DI send path', () => {
     ).toBe(true);
   });
 
-  it('template uses business name + issue (not empty literals)', async () => {
+  it('template uses business name + issue; name arg is empty string', async () => {
+    const getTemplate = vi.fn((_key: string, vars: { business: string; name: string; issue: string }) => {
+      expect(vars.name).toBe('');
+      expect(vars.business).toBe('Acme Plumbing');
+      expect(vars.issue).toBe('flood');
+      return `Hi from ${vars.business} about ${vars.issue}`;
+    });
+    deps.getTemplate = getTemplate as any;
     await run({
       kind: 'sent',
       sid: 's',
@@ -271,10 +296,19 @@ describe('campaign-runtime DI send path', () => {
       providerStatus: 'queued',
       keySupportedAtSend: true,
     });
+    expect(getTemplate).toHaveBeenCalled();
     const body = sendMessage.mock.calls[0][0].body as string;
     expect(body).toContain('Acme Plumbing');
     expect(body).toContain('flood');
-    expect(body.length).toBeGreaterThan(0);
+  });
+
+  it('flag_unresolved_tz writes needs_human_review lead payload (not empty object)', async () => {
+    await run({ kind: 'blocked', reason: 'quiet_hours_unresolved' });
+    const leadUpdate = updates.find((u) => u.table === 'leads');
+    expect(leadUpdate?.payload).toMatchObject({
+      needs_human_review: true,
+      needs_human_review_reason: 'quiet_hours_unresolved',
+    });
   });
 
   it('clock injected into pause payload nowIso', async () => {

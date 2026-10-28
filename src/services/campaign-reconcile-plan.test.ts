@@ -277,6 +277,29 @@ describe('campaign-reconcile-plan', () => {
       statusCompleted: 'completed',
     });
     expect(done.type).toBe('complete');
+
+    // Force-true on the eligibility negation would always skip — must advance
+    // when eligible (kills ConditionalExpression:true on `if (!eligibility)`).
+    expect(adv.type).not.toBe('skip');
+    expect(done.type).not.toBe('skip');
+
+    // hasClaimToken true must skip even with matching step/campaign
+    expect(
+      planPostConfirmAdvance({
+        enrollmentFound: true,
+        campaignId: 'C',
+        stepNumber: 1,
+        enrollmentCampaignId: 'C',
+        enrollmentStep: 1,
+        hasClaimToken: true,
+        steps: [
+          { step_number: 1, delay_minutes: 0 },
+          { step_number: 2, delay_minutes: 10 },
+        ],
+        nowMs,
+        statusCompleted: 'completed',
+      }).type
+    ).toBe('skip');
   });
 
   it('planConfirmedRowAction property: only campaign with ids advances', () => {

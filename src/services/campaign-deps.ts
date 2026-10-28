@@ -45,6 +45,7 @@ export function defaultCampaignDeps(): CampaignDeps {
     SuppressionLookupError,
     getTemplate,
     uuid: () => randomUUID(),
+    // Stryker disable next-line ArrowFunction: default sleep delay is unused under DI tests (EQUIVALENT.md campaign-deps-default-factory-sleep)
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
   };
 }

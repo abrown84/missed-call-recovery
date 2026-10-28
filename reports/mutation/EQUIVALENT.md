@@ -247,6 +247,15 @@ Replacement only changes operator-visible log text (or no-ops the log call);
 return values, DB writes, and control flow are unchanged. (sms.ts injects
 `deps.log` with asserted event names instead.)
 
+### log-only-console-expressions (campaign-runtime)
+
+Log-only `console.*` sites in `campaign-runtime.ts` disable
+`StringLiteral,CallExpression,BlockStatement,LogicalOperator,OptionalChaining,ConditionalExpression,EqualityOperator,ObjectLiteral,BooleanLiteral`
+for the argument expressions that feed log text only (e.g.
+`lead?.urgency ?? 'null'` inside a template string, `plan.type === 'advance' ? …`
+passed only to `console.log`). Mutating those expressions cannot change return
+values, DB writes, or control flow.
+
 ### opt-out-spaced-keyword-branch-covered-by-compact
 
 - file: `src/services/opt-out.ts` / mutator: ConditionalExpression,BlockStatement /
