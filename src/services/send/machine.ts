@@ -187,6 +187,7 @@ function onLookup(
         };
       }
       return { action: 'requeue_never_sent', phase: 'never_sent' };
+    // Stryker disable next-line StringLiteral,ConditionalExpression -- case 'unknown' ≡ default body
     case 'unknown':
     default: {
       const next = Math.max(0, attempts) + 1;
@@ -204,14 +205,17 @@ function onLookup(
 }
 
 export function isFailedStatus(status: string | null | undefined): boolean {
+  // Stryker disable next-line StringLiteral -- ?? '' vs filler both miss FAILED_STATUSES
   return FAILED_STATUSES.has(String(status ?? '').toLowerCase());
 }
 
 export function isConfirmedStatus(status: string | null | undefined): boolean {
+  // Stryker disable next-line StringLiteral -- ?? '' vs filler both miss CONFIRMED_STATUSES
   return CONFIRMED_STATUSES.has(String(status ?? '').toLowerCase());
 }
 
 export function isAmbiguousStatus(status: string | null | undefined): boolean {
+  // Stryker disable next-line StringLiteral -- ?? '' vs filler both miss ambiguous tokens
   const s = String(status ?? '').toLowerCase();
   return s === 'sending' || s === 'unknown' || s === 'deferred' || s === 'pending';
 }

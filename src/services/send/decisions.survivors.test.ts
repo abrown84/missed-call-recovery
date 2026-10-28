@@ -103,6 +103,20 @@ describe('decisions survivors', () => {
         9
       )
     ).toBe('mlf:campaign:L:9'); // step 0 falsy → fallback
+    // Full campaign fields → stable step sid (not mlf:clock fallback)
+    const full = resolveIdempotencySid(
+      {
+        kind: 'campaign',
+        leadId: 'L',
+        enrollmentId: 'E',
+        campaignId: 'C',
+        stepNumber: 2,
+      },
+      9
+    );
+    expect(full).toContain('E');
+    expect(full).toContain('C');
+    expect(full).not.toBe('mlf:campaign:L:9');
   });
 
   it('decideDuplicateSid exact reason / detail strings', () => {
@@ -110,7 +124,17 @@ describe('decisions survivors', () => {
       action: 'needs_review',
       reason: 'duplicate_failed',
     });
+    expect(decideDuplicateSid('needs_review')).toEqual({
+      action: 'needs_review',
+      reason: 'duplicate_failed',
+    });
     expect(decideDuplicateSid('Abandoned_Retry')).toEqual({
+      action: 'claim_deferred',
+    });
+    expect(decideDuplicateSid('deferred')).toEqual({
+      action: 'claim_deferred',
+    });
+    expect(decideDuplicateSid('abandoned_retry')).toEqual({
       action: 'claim_deferred',
     });
     expect(decideDuplicateSid(null)).toEqual({
@@ -120,6 +144,11 @@ describe('decisions survivors', () => {
     expect(decideDuplicateSid('sending')).toEqual({
       action: 'block_in_flight',
       detail: 'sending',
+    });
+    // Filler status must NOT claim_deferred / needs_review
+    expect(decideDuplicateSid('Stryker was here!')).toEqual({
+      action: 'block_in_flight',
+      detail: 'Stryker was here!',
     });
   });
 
@@ -153,6 +182,30 @@ describe('decisions survivors', () => {
     expect(
       interpretCampaignSendOutcome({ kind: 'never_sent', sid: 's' }, park)
     ).toEqual({ type: 'park' });
+    // skipped with wrong reason must NOT advance (kills && → || / cond→true)
+    expect(
+      interpretCampaignSendOutcome(
+        { kind: 'skipped', reason: 'something_else' },
+        park
+      )
+    ).toEqual({ type: 'park' });
+    // quiet_hours_deferred without nextSendAt must NOT release
+    expect(
+      interpretCampaignSendOutcome(
+        { kind: 'blocked', reason: 'quiet_hours_deferred' },
+        park
+      )
+    ).toEqual({ type: 'noop_false' });
+    expect(
+      interpretCampaignSendOutcome(
+        {
+          kind: 'blocked',
+          reason: 'quiet_hours_deferred',
+          nextSendAt: 't',
+        },
+        park
+      )
+    ).toEqual({ type: 'release', nextSendAt: 't', ok: true });
   });
 
   it('interpretRecoverySendOutcome unexpected / skipped reason', () => {
@@ -165,6 +218,34 @@ describe('decisions survivors', () => {
         'f'
       )
     ).toEqual({ type: 'log_blocked', reason: 'invalid_phone' });
+    // skipped body must run (not emptied) and use reason
+    expect(
+      interpretRecoverySendOutcome({ kind: 'skipped', reason: 'gate' }, 'f')
+    ).toEqual({ type: 'log_blocked', reason: 'gate' });
+    // quiet_hours_deferred requires both kind+reason (not cond→true)
+    expect(
+      interpretRecoverySendOutcome(
+        { kind: 'blocked', reason: 'suppressed' },
+        'f'
+      )
+    ).toEqual({ type: 'log_blocked', reason: 'suppressed' });
+    expect(
+      interpretRecoverySendOutcome(
+        {
+          kind: 'blocked',
+          reason: 'quiet_hours_deferred',
+          nextSendAt: 't',
+        },
+        'f'
+      )
+    ).toEqual({ type: 'persist_deferred', nextSendAt: 't' });
+    // missing nextSendAt uses fallback
+    expect(
+      interpretRecoverySendOutcome(
+        { kind: 'blocked', reason: 'quiet_hours_deferred' },
+        'fallback'
+      )
+    ).toEqual({ type: 'persist_deferred', nextSendAt: 'fallback' });
   });
 
   it('property: duplicate status vocabulary exhausts actions', () => {

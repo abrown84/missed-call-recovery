@@ -9,7 +9,7 @@ import {
 
 describe('campaign-decisions survivors', () => {
   it('only_initial requires skipped + same step + length 1', () => {
-    // skipped but multiple steps → ok
+    // skipped but multiple steps → ok (kills length===1 → true)
     expect(
       decideEnrollmentPlan({
         steps: [
@@ -23,7 +23,7 @@ describe('campaign-decisions survivors', () => {
       }).ok
     ).toBe(true);
 
-    // not skipped (Emergency) single step → ok
+    // not skipped (Emergency) single step → ok (kills skippedInitial → true)
     expect(
       decideEnrollmentPlan({
         steps: [{ step_number: 1, delay_minutes: 0 }],
@@ -33,6 +33,17 @@ describe('campaign-decisions survivors', () => {
         now: new Date('2026-01-01T00:00:00Z'),
       })
     ).toMatchObject({ ok: true, currentStep: 1 });
+
+    // all three: skipped + same step + length 1 → only_initial_already_sent
+    expect(
+      decideEnrollmentPlan({
+        steps: [{ step_number: 1, delay_minutes: 0 }],
+        recoveryState: 'confirmed',
+        recoveryConfirmed: true,
+        treatRecoveryAsInitial: true,
+        now: new Date('2026-01-01T00:00:00Z'),
+      })
+    ).toEqual({ ok: false, reason: 'only_initial_already_sent' });
   });
 
   it('pending park only when not recoveryConfirmed', () => {
@@ -72,30 +83,55 @@ describe('campaign-decisions survivors', () => {
 
   it('decideCampaignSendDispatch exact type strings', () => {
     const park = 'p';
-    const types = [
-      decideCampaignSendDispatch(
-        { kind: 'skipped', reason: 'recovery_already_sent_skip_step_1' },
-        park
-      ).type,
-      decideCampaignSendDispatch(
-        { kind: 'blocked', reason: 'quiet_hours_unresolved' },
-        park
-      ).type,
-      decideCampaignSendDispatch(
-        { kind: 'blocked', reason: 'invalid_phone' },
-        park
-      ).type,
-      decideCampaignSendDispatch(
-        { kind: 'needs_review', sid: 's', reason: 'r' },
-        park
-      ).type,
+    const cases = [
+      {
+        o: {
+          kind: 'skipped' as const,
+          reason: 'recovery_already_sent_skip_step_1',
+        },
+        type: 'advance',
+        success: true,
+      },
+      {
+        o: { kind: 'blocked' as const, reason: 'quiet_hours_unresolved' },
+        type: 'flag_unresolved_tz',
+        success: false,
+      },
+      {
+        o: { kind: 'blocked' as const, reason: 'invalid_phone' },
+        type: 'noop_false',
+        success: false,
+      },
+      {
+        o: { kind: 'needs_review' as const, sid: 's', reason: 'r' },
+        type: 'needs_review_terminal',
+        success: false,
+      },
+      {
+        o: { kind: 'blocked' as const, reason: 'suppressed' },
+        type: 'pause_opt_out',
+        success: true,
+      },
+      {
+        o: {
+          kind: 'blocked' as const,
+          reason: 'quiet_hours_deferred',
+          nextSendAt: 't',
+        },
+        type: 'release',
+        success: true,
+      },
+      {
+        o: { kind: 'ambiguous' as const, sid: 's', reason: 'r' },
+        type: 'park',
+        success: false,
+      },
     ];
-    expect(types).toEqual([
-      'advance',
-      'flag_unresolved_tz',
-      'noop_false',
-      'needs_review_terminal',
-    ]);
+    for (const c of cases) {
+      const d = decideCampaignSendDispatch(c.o, park);
+      expect(d.type).toBe(c.type);
+      expect(d.success).toBe(c.success);
+    }
   });
 
   it('decideCampaignLeadGates optedOut wins with suppressed', () => {
