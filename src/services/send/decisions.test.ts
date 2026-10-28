@@ -19,6 +19,48 @@ describe('decideCustomerFacingGates', () => {
         optedOut: true,
       })
     ).toBeNull();
+    expect(
+      decideCustomerFacingGates({
+        kind: 'manual',
+        suppressed: true,
+        optedOut: true,
+      })
+    ).toBeNull();
+  });
+
+  it('skipQuietHours ignores quiet block', () => {
+    expect(
+      decideCustomerFacingGates({
+        kind: 'recovery',
+        suppressed: false,
+        optedOut: false,
+        skipQuietHours: true,
+        quiet: {
+          allowed: false,
+          unresolved: true,
+          reason: 'x',
+          zones: [],
+        },
+      })
+    ).toBeNull();
+  });
+
+  it('property: suppressed beats opted_out beats recovery gate', () => {
+    fc.assert(
+      fc.property(fc.boolean(), fc.boolean(), (suppressed, optedOut) => {
+        const d = decideCustomerFacingGates({
+          kind: 'campaign',
+          stepNumber: 1,
+          suppressed,
+          optedOut,
+          recovery: 'pending',
+        });
+        if (suppressed) expect(d).toEqual({ kind: 'blocked', reason: 'suppressed' });
+        else if (optedOut) expect(d).toEqual({ kind: 'blocked', reason: 'opted_out' });
+        else expect(d).toEqual({ kind: 'blocked', reason: 'recovery_pending' });
+      }),
+      { numRuns: 20 }
+    );
   });
 
   it('suppressed / opted_out', () => {
