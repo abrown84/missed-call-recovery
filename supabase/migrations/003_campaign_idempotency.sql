@@ -155,7 +155,7 @@ DROP TABLE sms_suppressions_norm;
 --    src/services/opt-out-data.ts). NO mid-sentence keyword retro-suppress.
 --    Lists: `npm run check:opt-out-sql` / generate-opt-out-sql.mjs.
 --    Normalizer mirrors src/services/opt-out.ts normalizeOptOutText + compact.
---    mut.py #25 needles `normalize(btrim(m.body), NFKC),` in the LATERAL below.
+--    mut.py #25 needles NFKC normalize of m.body in the LATERAL below.
 -- ---------------------------------------------------------------------------
 
 -- Post-NFKC finish (ZW / emoji / NBSP / newlines / edge noise / upper).
