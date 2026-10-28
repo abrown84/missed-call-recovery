@@ -231,6 +231,7 @@ async function dispatchToRelay(
     });
     signal = mapRelaySendResult(result);
   } catch (err) {
+    // Stryker disable next-line StringLiteral: log-only message (no control flow)
     console.error(
       `sendMessage relay error sid=${sid}:`,
       err instanceof Error ? err.message : 'unknown'

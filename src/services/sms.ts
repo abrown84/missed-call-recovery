@@ -105,6 +105,7 @@ export async function persistDeferredRecoveryWithDeps(
     key_supported_at_send: false,
   });
   if (error && error.code !== '23505') {
+    // Stryker disable next-line StringLiteral: log-only message (no control flow)
     console.error('persistDeferredRecovery insert failed:', error.message);
   }
   if (error?.code === '23505') {
@@ -157,24 +158,29 @@ export async function sendRecoverySMSWithDeps(
         body: messageBody,
         nextSendAt: action.nextSendAt,
       });
+      // Stryker disable next-line StringLiteral: log-only message (no control flow)
       console.log(
         `Recovery SMS deferred for ${redactPhone(callerPhone)} until ${action.nextSendAt}`
       );
       return;
     case 'log_blocked':
+      // Stryker disable next-line StringLiteral: log-only message (no control flow)
       console.log(
         `Recovery SMS blocked for ${redactPhone(callerPhone)}: ${action.reason}`
       );
       return;
     case 'log_needs_review':
+      // Stryker disable next-line StringLiteral: log-only message (no control flow)
       console.error(`ALERT: recovery SMS needs_review sid=${action.sid}`);
       return;
     case 'log_ambiguous':
+      // Stryker disable next-line StringLiteral: log-only message (no control flow)
       console.warn(
         `Recovery SMS ambiguous for ${redactPhone(callerPhone)}; parked (${action.reason})`
       );
       return;
     case 'log_sent':
+      // Stryker disable next-line StringLiteral: log-only message (no control flow)
       console.log(
         `Recovery SMS queued to ${redactPhone(callerPhone)} sid=${action.sid}`
       );
@@ -206,6 +212,7 @@ export async function processDeferredRecoveriesWithDeps(
     .limit(50);
 
   if (error) {
+    // Stryker disable next-line StringLiteral: log-only message (no control flow)
     console.error('processDeferredRecoveries query failed:', error.message);
     return { sent: 0, deferred: 0, errors: 1 };
   }
@@ -266,6 +273,7 @@ export async function processDeferredRecoveriesWithDeps(
         deferred += 1;
       }
     } catch (err) {
+      // Stryker disable next-line StringLiteral: log-only message (no control flow)
       console.error(
         'processDeferredRecoveries row failed:',
         err instanceof Error ? err.message : 'unknown'
@@ -302,6 +310,7 @@ export async function sendFollowUpSMSWithDeps(
   // Restore suppression / opt-out checks (QC r6 P2)
   try {
     if (await deps.isPhoneSuppressed(business.id, callerPhone)) {
+      // Stryker disable next-line StringLiteral: log-only message (no control flow)
       console.log(
         `Skipping follow-up; phone suppressed: ${redactPhone(callerPhone)}`
       );
@@ -309,6 +318,7 @@ export async function sendFollowUpSMSWithDeps(
     }
   } catch (err) {
     if (err instanceof deps.SuppressionLookupError) {
+      // Stryker disable next-line StringLiteral: log-only message (no control flow)
       console.log(
         `Skipping follow-up; suppression lookup failed closed: ${redactPhone(callerPhone)}`
       );
@@ -324,6 +334,7 @@ export async function sendFollowUpSMSWithDeps(
     .eq('id', leadId)
     .maybeSingle();
   if (lead?.opted_out) {
+    // Stryker disable next-line StringLiteral: log-only message (no control flow)
     console.log(
       `Skipping follow-up; lead opted out: ${redactPhone(callerPhone)}`
     );

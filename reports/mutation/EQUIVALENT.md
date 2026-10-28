@@ -98,3 +98,91 @@ mutants here when no test can distinguish original from replacement.
 - justification: for the current keyword stems, `/STOP|QUIT|END|CANCEL|REVOKE|UNSUBSCRIBE|OPTOUT/`
   already accepts any compact string those arms would accept; inner
   `compact.includes(kw)` repeats the outer guard. Refactored to the regex only.
+
+### log-only-console-stringliterals
+
+Individually disabled `StringLiteral` mutants on `console.log` /
+`console.error` / `console.warn` messages. Replacement only changes
+operator-visible log text; return values, DB writes, and control flow
+are unchanged. Each site annotated `// Stryker disable next-line StringLiteral`.
+
+- src/services/campaigns.ts:86: `console.error('Failed to fetch lead for enrollment:', leadEr`
+- src/services/campaigns.ts:101: `console.warn('No active campaigns found for enrollment');
+`
+- src/services/campaigns.ts:111: `console.warn('No matching campaign found for lead');
+`
+- src/services/campaigns.ts:122: `console.error('Campaign has no steps');
+`
+- src/services/campaigns.ts:159: `console.error('Failed to enroll lead:', enrollError);
+`
+- src/services/campaigns.ts:163: `console.log(
+`
+- src/services/campaigns.ts:260: `console.error('Failed to switch enrollment (maybe mid-send):`
+- src/services/campaigns.ts:264: `console.log(
+`
+- src/services/campaigns.ts:310: `console.log(
+`
+- src/services/campaigns.ts:354: `console.error('Failed to fetch enrollment for lead:', error)`
+- src/services/campaigns.ts:377: `console.error('Failed to fetch enrollment:', enrollError);
+`
+- src/services/campaigns.ts:383: `console.error(`No claim_token for enrollment ${enrollmentId}`
+- src/services/campaigns.ts:397: `console.error('Suppression check failed closed:', err.messag`
+- src/services/campaigns.ts:410: `console.log(`Suppressed phone for enrollment ${enrollmentId}`
+- src/services/campaigns.ts:427: `console.error('Failed to fetch campaign steps:', stepsError)`
+- src/services/campaigns.ts:437: `console.error(`Step ${enrollment.current_step} not found`);
+`
+- src/services/campaigns.ts:490: `console.warn(`Post-send advance lost claim for ${enrollmentI`
+- src/services/campaigns.ts:493: `console.log(
+`
+- src/services/campaigns.ts:505: `console.error(
+`
+- src/services/campaigns.ts:525: `console.warn(
+`
+- src/services/campaigns.ts:534: `console.error(
+`
+- src/services/campaigns.ts:587: `console.warn(
+`
+- src/services/campaigns.ts:594: `console.log(
+`
+- src/services/campaigns.ts:616: `console.warn(
+`
+- src/services/campaigns.ts:623: `console.log(`Campaign completed for enrollment ${enrollmentI`
+- src/services/campaigns.ts:683: `console.error(
+`
+- src/services/campaigns.ts:709: `console.error('Failed to pause campaign:', error);
+`
+- src/services/campaigns.ts:713: `console.log(`Campaign paused for lead ${leadId}`);
+`
+- src/services/campaigns.ts:768: `console.error('Failed to reclaim stale enrollment:', stale.e`
+- src/services/campaigns.ts:927: `console.error(
+`
+- src/services/campaigns.ts:1046: `console.warn(
+`
+- src/services/campaigns.ts:1086: `console.log('No due campaigns to process');
+`
+- src/services/campaigns.ts:1118: `console.error(
+`
+- src/services/campaigns.ts:1143: `console.log(
+`
+- src/services/sms.ts:108: `console.error('persistDeferredRecovery insert failed:', erro`
+- src/services/sms.ts:160: `console.log(
+`
+- src/services/sms.ts:165: `console.log(
+`
+- src/services/sms.ts:170: `console.error(`ALERT: recovery SMS needs_review sid=${action`
+- src/services/sms.ts:173: `console.warn(
+`
+- src/services/sms.ts:178: `console.log(
+`
+- src/services/sms.ts:209: `console.error('processDeferredRecoveries query failed:', err`
+- src/services/sms.ts:269: `console.error(
+`
+- src/services/sms.ts:305: `console.log(
+`
+- src/services/sms.ts:312: `console.log(
+`
+- src/services/sms.ts:327: `console.log(
+`
+- src/services/send/index.ts:234: `console.error(
+`
+
