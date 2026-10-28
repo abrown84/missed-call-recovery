@@ -17,3 +17,11 @@ Equivalents only individually in `EQUIVALENT.md`.
 
 Compared to r8 FAIL head `e21a091` (96.72% honest / 68.38% suppressed with 1101 ignored including 689 zones):
 suppressed-as-survived rose ~18pp by dropping the vacuous zones file and testing static opt-out-data.
+
+## mut.py one-line revert harness
+
+| Result | Count |
+|--------|------:|
+| KILLED | **63** / 63 applicable |
+| SURVIVED | **0** |
+| NOMATCH | 1 (#47 urgency gate intentionally removed for Standard enroll) |
