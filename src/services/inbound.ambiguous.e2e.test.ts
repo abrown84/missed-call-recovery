@@ -69,7 +69,7 @@ describe('inbound ambiguous e2e (real classifyOptOut)', () => {
     });
 
     const pauseCampaignForLead = vi.fn(async () => undefined);
-    const notifyPossibleOptOut = vi.fn(async () => undefined);
+    const notifyPossibleOptOut = vi.fn(async () => true);
     const classifyUrgency = vi.fn(async () => ({
       urgency: 'low' as const,
       confidence: 0.7,
@@ -96,6 +96,7 @@ describe('inbound ambiguous e2e (real classifyOptOut)', () => {
       suppressPhoneForBusiness: vi.fn(async () => undefined),
       tryNormalizeToE164: (p: string) => (p.startsWith('+') ? p : null),
       isLeadWithinLookupAge: () => true,
+      leadHasActiveEnrollment: async () => false,
       redactPhone: (p: string | null | undefined) => `***${String(p).slice(-4)}`,
     } as unknown as InboundDeps;
 
@@ -148,7 +149,7 @@ describe('inbound ambiguous e2e (real classifyOptOut)', () => {
 
     const escalateLead = vi.fn(async () => undefined);
     const pauseCampaignForLead = vi.fn(async () => undefined);
-    const notifyPossibleOptOut = vi.fn(async () => undefined);
+    const notifyPossibleOptOut = vi.fn(async () => true);
 
     const deps = {
       db: () => ({ from }) as unknown as SupabaseClient,
@@ -173,6 +174,7 @@ describe('inbound ambiguous e2e (real classifyOptOut)', () => {
       suppressPhoneForBusiness: vi.fn(async () => undefined),
       tryNormalizeToE164: (p: string) => (p.startsWith('+') ? p : null),
       isLeadWithinLookupAge: () => true,
+      leadHasActiveEnrollment: async () => false,
       redactPhone: (p: string | null | undefined) => `***${String(p).slice(-4)}`,
     } as unknown as InboundDeps;
 

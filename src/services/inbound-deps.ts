@@ -6,6 +6,7 @@ import { classifyOptOut } from '@/services/opt-out';
 import { escalateLead, notifyPossibleOptOut } from '@/services/escalation';
 import {
   handleClassifiedReplyEnrollment,
+  leadHasActiveEnrollment,
   pauseCampaignForLead,
 } from '@/services/campaigns';
 import {
@@ -27,6 +28,7 @@ export type InboundDeps = {
   notifyPossibleOptOut: typeof notifyPossibleOptOut;
   handleClassifiedReplyEnrollment: typeof handleClassifiedReplyEnrollment;
   pauseCampaignForLead: typeof pauseCampaignForLead;
+  leadHasActiveEnrollment: typeof leadHasActiveEnrollment;
   markLeadOptedOut: typeof markLeadOptedOut;
   suppressPhoneForBusiness: typeof suppressPhoneForBusiness;
   tryNormalizeToE164: typeof tryNormalizeToE164;
@@ -46,6 +48,7 @@ export function defaultInboundDeps(): InboundDeps {
     notifyPossibleOptOut,
     handleClassifiedReplyEnrollment,
     pauseCampaignForLead,
+    leadHasActiveEnrollment,
     markLeadOptedOut,
     suppressPhoneForBusiness,
     tryNormalizeToE164,

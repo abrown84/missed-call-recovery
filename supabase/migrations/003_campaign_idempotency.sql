@@ -195,20 +195,21 @@ AS $$
                 ' ',
                 'g'
               ),
-              -- edge noise (quotes + punct + space); 3 passes ≈ TS fixpoint
-              E'^[\s?!.,…''"`“”‘’]+|[\s?!.,…''"`“”‘’]+$',
+              -- edge noise (quotes + punct + space); 3 passes ≈ TS fixpoint.
+              -- Use E'\\s' — in escape strings '\s' is a literal s (QC r9 P0).
+              E'^[\\s?!.,…''"`“”‘’]+|[\\s?!.,…''"`“”‘’]+$',
               '',
               'g'
             ),
-            E'^[\s?!.,…''"`“”‘’]+|[\s?!.,…''"`“”‘’]+$',
+            E'^[\\s?!.,…''"`“”‘’]+|[\\s?!.,…''"`“”‘’]+$',
             '',
             'g'
           ),
-          E'^[\s?!.,…''"`“”‘’]+|[\s?!.,…''"`“”‘’]+$',
+          E'^[\\s?!.,…''"`“”‘’]+|[\\s?!.,…''"`“”‘’]+$',
           '',
           'g'
         ),
-        E'\s+',
+        E'\\s+',
         ' ',
         'g'
       )
@@ -224,19 +225,22 @@ AS $$
   SELECT regexp_replace(normalized, '[^A-Z0-9]', '', 'g');
 $$;
 
--- Convenience wrapper for tests / ad-hoc (CONFUSABLES via translate).
+-- Convenience wrapper for tests / ad-hoc.
+-- Fold lookalikes AFTER NFKC + upper (QC r9) so math-bold / NFKC outputs fold.
 CREATE OR REPLACE FUNCTION opt_out_normalize_body(raw text)
 RETURNS text
 LANGUAGE sql
 IMMUTABLE
 AS $$
-  SELECT opt_out_finish_normalized(
-    translate(
-      normalize(btrim(raw), NFKC),
-      -- from/to: digit0 + Greek + Cyrillic lookalikes (opt-out-data CONFUSABLES)
-      '0ΑΒΕΗΙΚΜΝΟΡΤΧΣοαεАВЕНІӀКМОРСТХЅУаеорстухіѕ',
-      'OABEHIKMNOPTXEoaeABEHIIKMOPCTXSUaeopctuxis'
-    )
+  -- Re-NFKC after upper (inside finish) so case-fold decompositions recompose
+  -- before translate — mirrors TS toUpperCase().normalize('NFKC') (QC r9).
+  SELECT translate(
+    normalize(opt_out_finish_normalized(normalize(btrim(raw), NFKC)), NFKC),
+    -- from/to: digit0 + Greek + Cyrillic lookalikes (opt-out-data CONFUSABLES)
+    -- Fold runs AFTER upper()+NFKC. Keep lowercase sources so check:opt-out-sql
+    -- stays in sync with Object.entries(CONFUSABLES).
+    '0ΑΒΕΗΙΚΜΝΟΡΤΧΣοαετАВЕНІӀКМОРСТХЅУаеорстухіѕ',
+    'OABEHIKMNOPTXEOAETABEHIIKMOPCTXSUAEOPCTUXIS'
   );
 $$;
 
@@ -249,12 +253,10 @@ FROM sms_messages m
 JOIN leads l ON l.id = m.lead_id
 -- Single NFKC site so mut.py #25 (occurrence 1) breaks both exact + compact arms.
 CROSS JOIN LATERAL (
-  SELECT opt_out_finish_normalized(
-    translate(
-      normalize(btrim(m.body), NFKC),
-      '0ΑΒΕΗΙΚΜΝΟΡΤΧΣοαεАВЕНІӀКМОРСТХЅУаеорстухіѕ',
-      'OABEHIKMNOPTXEoaeABEHIIKMOPCTXSUaeopctuxis'
-    )
+  SELECT translate(
+    normalize(opt_out_finish_normalized(normalize(btrim(m.body), NFKC)), NFKC),
+    '0ΑΒΕΗΙΚΜΝΟΡΤΧΣοαετАВЕНІӀКМОРСТХЅУаеорстухіѕ',
+    'OABEHIKMNOPTXEOAETABEHIIKMOPCTXSUAEOPCTUXIS'
   ) AS norm
 ) n
 WHERE m.direction = 'inbound'

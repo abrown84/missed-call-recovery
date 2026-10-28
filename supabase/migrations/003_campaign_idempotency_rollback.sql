@@ -6,6 +6,11 @@
 
 BEGIN;
 
+-- Drop helper functions introduced by forward migration 003 (QC r9).
+DROP FUNCTION IF EXISTS opt_out_normalize_body(text);
+DROP FUNCTION IF EXISTS opt_out_compact_body(text);
+DROP FUNCTION IF EXISTS opt_out_finish_normalized(text);
+
 DROP INDEX IF EXISTS uq_campaign_enrollments_lead_id;
 DROP INDEX IF EXISTS idx_enrollments_claimed_at;
 DROP INDEX IF EXISTS uq_sms_messages_message_sid;

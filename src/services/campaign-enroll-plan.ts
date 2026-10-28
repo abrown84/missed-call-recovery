@@ -79,10 +79,8 @@ export function planEnroll(input: {
   const steps = sortCampaignSteps(
     stepsOrEmpty(selected.campaign_steps as StepRow[] | null)
   );
-  // Empty steps also rejected inside decideEnrollmentPlan. if(false)/{} on this
-  // guard falls through to the same no_steps reject — truly equivalent.
-  // if(true) would reject non-empty steps and is killed by enroll tests.
-  // Stryker disable next-line ConditionalExpression,BlockStatement
+  // Empty steps also rejected inside decideEnrollmentPlan; keep this guard live
+  // so if(true) / removed-conditional mutants are killed (QC r9 — was over-broad).
   if (steps.length === 0) {
     return { type: 'reject', reason: 'no_steps' };
   }

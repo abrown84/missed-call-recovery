@@ -111,6 +111,17 @@ describe('opt-out service-talk / keyword-in-sentence → ambiguous', () => {
   });
 });
 
+describe('opt-out unicode lookalikes (QC r9)', () => {
+  it('classifies math-bold and Greek tau homoglyphs as opt_out', () => {
+    // U+1D6B6 MATHEMATICAL BOLD CAPITAL OMICRON → Ο → O
+    expect(classifyOptOut('ST\u{1D6B6}P').kind).toBe('opt_out');
+    // U+1D6B0 MATHEMATICAL BOLD CAPITAL IOTA → Ι → I
+    expect(classifyOptOut('QU\u{1D6B0}T').kind).toBe('opt_out');
+    // Greek lowercase tau
+    expect(classifyOptOut('s\u03C4op').kind).toBe('opt_out');
+  });
+});
+
 describe('opt-out normalize property', () => {
   it('normalize is idempotent (fixpoint strip; no pinned seed)', () => {
     // Regression: punct after a quote (`#"!`) and uncovering cases like `?"?`.
@@ -125,5 +136,21 @@ describe('opt-out normalize property', () => {
       }),
       { numRuns: 200 }
     );
+  });
+
+  it('normalize is idempotent on full-Unicode graphemes (20 unseeded passes)', () => {
+    // No seed, no filter that drops failures — fold-after-upper must hold for all.
+    for (let i = 0; i < 20; i++) {
+      fc.assert(
+        fc.property(
+          fc.string({ unit: 'grapheme', maxLength: 20 }),
+          (s) => {
+            const once = normalizeOptOutText(s);
+            expect(normalizeOptOutText(once)).toBe(once);
+          }
+        ),
+        { numRuns: 200 }
+      );
+    }
   });
 });

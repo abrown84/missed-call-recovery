@@ -17,6 +17,7 @@ vi.mock('@/services/campaigns', () => ({
   handleClassifiedReplyEnrollment: (...args: unknown[]) =>
     handleClassifiedReplyEnrollment(...args),
   pauseCampaignForLead: (...args: unknown[]) => pauseCampaignForLead(...args),
+  leadHasActiveEnrollment: async () => false,
 }));
 
 vi.mock('@/services/escalation', () => ({
@@ -72,7 +73,7 @@ describe('processInboundSms QC r2', () => {
     suppressPhoneForBusiness.mockReset();
     pauseCampaignForLead.mockResolvedValue(undefined);
     escalateLead.mockResolvedValue(undefined);
-    notifyPossibleOptOut.mockResolvedValue(undefined);
+    notifyPossibleOptOut.mockResolvedValue(true);
     markLeadOptedOut.mockResolvedValue(undefined);
     suppressPhoneForBusiness.mockResolvedValue(undefined);
   });

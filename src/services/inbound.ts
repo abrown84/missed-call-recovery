@@ -58,6 +58,38 @@ export type InboundResult =
 export type { InboundDeps };
 export { defaultInboundDeps };
 
+/**
+ * Find a lead for this phone that still has an active campaign enrollment,
+ * ignoring the normal 7-day lookup age window (QC r9 ambiguous path).
+ */
+async function lookupLeadWithActiveEnrollment(
+  deps: InboundDeps,
+  supabase: ReturnType<InboundDeps['db']>,
+  businessId: string,
+  lookupPhone: string,
+  legacyPhone: string | null
+): Promise<Lead | null> {
+  const phones = legacyPhone
+    ? [lookupPhone, legacyPhone]
+    : [lookupPhone];
+  for (const phone of phones) {
+    const { data: candidates } = await supabase
+      .from(TABLE.leads)
+      .select(LEAD_SELECT_STAR)
+      .eq(COL.businessId, businessId)
+      .eq(COL.callerPhone, phone)
+      .in(COL.status, LEGACY_LEAD_STATUSES as unknown as string[])
+      .order(COL.createdAt, ORDER_CREATED_DESC)
+      .limit(10);
+    for (const candidate of candidates ?? []) {
+      if (await deps.leadHasActiveEnrollment(candidate.id)) {
+        return candidate as Lead;
+      }
+    }
+  }
+  return null;
+}
+
 export async function processInboundSms(
   event: InboundSmsEvent
 ): Promise<InboundResult> {
@@ -224,17 +256,33 @@ export async function processInboundSmsWithDeps(
     lead = legacy;
   }
 
-  // Ambiguous without a recent lead: still nothing to pause/classify.
-  if (ambiguous && (!lead || !deps.isLeadWithinLookupAge(lead.created_at, deps.clock()))) {
-    // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
-    console.warn(
-      `Ambiguous opt-out language from ${deps.redactPhone(event.from)}: no lead`
-    );
-    // Stryker restore StringLiteral,CallExpression
-    return { status: 'ambiguous_opt_out' };
-  }
-
-  if (!lead || !deps.isLeadWithinLookupAge(lead.created_at, deps.clock())) {
+  // Ambiguous: age-gated miss still pauses when a campaign is running
+  // (cadence can reach day ~11; QC r9 — pause+notify while enrollment active).
+  if (ambiguous) {
+    const withinAge =
+      lead != null &&
+      deps.isLeadWithinLookupAge(lead.created_at, deps.clock());
+    if (!withinAge) {
+      lead = await lookupLeadWithActiveEnrollment(
+        deps,
+        supabase,
+        business.id,
+        lookupPhone,
+        fromE164 && fromE164 !== event.from ? event.from : null
+      );
+    }
+    if (!lead) {
+      // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
+      console.warn(
+        `Ambiguous opt-out language from ${deps.redactPhone(event.from)}: no lead`
+      );
+      // Stryker restore StringLiteral,CallExpression
+      return { status: 'ambiguous_opt_out' };
+    }
+  } else if (
+    !lead ||
+    !deps.isLeadWithinLookupAge(lead.created_at, deps.clock())
+  ) {
     // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
     console.error('No recent open lead found for:', deps.redactPhone(event.from));
     // Stryker restore StringLiteral,CallExpression
@@ -259,19 +307,27 @@ export async function processInboundSmsWithDeps(
         })
       )
       .eq(COL.id, lead.id);
-    await deps.pauseCampaignForLead(lead.id).catch(() => undefined);
+    // Do not swallow pause failures — fail the webhook so the provider retries.
+    await deps.pauseCampaignForLead(lead.id);
     campaignPaused = true;
-    await deps
-      .notifyPossibleOptOut(lead.id, business, body, ambiguous.reason)
-      .catch((err) => {
-        // Stryker disable StringLiteral,CallExpression,BlockStatement: log-only
-        console.error(
-          'Possible-opt-out notify failed:',
-          err instanceof Error ? err.message : 'unknown'
-        );
-        // Stryker restore StringLiteral,CallExpression,BlockStatement
-      });
-    ownerNotified = true;
+    try {
+      ownerNotified = Boolean(
+        await deps.notifyPossibleOptOut(
+          lead.id,
+          business,
+          body,
+          ambiguous.reason
+        )
+      );
+    } catch (err) {
+      // Stryker disable StringLiteral,CallExpression,BlockStatement: log-only
+      console.error(
+        'Possible-opt-out notify failed:',
+        err instanceof Error ? err.message : 'unknown'
+      );
+      // Stryker restore StringLiteral,CallExpression,BlockStatement
+      ownerNotified = false;
+    }
   }
 
   await supabase.from(TABLE.smsMessages).insert(

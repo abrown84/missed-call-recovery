@@ -140,6 +140,7 @@ function buildDeps(over: Partial<InboundDeps> & { dbImpl?: ReturnType<typeof cre
     notifyPossibleOptOut: ReturnType<typeof vi.fn>;
     handleClassifiedReplyEnrollment: ReturnType<typeof vi.fn>;
     pauseCampaignForLead: ReturnType<typeof vi.fn>;
+    leadHasActiveEnrollment: ReturnType<typeof vi.fn>;
     markLeadOptedOut: ReturnType<typeof vi.fn>;
     suppressPhoneForBusiness: ReturnType<typeof vi.fn>;
     tryNormalizeToE164: ReturnType<typeof vi.fn>;
@@ -158,12 +159,13 @@ function buildDeps(over: Partial<InboundDeps> & { dbImpl?: ReturnType<typeof cre
       issue: 'general',
     })) as InboundDeps['classifyUrgency'],
     escalateLead: vi.fn(async () => undefined),
-    notifyPossibleOptOut: vi.fn(async () => undefined),
+    notifyPossibleOptOut: vi.fn(async () => true),
     handleClassifiedReplyEnrollment: vi.fn(async () => ({
       action: 'noop',
       campaignName: undefined,
     })),
     pauseCampaignForLead: vi.fn(async () => undefined),
+    leadHasActiveEnrollment: vi.fn(async () => false),
     markLeadOptedOut: vi.fn(async () => undefined),
     suppressPhoneForBusiness: vi.fn(async () => undefined),
     tryNormalizeToE164: vi.fn((p: string) =>

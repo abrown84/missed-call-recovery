@@ -1059,7 +1059,7 @@ describe('campaigns-impl survivor killers (r12)', () => {
     delete process.env.CAMPAIGN_REPLY_MODE;
   });
 
-  it('pauseCampaignForLead error path returns without throwing', async () => {
+  it('pauseCampaignForLead error path throws (QC r9 fail-closed)', async () => {
     const { pauseCampaignForLead } = await import('./campaigns');
     mockFrom.mockImplementation(() => {
       const b = chainable({ data: null, error: { message: 'fail' } });
@@ -1068,7 +1068,9 @@ describe('campaigns-impl survivor killers (r12)', () => {
       );
       return b;
     });
-    await expect(pauseCampaignForLead('L')).resolves.toBeUndefined();
+    await expect(pauseCampaignForLead('L')).rejects.toThrow(
+      /Failed to pause campaign/
+    );
   });
 
   it('claimDueEnrollment falls through to stale reclaim', async () => {

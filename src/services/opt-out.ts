@@ -65,20 +65,22 @@ export function foldConfusables(raw: string): string {
 }
 
 /** Quotes + trailing/leading punct stripped together so uncovering is idempotent. */
-// Fixpoint loop makes single vs + quantifier at edges observationally identical for SMS.
-// Stryker disable next-line Regex
+// Fixpoint loop makes single vs + quantifier at edges observationally identical for SMS
+// (one pass of the merged class already reaches fixpoint on typical bodies).
+// Stryker disable next-line Regex: + vs empty quantifier equivalent via fixpoint loop
 const EDGE_NOISE_RE = /^[\s?!.,…"'`“”‘’]+|[\s?!.,…"'`“”‘’]+$/g;
 
 /**
  * Canonical normalizer used by inbound webhook AND migration 003 backfill.
  * Loops quote/punct stripping to a fixpoint (QC r8 — no pinned seed).
+ * Fold lookalikes AFTER NFKC + uppercase (QC r9) so math-bold / NFKC outputs fold.
  */
 export function normalizeOptOutText(raw: string): string {
-  const folded = foldConfusables(raw)
+  const nfkc = raw
     .normalize('NFKC')
     .replace(ZERO_WIDTH_RE, '')
     .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, '');
-  const spaced = replaceNbspWithSpace(folded);
+  const spaced = replaceNbspWithSpace(nfkc);
   // Stryker disable next-line Regex,MethodExpression: later /\s+/g collapse makes + vs empty quantifier equivalent
   let out = spaced.replace(/[\r\n]+/g, ' ').trim();
   // Bound is defensive — SMS bodies reach fixpoint in ≤3 passes; loop-control
@@ -92,7 +94,9 @@ export function normalizeOptOutText(raw: string): string {
     if (next === out) break;
     out = next;
   }
-  return out.toUpperCase();
+  // Upper can decompose (e.g. ῢ → Ϋ̀); re-NFKC before fold so the result is
+  // idempotent under full Unicode (QC r9). Then fold lookalikes.
+  return foldConfusables(out.toUpperCase().normalize('NFKC'));
 }
 
 /** Spaceless form so 'S T O P' compact to STOP. */
@@ -138,26 +142,23 @@ export function classifyOptOut(raw: string): OptOutVerdict {
   }
   // Stryker restore LogicalOperator
 
-  // Keyword as a whole word inside a longer message → human review only
+  // Keyword as a whole word inside a longer message → human review only.
+  // Stem || is NOT equivalent (|| → && is killed) — do not disable LogicalOperator.
   for (const stem of OPT_OUT_WORD_STEMS) {
-    // Stryker disable LogicalOperator
     if (
       hasWholeWordStem(normalized, stem) ||
       hasWholeWordStem(collapsed, stem)
     ) {
       return { kind: 'ambiguous', reason: 'keyword_in_sentence' };
     }
-    // Stryker restore LogicalOperator
   }
   for (const stem of OPT_OUT_MULTIWORD_STEMS) {
-    // Stryker disable LogicalOperator
     if (
       hasWholeWordStem(normalized, stem) ||
       hasWholeWordStem(collapsed, stem)
     ) {
       return { kind: 'ambiguous', reason: 'keyword_in_sentence' };
     }
-    // Stryker restore LogicalOperator
   }
 
   return { kind: 'not_opt_out' };

@@ -1,6 +1,6 @@
 /**
  * SQL fragments for migration 003 STOP backfill — keep in sync with
- * opt-out-data.ts + opt-out.ts normalizers (QC r8 P1-3).
+ * opt-out-data.ts + opt-out.ts normalizers (QC r8/r9 P1-3).
  *
  * Used by `npm run check:opt-out-sql` / generate-opt-out-sql.mjs.
  */
@@ -20,25 +20,22 @@ export function buildOptOutConfusableTranslate(): {
 }
 
 /**
- * SQL expression that finishes normalization after NFKC (+ optional translate).
- * Mirrors TS normalizeOptOutText steps after fold/NFKC:
- * zero-width strip, emoji strip, NBSP→space, newlines, quote+punct edge loop,
- * whitespace collapse, upper.
+ * SQL expression that finishes normalization after NFKC, then folds lookalikes.
+ * Mirrors TS normalizeOptOutText (QC r9): NFKC → strip → edge fixpoint →
+ * whitespace collapse → upper → translate(CONFUSABLES).
  *
- * `inputSql` is an already-NFKC'd (and preferably translate()'d) text expr.
+ * `inputSql` is a raw text expression (will be NFKC'd here).
  */
 export function buildOptOutBackfillSqlNormalizer(
   inputSql = 'normalize(btrim(m.body), NFKC)'
 ): string {
   const { from, to } = buildOptOutConfusableTranslate();
-  // Escape single quotes for embedding in SQL string literals
   const fromLit = from.replace(/'/g, "''");
   const toLit = to.replace(/'/g, "''");
-  const translated = `translate(${inputSql}, '${fromLit}', '${toLit}')`;
-  // Three edge-noise passes approximate the TS fixpoint loop for SMS bodies.
+  // QC r9 P0: in PG escape strings, `\s` is a literal `s`. Use `\\s`.
   const edge =
-    String.raw`E'^[\s?!.,…''"\`“”‘’]+|[\s?!.,…''"\`“”‘’]+$'`;
-  return `upper(
+    String.raw`E'^[\\s?!.,…''"\`“”‘’]+|[\\s?!.,…''"\`“”‘’]+$'`;
+  const finished = `upper(
     btrim(
       regexp_replace(
         regexp_replace(
@@ -48,7 +45,7 @@ export function buildOptOutBackfillSqlNormalizer(
                 regexp_replace(
                   regexp_replace(
                     regexp_replace(
-                      ${translated},
+                      ${inputSql},
                       E'[\\u200B-\\u200D\\uFEFF\\u2060\\u180E\\u00AD\\u034F\\u061C\\u115F\\u1160\\u17B4\\u17B5\\u3164\\uFFA0]',
                       '',
                       'g'
@@ -83,6 +80,8 @@ export function buildOptOutBackfillSqlNormalizer(
       )
     )
   )`;
+  // Re-NFKC after upper, then fold (same order as opt_out_normalize_body / TS).
+  return `translate(normalize(${finished}, NFKC), '${fromLit}', '${toLit}')`;
 }
 
 /** Compact form: strip non-alnum (parity with compactOptOutText). */

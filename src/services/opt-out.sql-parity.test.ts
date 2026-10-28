@@ -7,6 +7,7 @@ import { PGlite } from '@electric-sql/pglite';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { classifyOptOut, wouldBackfillSuppress } from './opt-out';
+import { OPT_OUT_WHOLE_MESSAGE } from './opt-out-data';
 import { NEGATIVE_SERVICE_REPLIES } from './opt-out.r7.test';
 
 /** Cases SQL previously under-suppressed (QC r8). */
@@ -28,6 +29,30 @@ const MUST_SUPPRESS = [
   'St0p',
   'ST\u03BFP', // Greek lowercase omicron
 ];
+
+/** Base whole-message tokens only (exclude derived STOP STOP / END END repeats). */
+function isDerivedRepeatToken(token: string): boolean {
+  const parts = token.split(' ');
+  return parts.length >= 2 && parts.every((p) => p === parts[0]);
+}
+
+function uniqueBaseKeywords(): string[] {
+  return OPT_OUT_WHOLE_MESSAGE.filter((t) => !isDerivedRepeatToken(t));
+}
+
+function mixedCaseKeyword(k: string): string {
+  return k.length === 0 ? k : k[0].toUpperCase() + k.slice(1).toLowerCase();
+}
+
+function baseKeywordCaseCorpus(): string[] {
+  const extras = [`ST\u{1D6B6}P`, `QU\u{1D6B0}T`, 's\u03C4op'];
+  const bodies: string[] = [...extras];
+  for (const k of uniqueBaseKeywords()) {
+    bodies.push(k.toLowerCase());
+    bodies.push(mixedCaseKeyword(k));
+  }
+  return bodies;
+}
 
 function stripUnsupported(sql: string): string {
   return sql
@@ -94,7 +119,60 @@ async function bootFunctions(): Promise<{
   return { db, lists: extractMigrationInLists(forward) };
 }
 
+async function bootFullMigrations(): Promise<PGlite> {
+  const db = new PGlite();
+  await db.exec(`
+    CREATE OR REPLACE FUNCTION uuid_generate_v4() RETURNS uuid
+      AS $$ SELECT gen_random_uuid() $$ LANGUAGE sql;
+  `);
+  await db.exec(
+    stripUnsupported(
+      readFileSync(join(process.cwd(), 'supabase/schema.sql'), 'utf8')
+    )
+  );
+  await db.exec(
+    stripUnsupported(
+      readFileSync(
+        join(process.cwd(), 'supabase/migrations/001_campaigns.sql'),
+        'utf8'
+      )
+    )
+  );
+  await db.exec(
+    stripUnsupported(
+      readFileSync(
+        join(process.cwd(), 'supabase/migrations/002_secure_rls.sql'),
+        'utf8'
+      )
+    )
+  );
+  await db.exec(`
+    ALTER TABLE sms_messages DROP CONSTRAINT IF EXISTS sms_messages_message_sid_key;
+    ALTER TABLE campaign_enrollments DROP CONSTRAINT IF EXISTS campaign_enrollments_lead_id_campaign_id_key;
+  `);
+  return db;
+}
+
 describe('migration 003 SQL normalizer parity (PGlite)', () => {
+  it('suppresses every base keyword in lowercase and mixed case (+ unicode lookalikes)', async () => {
+    const { db, lists } = await bootFunctions();
+    const pred = backfillPredicateSql(lists);
+    for (const body of baseKeywordCaseCorpus()) {
+      const app = wouldBackfillSuppress(body);
+      expect(app, `app wouldBackfillSuppress(${JSON.stringify(body)})`).toBe(
+        true
+      );
+      expect(classifyOptOut(body).kind, `classify ${JSON.stringify(body)}`).toBe(
+        'opt_out'
+      );
+      const hit = await db.query<{ ok: boolean }>(
+        `SELECT ${pred} AS ok`,
+        [body]
+      );
+      expect(hit.rows[0].ok, `SQL suppress ${JSON.stringify(body)}`).toBe(true);
+    }
+  }, 120_000);
+
   it('suppresses the QC r8 under-suppression corpus', async () => {
     const { db, lists } = await bootFunctions();
     const pred = backfillPredicateSql(lists);
@@ -142,36 +220,72 @@ describe('migration 003 SQL normalizer parity (PGlite)', () => {
     }
   }, 60_000);
 
-  it('full migration backfill suppresses quoted STOP on a seeded row', async () => {
-    const db = new PGlite();
+  it('full migration backfill suppresses lowercase stop, unsubscribe, stopall on separate phones', async () => {
+    const db = await bootFullMigrations();
+    const biz = '11111111-1111-4111-8111-111111111111';
     await db.exec(`
-      CREATE OR REPLACE FUNCTION uuid_generate_v4() RETURNS uuid
-        AS $$ SELECT gen_random_uuid() $$ LANGUAGE sql;
+      INSERT INTO businesses (id, name, phone) VALUES
+        ('${biz}', 'Acme', '+15551234567');
+      INSERT INTO missed_calls (id, business_id, caller_phone, call_sid) VALUES
+        ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1', '${biz}', '+15551111111', 'mc1'),
+        ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2', '${biz}', '+15552222222', 'mc2'),
+        ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3', '${biz}', '+15553333333', 'mc3');
+      INSERT INTO leads (id, business_id, missed_call_id, caller_phone, created_at) VALUES
+        ('44444444-4444-4444-8444-444444444441', '${biz}', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1', '+15551111111', NOW() - INTERVAL '2 days'),
+        ('44444444-4444-4444-8444-444444444442', '${biz}', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2', '+15552222222', NOW() - INTERVAL '2 days'),
+        ('44444444-4444-4444-8444-444444444443', '${biz}', 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3', '+15553333333', NOW() - INTERVAL '2 days');
+      INSERT INTO sms_messages (lead_id, direction, body, message_sid, sent_at) VALUES
+        ('44444444-4444-4444-8444-444444444441', 'inbound', 'stop', 'b-stop', NOW()),
+        ('44444444-4444-4444-8444-444444444442', 'inbound', 'unsubscribe', 'b-unsub', NOW()),
+        ('44444444-4444-4444-8444-444444444443', 'inbound', 'stopall', 'b-stopall', NOW());
     `);
     await db.exec(
       stripUnsupported(
-        readFileSync(join(process.cwd(), 'supabase/schema.sql'), 'utf8')
-      )
-    );
-    await db.exec(
-      stripUnsupported(
         readFileSync(
-          join(process.cwd(), 'supabase/migrations/001_campaigns.sql'),
+          join(process.cwd(), 'supabase/migrations/003_campaign_idempotency.sql'),
           'utf8'
         )
       )
     );
-    await db.exec(
-      stripUnsupported(
-        readFileSync(
-          join(process.cwd(), 'supabase/migrations/002_secure_rls.sql'),
-          'utf8'
-        )
-      )
+    for (const phone of ['+15551111111', '+15552222222', '+15553333333']) {
+      const row = await db.query<{ n: number }>(
+        `SELECT COUNT(*)::int AS n FROM sms_suppressions
+         WHERE business_id = $1 AND phone = $2 AND reason = 'opt_out_backfill'`,
+        [biz, phone]
+      );
+      expect(row.rows[0].n, phone).toBe(1);
+    }
+  }, 90_000);
+
+  it('rollback DROP statements remove opt-out helper functions', async () => {
+    const { db } = await bootFunctions();
+    await db.query(`SELECT opt_out_normalize_body('STOP') AS n`);
+    const rollback = readFileSync(
+      join(
+        process.cwd(),
+        'supabase/migrations/003_campaign_idempotency_rollback.sql'
+      ),
+      'utf8'
     );
+    const drops = rollback
+      .split('\n')
+      .filter((line) => line.match(/^DROP FUNCTION IF EXISTS opt_out_/));
+    expect(drops.length).toBe(3);
+    await db.exec(drops.join('\n'));
+    await expect(
+      db.query(`SELECT opt_out_normalize_body('STOP')`)
+    ).rejects.toThrow();
+    await expect(
+      db.query(`SELECT opt_out_compact_body('STOP')`)
+    ).rejects.toThrow();
+    await expect(
+      db.query(`SELECT opt_out_finish_normalized('STOP')`)
+    ).rejects.toThrow();
+  }, 60_000);
+
+  it('full migration backfill suppresses quoted STOP on a seeded row', async () => {
+    const db = await bootFullMigrations();
     await db.exec(`
-      ALTER TABLE sms_messages DROP CONSTRAINT IF EXISTS sms_messages_message_sid_key;
-      ALTER TABLE campaign_enrollments DROP CONSTRAINT IF EXISTS campaign_enrollments_lead_id_campaign_id_key;
       INSERT INTO businesses (id, name, phone) VALUES
         ('11111111-1111-4111-8111-111111111111', 'Acme', '+15551234567');
       INSERT INTO missed_calls (id, business_id, caller_phone, call_sid) VALUES

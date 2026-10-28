@@ -45,7 +45,7 @@ describe('opt-out edge killers', () => {
   });
 
   it('foldConfusables maps Cyrillic te and dze', () => {
-    expect(foldConfusables('ѕтор')).toBe('stop');
+    expect(foldConfusables('ѕтор')).toBe('STOP');
     expect(normalizeOptOutText('ѕтор')).toBe('STOP');
   });
 

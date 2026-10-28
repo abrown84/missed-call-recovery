@@ -100,7 +100,7 @@ export function compactForms(tokens: readonly string[]): string[] {
   const out = new Set<string>();
   for (const t of tokens) {
     const c = t.replace(/[^A-Z0-9]/g, '');
-    // Stryker disable next-line ConditionalExpression: empty compact never matches keyword sets
+    // Empty compact never matches keyword sets; if(true||c) is killed — keep guard live.
     if (c) out.add(c);
   }
   return [...out];
@@ -128,11 +128,12 @@ export const OPT_OUT_EXACT = OPT_OUT_WHOLE_MESSAGE;
 export const OPT_OUT_COMPACT = new Set(OPT_OUT_WHOLE_MESSAGE_COMPACT);
 
 /**
- * Homoglyph / lookalike map applied before NFKC.
- * Includes Greek ο, Cyrillic У/у → U/u (QУIT → QUIT), digit 0 → O (St0p).
+ * Homoglyph / lookalike map — applied AFTER NFKC + toUpperCase (QC r9).
+ * Values are uppercase Latin so a single post-upper fold is idempotent.
+ * Includes Greek ο/Ο/τ/Τ, Cyrillic У/у, digit 0 → O (St0p).
  */
 export const CONFUSABLES: Record<string, string> = {
-  // Greek capitals
+  // Greek capitals (also uppercased form of lowercase lookalikes)
   '\u0391': 'A', // Α
   '\u0392': 'B', // Β
   '\u0395': 'E', // Ε
@@ -141,15 +142,16 @@ export const CONFUSABLES: Record<string, string> = {
   '\u039A': 'K', // Κ
   '\u039C': 'M', // Μ
   '\u039D': 'N', // Ν
-  '\u039F': 'O', // Ο
+  '\u039F': 'O', // Ο (and NFKC of math-bold 𝚶)
   '\u03A1': 'P', // Ρ
-  '\u03A4': 'T', // Τ
+  '\u03A4': 'T', // Τ (upper of τ — sτop)
   '\u03A7': 'X', // Χ
   '\u03A3': 'E', // Σ (approx)
-  // Greek lowercase (ο is the critical STOP/REVOKE lookalike)
-  '\u03BF': 'o', // ο omicron
-  '\u03B1': 'a',
-  '\u03B5': 'e',
+  // Greek lowercase — kept for foldConfusables callers; post-upper path uses capitals
+  '\u03BF': 'O', // ο omicron
+  '\u03B1': 'A',
+  '\u03B5': 'E',
+  '\u03C4': 'T', // τ
   // Cyrillic capitals
   '\u0410': 'A', // А
   '\u0412': 'B', // В
@@ -167,16 +169,16 @@ export const CONFUSABLES: Record<string, string> = {
   '\u0405': 'S', // Ѕ
   '\u0423': 'U', // У → U so QУIT / УNSУBSCRIBE fold
   // Cyrillic lowercase
-  '\u0430': 'a',
-  '\u0435': 'e',
-  '\u043E': 'o',
-  '\u0440': 'p',
-  '\u0441': 'c',
-  '\u0442': 't',
-  '\u0443': 'u', // у → u
-  '\u0445': 'x',
-  '\u0456': 'i',
-  '\u0455': 's',
+  '\u0430': 'A',
+  '\u0435': 'E',
+  '\u043E': 'O',
+  '\u0440': 'P',
+  '\u0441': 'C',
+  '\u0442': 'T',
+  '\u0443': 'U',
+  '\u0445': 'X',
+  '\u0456': 'I',
+  '\u0455': 'S',
   // Digit lookalikes
   '0': 'O',
 };

@@ -10,7 +10,7 @@ describe('QC r8 lookalike confusables (kill static opt-out-data mutants)', () =>
     // STοP / REVοKE with U+03BF (not \u03BFO… — that eats the following O)
     expect(classifyOptOut('ST\u03BFP').kind).toBe('opt_out');
     expect(classifyOptOut('REV\u03BFKE').kind).toBe('opt_out');
-    expect(CONFUSABLES['\u03BF']).toBe('o');
+    expect(CONFUSABLES['\u03BF']).toBe('O');
   });
 
   it('Cyrillic У/у fold so QУIT / УNSУBSCRIBE opt out', () => {
@@ -18,7 +18,7 @@ describe('QC r8 lookalike confusables (kill static opt-out-data mutants)', () =>
     expect(classifyOptOut('\u0423NS\u0423BSCRIBE').kind).toBe('opt_out');
     expect(classifyOptOut('q\u0443it').kind).toBe('opt_out');
     expect(CONFUSABLES['\u0423']).toBe('U');
-    expect(CONFUSABLES['\u0443']).toBe('u');
+    expect(CONFUSABLES['\u0443']).toBe('U');
   });
 
   it('digit 0 lookalike maps to O (St0p / 0PT0UT)', () => {

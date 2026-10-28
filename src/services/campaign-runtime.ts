@@ -754,7 +754,11 @@ export async function pauseCampaignForLeadWithDeps(
     // Stryker disable StringLiteral,CallExpression,BlockStatement,LogicalOperator,OptionalChaining,ConditionalExpression,EqualityOperator,ObjectLiteral,BooleanLiteral: log-only (no control flow)
     console.error('Failed to pause campaign:', error);
     // Stryker restore StringLiteral,CallExpression,BlockStatement,LogicalOperator,OptionalChaining,ConditionalExpression,EqualityOperator,ObjectLiteral,BooleanLiteral
-    return;
+    // QC r9: do not swallow — inbound ambiguous path must fail closed so the
+    // provider retries; callers that want soft-fail wrap in .catch().
+    throw new Error(
+      `Failed to pause campaign for lead ${leadId}: ${error.message ?? 'unknown'}`
+    );
   }
 
   // Stryker disable StringLiteral,CallExpression,BlockStatement,LogicalOperator,OptionalChaining,ConditionalExpression,EqualityOperator,ObjectLiteral,BooleanLiteral: log-only (no control flow)

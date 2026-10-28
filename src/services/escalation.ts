@@ -93,12 +93,15 @@ function buildEscalationMessage(
  * in a longer sentence). Does not change lead status to escalated — that is
  * reserved for classified high/emergency urgency.
  */
+/**
+ * @returns true when the owner SMS was accepted (sent or ambiguous/parked).
+ */
 export async function notifyPossibleOptOut(
   leadId: string,
   business: Business,
   body: string,
   reason: string
-): Promise<void> {
+): Promise<boolean> {
   const escalationPhone = business.emergency_phone || business.phone;
   const message = [
     '⚠️ POSSIBLE OPT-OUT — campaign paused',
@@ -125,11 +128,12 @@ export async function notifyPossibleOptOut(
       outcome.kind,
       'reason' in outcome ? outcome.reason : ''
     );
-  } else {
-    console.log(
-      `Possible opt-out notified for lead ${redactId(leadId)} → ${redactPhone(escalationPhone)}`
-    );
+    return false;
   }
+  console.log(
+    `Possible opt-out notified for lead ${redactId(leadId)} → ${redactPhone(escalationPhone)}`
+  );
+  return true;
 }
 
 export function shouldEscalate(
