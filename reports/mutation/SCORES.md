@@ -1,22 +1,20 @@
-# Mutation scores (QC r8)
+# Mutation scores (QC r9)
 
 Honest score = killed+timeout / (killed+timeout+survived+no-coverage).
 Suppressed-as-survived = killed+timeout / (honest denom + ignored).
 Equivalents only individually in `EQUIVALENT.md`.
 
-## Latest run (post-r8)
+## Latest run (QC r9 @ `ddc2a43`)
 
 | Metric | Value |
 |--------|-------|
-| Honest | **96.30%** (K=2705, S=84, NoCov=20) |
-| Suppressed-as-survived | **86.73%** (Ignored=310) |
+| Honest | **96.28%** (K=2740, S=84, NoCov=22) |
+| Suppressed-as-survived | **86.96%** (Ignored=305) |
 | Gate MIN | 90 per module |
 | MAX_IGNORED_PER_FILE | 220 |
+| MAX_IGNORED_TOTAL | 400 |
 | ignoreStatic | **false** |
-| quiet-hours-zones | **excluded** from mutate (vacuous static map) |
-
-Compared to r8 FAIL head `e21a091` (96.72% honest / 68.38% suppressed with 1101 ignored including 689 zones):
-suppressed-as-survived rose ~18pp by dropping the vacuous zones file and testing static opt-out-data.
+| quiet-hours-zones | `zonesForAreaCode` under mutate; static map in `quiet-hours-zones-data.ts` |
 
 ## mut.py one-line revert harness
 
