@@ -65,6 +65,7 @@ import {
   switchEnrollmentCampaign,
 } from './campaigns';
 import { createServerClient } from '@/lib/supabase';
+import { COL } from '@/services/db-strings';
 
 function chainable(result: { data: unknown; error: unknown }) {
   const obj: Record<string, any> = {};
@@ -804,6 +805,7 @@ describe('campaigns more DI coverage', () => {
       { step_number: 1, delay_minutes: 0, template_key: 'a' },
       { step_number: 2, delay_minutes: 10, template_key: 'b' },
     ] as never[];
+    const eqCalls: unknown[][] = [];
 
     mockFrom.mockImplementation(() => {
       const b = chainable({
@@ -814,6 +816,11 @@ describe('campaigns more DI coverage', () => {
         const u = chainable({
           data: [{ id: 'e' }],
           error: null,
+        });
+        const origEq = u.eq;
+        u.eq = vi.fn((...args: unknown[]) => {
+          eqCalls.push(args);
+          return origEq(...args);
         });
         u.select = vi.fn(() =>
           chainable({ data: [{ id: 'e' }], error: null })
@@ -831,6 +838,14 @@ describe('campaigns more DI coverage', () => {
     await expect(
       advanceEnrollment(supabase as never, 'e', 'tok', 2, steps)
     ).resolves.toBe(true);
+
+    // mut.py #44 — claim_token must gate both advance and complete updates
+    expect(
+      eqCalls.some((a) => a[0] === 'claim_token' || a[0] === COL.claimToken)
+    ).toBe(true);
+    expect(eqCalls.filter((a) => a[1] === 'tok').length).toBeGreaterThanOrEqual(
+      2
+    );
   });
 
   it('reconcileAmbiguousSms recovery abandoned resend path', async () => {

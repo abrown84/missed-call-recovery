@@ -18,6 +18,7 @@ import {
   reconcileCompletePayload,
   releaseClaimPayload,
   requeueStepPayload,
+  holdUntilIso,
   rowFound,
   sortCampaignSteps,
   staleBeforeIso,
@@ -245,5 +246,16 @@ describe('rowFound / staleBeforeIso', () => {
     const iso = staleBeforeIso(now, staleMs);
     expect(iso).toBe(new Date(now - staleMs).toISOString());
     expect(iso).not.toBe(new Date(now + staleMs).toISOString());
+  });
+
+  it('holdUntilIso adds (not subtracts) holdMs', () => {
+    const now = Date.parse('2026-06-15T12:00:00.000Z');
+    const holdMs = 60_000;
+    expect(holdUntilIso(now, holdMs)).toBe(
+      new Date(now + holdMs).toISOString()
+    );
+    expect(holdUntilIso(now, holdMs)).not.toBe(
+      new Date(now - holdMs).toISOString()
+    );
   });
 });

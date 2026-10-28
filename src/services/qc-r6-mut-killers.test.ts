@@ -379,10 +379,11 @@ describe('QC r6 mut.py killers', () => {
     expect(decisions).toContain("outcome.kind === 'ambiguous'");
     expect(decisions).toContain("outcome.reason === 'recovery_pending'");
     expect(src).toContain('planCampaignSendPost');
-    // needs_review / park must NOT call advanceEnrollment in their case bodies
+    expect(src).toContain('planCampaignSendEffects');
+    // needs_review / park effects must NOT call advanceEnrollment
     const reviewCase = src.slice(
       src.indexOf("case 'needs_review_terminal':"),
-      src.indexOf("case 'noop_false':")
+      src.indexOf("case 'noop_release':")
     );
     expect(reviewCase).toContain('markEnrollmentNeedsReview');
     expect(reviewCase).not.toContain('advanceEnrollment');
@@ -438,19 +439,22 @@ describe('QC r6 mut.py killers', () => {
     expect(src).not.toContain("status: 'queued',\n        reconcile_attempts:");
   });
 
-  it('#44 advanceEnrollment claim_token checks present on both branches', () => {
+  it('#44 advanceEnrollment claim_token gate on unified advance/complete path', () => {
     const src = readSrc('src/services/campaigns-impl.ts');
-    if (!src) return;
-    // Exact mut.py #44 target — claim_token gate on both advance branches (via COL)
-    expect(src).toContain(
-      '      .eq(COL.claimToken, claimToken)\n      .select(ENROLLMENT_CLAIM_SELECT);'
-    );
+    const advPlan = readSrc('src/services/campaign-advance-plan.ts');
+    if (!src || !advPlan) return;
+    // Advance + complete share one claim_token-gated update (planAdvanceEnrollment).
+    expect(src).toContain('.eq(COL.claimToken, claimToken)');
+    expect(src).toContain('.select(ENROLLMENT_CLAIM_SELECT)');
     const advIdx = src.indexOf('export async function advanceEnrollment');
     expect(advIdx).toBeGreaterThan(-1);
-    const adv = src.slice(advIdx, advIdx + 3500);
-    expect(adv.split('.eq(COL.claimToken, claimToken)').length - 1).toBeGreaterThanOrEqual(
-      2
-    );
+    const adv = src.slice(advIdx, advIdx + 2000);
+    expect(adv).toContain('planAdvanceEnrollment');
+    expect(adv).toContain('.eq(COL.claimToken, claimToken)');
+    expect(adv).toContain('ownershipHit');
+    // Pure plan still distinguishes advance vs complete payloads.
+    expect(advPlan).toContain("type: 'advance'");
+    expect(advPlan).toContain("type: 'complete'");
   });
 });
 

@@ -39,14 +39,23 @@ import {
   staleClaimCutoffIso,
 } from '@/services/campaign-cron-plan';
 import {
+  coalesceCurrentStep,
+  coalesceIssue,
+  coalesceLeadTimezone,
+  planCampaignSendEffects,
   planCampaignSendPost,
   planCampaignSendPre,
+  resolveClaimToken,
+  shouldCheckSuppression,
+  stepsForSendPlan,
 } from '@/services/campaign-send-plan';
 import {
-  advanceStepPayload,
+  ownershipHit,
+  planAdvanceEnrollment,
+} from '@/services/campaign-advance-plan';
+import {
   claimDuePayload,
   clearOutboundSidPayload,
-  completeEnrollmentPayload,
   computeNextSendAt,
   needsReviewEnrollmentPayload,
   pauseEnrollmentPayload,
@@ -57,6 +66,7 @@ import {
   reconcileCompletePayload,
   releaseClaimPayload,
   requeueStepPayload,
+  holdUntilIso,
   rowFound,
   staleBeforeIso,
 } from '@/services/campaign-io-plans';
@@ -368,9 +378,9 @@ export async function sendCampaignSMS(
 
   let suppressed = false;
   let suppressionLookupFailed = false;
-  if (lead && business) {
+  if (shouldCheckSuppression(lead, business)) {
     try {
-      suppressed = await isPhoneSuppressed(business.id, lead.caller_phone);
+      suppressed = await isPhoneSuppressed(business!.id, lead!.caller_phone);
     } catch (err) {
       if (err instanceof SuppressionLookupError) {
         // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
@@ -392,16 +402,18 @@ export async function sendCampaignSMS(
           .order(COL.stepNumber, { ascending: true })
       : { data: null, error: null };
 
-  const token = claimToken || enrollment?.claim_token || null;
+  const token = resolveClaimToken(claimToken, enrollment?.claim_token);
   const pre = planCampaignSendPre({
     enrollmentFound: rowFound(enrollment, enrollError),
     claimToken: token,
     optedOut: Boolean(lead?.opted_out),
     suppressed,
     suppressionLookupFailed,
-    steps: (stepsError ? [] : steps) ?? [],
-    currentStep: enrollment?.current_step ?? -1,
-    leadTimezone: (lead as { timezone?: string | null } | null)?.timezone ?? null,
+    steps: stepsForSendPlan(steps, stepsError),
+    currentStep: coalesceCurrentStep(enrollment?.current_step),
+    leadTimezone: coalesceLeadTimezone(
+      (lead as { timezone?: string | null } | null)?.timezone
+    ),
   });
 
   if (pre.type === 'fail') {
@@ -441,7 +453,7 @@ export async function sendCampaignSMS(
   const messageBody = getTemplate(pre.templateKey, {
     business: business!.name,
     name: '',
-    issue: lead!.issue || '',
+    issue: coalesceIssue(lead!.issue),
   });
 
   const parkedFallback = parkedNextSendAt();
@@ -464,81 +476,87 @@ export async function sendCampaignSMS(
   });
 
   const dispatch = planCampaignSendPost(outcome, parkedFallback);
+  const { effects, success } = planCampaignSendEffects(
+    dispatch,
+    pre.stepNumber
+  );
 
-  switch (dispatch.type) {
-    case 'advance': {
-      const advanced = await advanceEnrollment(
-        supabase,
-        enrollmentId,
-        token!,
-        pre.stepNumber,
-        steps as CampaignStep[]
-      );
-      // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
-      console.log(
-        'campaign_send_advance',
-        enrollmentId,
-        pre.stepNumber,
-        advanced,
-        outcome.kind
-      );
-      // Stryker restore StringLiteral,CallExpression
-      return dispatch.success;
+  for (const effect of effects) {
+    switch (effect.op) {
+      case 'advance': {
+        const advanced = await advanceEnrollment(
+          supabase,
+          enrollmentId,
+          token!,
+          effect.stepNumber,
+          steps as CampaignStep[]
+        );
+        // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
+        console.log(
+          'campaign_send_advance',
+          enrollmentId,
+          effect.stepNumber,
+          advanced,
+          outcome.kind
+        );
+        // Stryker restore StringLiteral,CallExpression
+        break;
+      }
+      case 'release':
+        await releaseClaim(supabase, enrollmentId, token!, {
+          nextSendAt: effect.nextSendAt,
+        });
+        break;
+      case 'flag_unresolved_tz':
+        // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
+        console.error('campaign_send_unresolved_tz', enrollmentId);
+        // Stryker restore StringLiteral,CallExpression
+        await supabase
+          .from(TABLE.leads)
+          .update(
+            quietHoursReviewLeadPayload({
+              reason: REVIEW_REASON_QUIET_HOURS,
+              nowIso: new Date().toISOString(),
+            })
+          )
+          .eq(COL.id, lead!.id);
+        await releaseClaim(supabase, enrollmentId, token!, {
+          nextSendAt: effect.nextSendAt,
+        });
+        break;
+      case 'park':
+        await parkEnrollmentForReconcile(supabase, enrollmentId, token!, {
+          nextSendAt: effect.nextSendAt,
+        });
+        // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
+        console.warn('campaign_send_park', enrollmentId, outcome.kind);
+        // Stryker restore StringLiteral,CallExpression
+        break;
+      case 'pause_opt_out':
+        await pauseCampaignForLead(lead!.id);
+        break;
+      case 'needs_review_terminal':
+        // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
+        console.error(
+          'campaign_send_needs_review',
+          enrollmentId,
+          effect.reason,
+          outcome.kind
+        );
+        // Stryker restore StringLiteral,CallExpression
+        await markEnrollmentNeedsReview(
+          supabase,
+          enrollmentId,
+          token!,
+          effect.reason
+        );
+        break;
+      case 'noop_release':
+        await releaseClaim(supabase, enrollmentId, token!);
+        break;
     }
-    case 'release':
-      await releaseClaim(supabase, enrollmentId, token!, {
-        nextSendAt: dispatch.nextSendAt,
-      });
-      return dispatch.success;
-    case 'flag_unresolved_tz':
-      // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
-      console.error('campaign_send_unresolved_tz', enrollmentId);
-      // Stryker restore StringLiteral,CallExpression
-      await supabase
-        .from(TABLE.leads)
-        .update(
-          quietHoursReviewLeadPayload({
-            reason: REVIEW_REASON_QUIET_HOURS,
-            nowIso: new Date().toISOString(),
-          })
-        )
-        .eq(COL.id, lead!.id);
-      await releaseClaim(supabase, enrollmentId, token!, {
-        nextSendAt: dispatch.nextSendAt,
-      });
-      return dispatch.success;
-    case 'park':
-      await parkEnrollmentForReconcile(supabase, enrollmentId, token!, {
-        nextSendAt: dispatch.nextSendAt,
-      });
-      // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
-      console.warn('campaign_send_park', enrollmentId, outcome.kind);
-      // Stryker restore StringLiteral,CallExpression
-      return dispatch.success;
-    case 'pause_opt_out':
-      await pauseCampaignForLead(lead!.id);
-      return dispatch.success;
-    case 'needs_review_terminal':
-      // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
-      console.error(
-        'campaign_send_needs_review',
-        enrollmentId,
-        dispatch.reason,
-        outcome.kind
-      );
-      // Stryker restore StringLiteral,CallExpression
-      // Terminal status — do not re-park every 30 min (QC r6 P1 #7).
-      await markEnrollmentNeedsReview(
-        supabase,
-        enrollmentId,
-        token!,
-        dispatch.reason
-      );
-      return dispatch.success;
-    case 'noop_false':
-      await releaseClaim(supabase, enrollmentId, token!);
-      return dispatch.success;
   }
+  return success;
 }
 
 /**
@@ -552,62 +570,35 @@ export async function advanceEnrollment(
   currentStepNumber: number,
   steps: CampaignStep[]
 ): Promise<boolean> {
-  const nextStepNumber = currentStepNumber + 1;
-  const nextStep = steps.find((s) => s.step_number === nextStepNumber);
-
-  if (nextStep) {
-    const nowIso = new Date().toISOString();
-    const nextSendAt = computeNextSendAt(Date.now(), nextStep.delay_minutes);
-
-    const { data, error } = await supabase
-      .from(TABLE.campaignEnrollments)
-      .update(
-        advanceStepPayload({
-          nextStepNumber,
-          nextSendAt,
-          nowIso,
-        })
-      )
-      .eq(COL.id, enrollmentId)
-      .eq(COL.status, ENROLLMENT_STATUS.active)
-      .eq(COL.claimToken, claimToken)
-      .select(ENROLLMENT_CLAIM_SELECT);
-
-    if (error || !data?.length) {
-      // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
-      console.warn('advance_ownership_miss', enrollmentId, error);
-      // Stryker restore StringLiteral,CallExpression
-      return false;
-    }
-
-    // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
-    console.log('campaign_advanced', nextStepNumber, nextSendAt);
-    // Stryker restore StringLiteral,CallExpression
-    return true;
-  }
+  const plan = planAdvanceEnrollment({
+    currentStepNumber,
+    steps,
+    nowMs: Date.now(),
+    statusCompleted: ENROLLMENT_STATUS.completed,
+  });
 
   const { data, error } = await supabase
     .from(TABLE.campaignEnrollments)
-    .update(
-      completeEnrollmentPayload({
-        status: ENROLLMENT_STATUS.completed,
-        nowIso: new Date().toISOString(),
-      })
-    )
+    .update(plan.payload)
     .eq(COL.id, enrollmentId)
     .eq(COL.status, ENROLLMENT_STATUS.active)
     .eq(COL.claimToken, claimToken)
     .select(ENROLLMENT_CLAIM_SELECT);
 
-  if (error || !data?.length) {
+  if (!ownershipHit(error, data)) {
     // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
-    console.warn('complete_ownership_miss', enrollmentId, error);
+    console.warn('advance_ownership_miss', enrollmentId, plan.type, error);
     // Stryker restore StringLiteral,CallExpression
     return false;
   }
 
   // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
-  console.log('campaign_completed', enrollmentId);
+  console.log(
+    'campaign_advanced',
+    enrollmentId,
+    plan.type,
+    plan.type === 'advance' ? plan.nextSendAt : undefined
+  );
   // Stryker restore StringLiteral,CallExpression
   return true;
 }
@@ -618,14 +609,13 @@ async function releaseClaim(
   claimToken: string,
   opts?: { nextSendAt?: string }
 ): Promise<void> {
+  const nowMs = Date.now();
   await supabase
     .from(TABLE.campaignEnrollments)
     .update(
       releaseClaimPayload({
-        nextSendAt:
-          opts?.nextSendAt ??
-          new Date(Date.now() + CLAIM_STALE_MS).toISOString(),
-        nowIso: new Date().toISOString(),
+        nextSendAt: opts?.nextSendAt ?? holdUntilIso(nowMs, CLAIM_STALE_MS),
+        nowIso: new Date(nowMs).toISOString(),
       })
     )
     .eq(COL.id, enrollmentId)

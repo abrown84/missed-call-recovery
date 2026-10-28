@@ -13,6 +13,11 @@ export function staleBeforeIso(nowMs: number, staleMs: number): string {
   return new Date(nowMs - staleMs).toISOString();
 }
 
+/** Hold / requeue ISO (now + holdMs) — opposite of staleBeforeIso. */
+export function holdUntilIso(nowMs: number, holdMs: number): string {
+  return new Date(nowMs + holdMs).toISOString();
+}
+
 export type StepLike = { step_number: number; delay_minutes?: number };
 
 export function sortCampaignSteps<T extends StepLike>(steps: T[]): T[] {
