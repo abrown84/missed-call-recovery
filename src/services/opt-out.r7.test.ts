@@ -13,6 +13,7 @@ import {
   OPT_OUT_WHOLE_MESSAGE_COMPACT,
   optOutBackfillCompactList,
   optOutBackfillExactList,
+  sqlQuotedList,
 } from './opt-out-data';
 
 /** QC r7 §5 examples + normal booking replies — must NOT auto-suppress. */
@@ -169,5 +170,12 @@ describe('app ↔ SQL backfill parity on shared corpus', () => {
   it('normalize is stable for parity keys', () => {
     expect(normalizeOptOutText('  stop!!! ')).toBe('STOP');
     expect(normalizeOptOutText('Opt Out')).toBe('OPT OUT');
+  });
+
+  it('normalize is idempotent for trailing punct+space (CI flake "! ,")', () => {
+    for (const s of ['! ,', 'STOP?! ', ' , ', 'end.', 'cancel…']) {
+      const once = normalizeOptOutText(s);
+      expect(normalizeOptOutText(once)).toBe(once);
+    }
   });
 });

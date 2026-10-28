@@ -72,8 +72,9 @@ export function normalizeOptOutText(raw: string): string {
   const spaced = replaceNbspWithSpace(folded);
   const lined = spaced.replace(/[\r\n]+/g, ' ').trim();
   return stripEdgeQuotes(lined)
-    .replace(/[?!.,…]+$/g, '')
+    .replace(/[\s?!.,…]+$/g, '')
     .replace(/\s+/g, ' ')
+    .trim()
     .toUpperCase();
 }
 
