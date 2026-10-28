@@ -237,7 +237,7 @@ describe('QC r6 mut.py killers', () => {
 
   it('#49 switchEnrollmentCampaign source uses ENROLLMENT_CLAIM_SELECT', () => {
     expect(ENROLLMENT_CLAIM_SELECT).toBe('id, claim_token, claimed_at');
-    const src = readSrc('src/services/campaigns-impl.ts');
+    const src = readSrc('src/services/campaign-runtime.ts');
     if (!src) return; // skip under Stryker instrumentation
     const switchIdx = src.indexOf('claim_token.is.null,claimed_at.lt.');
     expect(switchIdx).toBeGreaterThan(-1);
@@ -303,7 +303,7 @@ describe('QC r6 mut.py killers', () => {
   });
 
   it('campaigns.ts quiet_hours_deferred releases with nextSendAt', () => {
-    const src = readSrc('src/services/campaigns-impl.ts');
+    const src = readSrc('src/services/campaign-runtime.ts');
     const decisions = readSrc('src/services/send/decisions.ts');
     const campDec = readSrc('src/services/campaign-decisions.ts');
     const reconPlan = readSrc('src/services/campaign-reconcile-plan.ts');
@@ -361,7 +361,7 @@ describe('QC r6 mut.py killers', () => {
   });
 
   it('campaigns.ts keeps recovery park / claim / requeue / leadTimezone', () => {
-    const src = readSrc('src/services/campaigns-impl.ts');
+    const src = readSrc('src/services/campaign-runtime.ts');
     const campDec = readSrc('src/services/campaign-decisions.ts');
     const decisions = readSrc('src/services/send/decisions.ts');
     const sendPlan = readSrc('src/services/campaign-send-plan.ts');
@@ -382,19 +382,28 @@ describe('QC r6 mut.py killers', () => {
     expect(decisions).toContain("outcome.reason === 'recovery_pending'");
     expect(src).toContain('planCampaignSendPost');
     expect(src).toContain('planCampaignSendEffects');
-    // needs_review / park effects must NOT call advanceEnrollment
-    const reviewCase = src.slice(
-      src.indexOf("case 'needs_review_terminal':"),
-      src.indexOf("case 'noop_release':")
+    expect(src).toContain('applyCampaignSendEffects');
+    // Effect switch lives in campaign-send-effects; handlers wire review/park.
+    const effectsSrc = readSrc('src/services/campaign-send-effects.ts') || '';
+    expect(effectsSrc).toContain("case 'needs_review_terminal':");
+    expect(effectsSrc).toContain("case 'park':");
+    expect(effectsSrc).toContain('handlers.needsReviewTerminal');
+    expect(effectsSrc).toContain('handlers.park');
+    expect(src).toContain('markEnrollmentNeedsReview');
+    expect(src).toContain('parkEnrollmentForReconcile');
+    // needs_review / park handlers must not call advanceEnrollment
+    const reviewHandler = src.slice(
+      src.indexOf('needsReviewTerminal:'),
+      src.indexOf('noopRelease:')
     );
-    expect(reviewCase).toContain('markEnrollmentNeedsReview');
-    expect(reviewCase).not.toContain('advanceEnrollment');
-    const parkCase = src.slice(
-      src.indexOf("case 'park':"),
-      src.indexOf("case 'pause_opt_out':")
+    expect(reviewHandler).toContain('markEnrollmentNeedsReview');
+    expect(reviewHandler).not.toContain('advanceEnrollment');
+    const parkHandler = src.slice(
+      src.indexOf('park: async'),
+      src.indexOf('pauseOptOut:')
     );
-    expect(parkCase).toContain('parkEnrollmentForReconcile');
-    expect(parkCase).not.toContain('advanceEnrollment');
+    expect(parkHandler).toContain('parkEnrollmentForReconcile');
+    expect(parkHandler).not.toContain('advanceEnrollment');
     expect(src).toContain('.eq(COL.claimToken, claimToken)');
     expect(src).toContain('const ok = await requeueExactCampaignStep(');
     expect(src).not.toContain('const ok = false && await requeueExactCampaignStep(');
@@ -442,7 +451,7 @@ describe('QC r6 mut.py killers', () => {
   });
 
   it('#44 advanceEnrollment claim_token gate on unified advance/complete path', () => {
-    const src = readSrc('src/services/campaigns-impl.ts');
+    const src = readSrc('src/services/campaign-runtime.ts');
     const advPlan = readSrc('src/services/campaign-advance-plan.ts');
     if (!src || !advPlan) return;
     // Advance + complete share one claim_token-gated update (planAdvanceEnrollment).

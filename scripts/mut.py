@@ -3,7 +3,7 @@ import subprocess, sys, json, os
 R=str(Path(__file__).resolve().parents[1])+'/'
 I='src/services/send/index.ts'
 D='src/services/send/decisions.ts'
-CI='src/services/campaigns-impl.ts'
+CI='src/services/campaign-runtime.ts'
 CD='src/services/campaign-decisions.ts'
 CSP='src/services/campaign-send-plan.ts'
 SIO='src/services/send/send-io-plans.ts'
