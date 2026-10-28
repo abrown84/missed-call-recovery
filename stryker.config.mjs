@@ -22,6 +22,7 @@ const config = {
     'src/services/campaign-cron-plan.ts',
     'src/services/campaign-send-plan.ts',
     'src/services/campaign-advance-plan.ts',
+    'src/services/campaign-reconcile-plan.ts',
     'src/services/campaigns.ts',
     'src/services/campaigns-impl.ts',
     'src/services/db-strings.ts',

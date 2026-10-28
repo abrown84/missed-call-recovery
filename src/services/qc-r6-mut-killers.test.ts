@@ -306,7 +306,8 @@ describe('QC r6 mut.py killers', () => {
     const src = readSrc('src/services/campaigns-impl.ts');
     const decisions = readSrc('src/services/send/decisions.ts');
     const campDec = readSrc('src/services/campaign-decisions.ts');
-    if (!src || !decisions || !campDec) return;
+    const reconPlan = readSrc('src/services/campaign-reconcile-plan.ts');
+    if (!src || !decisions || !campDec || !reconPlan) return;
     expect(decisions).toMatch(
       /outcome\.reason === 'quiet_hours_deferred' && outcome\.nextSendAt/
     );
@@ -319,7 +320,8 @@ describe('QC r6 mut.py killers', () => {
     expect(src).toMatch(/\.eq\(COL\.claimToken, claimToken\)/);
     expect(src).toMatch(/requeueExactCampaignStep/);
     expect(campDec).toContain('hasClaimToken');
-    expect(src).toContain('decideReconcileAdvanceEligibility');
+    expect(reconPlan).toContain('decideReconcileAdvanceEligibility');
+    expect(src).toContain('planPostConfirmAdvance');
   });
 
   it('send/index.ts orders reconcile ascending and increments attempts', () => {
