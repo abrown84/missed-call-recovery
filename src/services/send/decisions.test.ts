@@ -215,10 +215,7 @@ describe('decideDuplicateSid', () => {
             )
           ) {
             expect(d.action).toBe('needs_review');
-          } else if (
-            status &&
-            ['deferred', 'abandoned_retry'].includes(String(status).toLowerCase())
-          ) {
+          } else if (status && String(status).toLowerCase() === 'deferred') {
             expect(d.action).toBe('claim_deferred');
           } else {
             expect(d.action).toBe('block_in_flight');

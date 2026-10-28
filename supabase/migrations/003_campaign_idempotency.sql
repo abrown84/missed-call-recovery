@@ -153,7 +153,79 @@ DROP TABLE sms_suppressions_norm;
 -- ---------------------------------------------------------------------------
 -- 3) STOP backfill AFTER normalize — whole-message only (shared list with
 --    src/services/opt-out-data.ts). NO mid-sentence keyword retro-suppress.
+--    Lists generated via `npm run check:opt-out-sql` (must stay in sync).
+--    Normalizer mirrors src/services/opt-out.ts normalizeOptOutText + compact.
 -- ---------------------------------------------------------------------------
+
+-- Confusables / quotes / emoji / ZWSP — keep in sync with CONFUSABLES + EDGE_NOISE.
+CREATE OR REPLACE FUNCTION opt_out_normalize_body(raw text)
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+AS $$
+  SELECT upper(
+    btrim(
+      regexp_replace(
+        regexp_replace(
+          regexp_replace(
+            regexp_replace(
+              regexp_replace(
+                regexp_replace(
+                  regexp_replace(
+                    regexp_replace(
+                      translate(
+                        normalize(btrim(raw), NFKC),
+                        -- from: digit0 + Greek + Cyrillic lookalikes (opt-out-data CONFUSABLES)
+                        '0ΑΒΕΗΙΚΜΝΟΡΤΧΣοαεАВЕНІӀКМОРСТХЅУаеорстухіѕ',
+                        'OABEHIKMNOPTXEoaeABEHIIKMOPCTXSUaeopctuxis'
+                      ),
+                      -- zero-width / soft hyphen
+                      E'[\u200B-\u200D\uFEFF\u2060\u180E\u00AD\u034F\u061C]',
+                      '',
+                      'g'
+                    ),
+                    -- emoji + misc symbols (covers 🛑 🙂 🙏)
+                    E'[\U0001F300-\U0001FAFF\u2600-\u27BF]',
+                    '',
+                    'g'
+                  ),
+                  E'\u00A0',
+                  ' ',
+                  'g'
+                ),
+                E'[\r\n]+',
+                ' ',
+                'g'
+              ),
+              -- edge noise pass 1 (quotes + punct + space) — uncovering needs repeats
+              E'^[\s?!.,…''"`“”‘’]+|[\s?!.,…''"`“”‘’]+$',
+              '',
+              'g'
+            ),
+            E'^[\s?!.,…''"`“”‘’]+|[\s?!.,…''"`“”‘’]+$',
+            '',
+            'g'
+          ),
+          E'^[\s?!.,…''"`“”‘’]+|[\s?!.,…''"`“”‘’]+$',
+          '',
+          'g'
+        ),
+        E'\s+',
+        ' ',
+        'g'
+      )
+    )
+  );
+$$;
+
+CREATE OR REPLACE FUNCTION opt_out_compact_body(normalized text)
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+AS $$
+  SELECT regexp_replace(normalized, '[^A-Z0-9]', '', 'g');
+$$;
+
 INSERT INTO sms_suppressions (business_id, phone, reason)
 SELECT DISTINCT ON (l.business_id, l.caller_phone)
   l.business_id,
@@ -163,22 +235,8 @@ FROM sms_messages m
 JOIN leads l ON l.id = m.lead_id
 WHERE m.direction = 'inbound'
   AND (
-    upper(
-      btrim(
-        regexp_replace(
-          regexp_replace(
-            regexp_replace(normalize(btrim(m.body), NFKC), E'[\\r\\n]+', ' ', 'g'),
-            '[?!.,…]+$',
-            ''
-          ),
-          '\s+',
-          ' ',
-          'g'
-        )
-      )
-    ) IN (
-      'STOP', 'STOPALL', 'STOP ALL', 'STOP STOP', 'STOP STOP STOP',
-      'UNSUBSCRIBE', 'QUIT', 'END', 'CANCEL',
+    opt_out_normalize_body(m.body) IN (
+      'STOP', 'STOPALL', 'STOP ALL', 'UNSUBSCRIBE', 'QUIT', 'END', 'CANCEL',
       'OPTOUT', 'OPT OUT', 'OPT-OUT', 'REVOKE',
       'DON''T TEXT ME AGAIN', 'DONT TEXT ME AGAIN', 'DO NOT TEXT ME AGAIN',
       'DO NOT CONTACT ME', 'DONT CONTACT ME', 'DON''T CONTACT ME',
@@ -188,29 +246,34 @@ WHERE m.direction = 'inbound'
       'UNSUBSCRIBE ME', 'UNSUBSCRIBE ME PLEASE', 'PLEASE UNSUBSCRIBE ME',
       'CANCEL PLEASE',
       'LEAVE ME ALONE', 'TAKE ME OFF YOUR LIST', 'TAKE ME OFF THE LIST',
-      'DONT TEXT ME', 'DON''T TEXT ME'
+      'DONT TEXT ME', 'DON''T TEXT ME',
+      'STOP STOP', 'STOP STOP STOP',
+      'END END', 'END END END',
+      'CANCEL CANCEL', 'CANCEL CANCEL CANCEL',
+      'QUIT QUIT', 'QUIT QUIT QUIT',
+      'UNSUBSCRIBE UNSUBSCRIBE', 'UNSUBSCRIBE UNSUBSCRIBE UNSUBSCRIBE',
+      'REVOKE REVOKE', 'REVOKE REVOKE REVOKE',
+      'OPTOUT OPTOUT', 'OPTOUT OPTOUT OPTOUT',
+      'STOPALL STOPALL', 'STOPALL STOPALL STOPALL'
     )
     OR
-    replace(
-      upper(
-        btrim(
-          regexp_replace(
-            regexp_replace(
-              regexp_replace(normalize(btrim(m.body), NFKC), E'[\\r\\n]+', ' ', 'g'),
-              '[?!.,…]+$',
-              ''
-            ),
-            '\s+',
-            ' ',
-            'g'
-          )
-        )
-      ),
-      ' ',
-      ''
-    ) IN (
-      'STOP', 'STOPALL', 'STOPSTOP', 'STOPSTOPSTOP',
-      'UNSUBSCRIBE', 'QUIT', 'END', 'CANCEL', 'OPTOUT', 'REVOKE'
+    opt_out_compact_body(opt_out_normalize_body(m.body)) IN (
+      'STOP', 'STOPALL', 'UNSUBSCRIBE', 'QUIT', 'END', 'CANCEL', 'OPTOUT', 'REVOKE',
+      'DONTTEXTMEAGAIN', 'DONOTTEXTMEAGAIN', 'DONOTCONTACTME', 'DONTCONTACTME',
+      'PLEASESTOP', 'STOPPLEASE', 'STOPIT', 'STOPPLS',
+      'STOPTEXTING', 'STOPTEXTINGME', 'STOPMESSAGINGME', 'STOPSENDING',
+      'STOPALLTEXTS', 'PLEASESTOPTEXTINGME',
+      'UNSUBSCRIBEME', 'UNSUBSCRIBEMEPLEASE', 'PLEASEUNSUBSCRIBEME',
+      'CANCELPLEASE', 'LEAVEMEALONE', 'TAKEMEOFFYOURLIST', 'TAKEMEOFFTHELIST',
+      'DONTTEXTME',
+      'STOPSTOP', 'STOPSTOPSTOP',
+      'ENDEND', 'ENDENDEND',
+      'CANCELCANCEL', 'CANCELCANCELCANCEL',
+      'QUITQUIT', 'QUITQUITQUIT',
+      'UNSUBSCRIBEUNSUBSCRIBE', 'UNSUBSCRIBEUNSUBSCRIBEUNSUBSCRIBE',
+      'REVOKEREVOKE', 'REVOKEREVOKEREVOKE',
+      'OPTOUTOPTOUT', 'OPTOUTOPTOUTOPTOUT',
+      'STOPALLSTOPALL', 'STOPALLSTOPALLSTOPALL'
     )
   )
 ON CONFLICT (business_id, phone) DO NOTHING;

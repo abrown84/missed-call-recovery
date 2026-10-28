@@ -109,11 +109,4 @@ describe('enrollLeadInCampaign null urgency → Standard (QC r6)', () => {
       expect(result.campaignName).toBe('Standard');
     }
   });
-
-  it('processMissedCall enrolls after recovery', async () => {
-    const src = await import('fs').then((fs) =>
-      fs.readFileSync(new URL('./missed-call.ts', import.meta.url), 'utf8')
-    );
-    expect(src).toMatch(/enrollLeadInCampaign\s*\(/);
-  });
 });

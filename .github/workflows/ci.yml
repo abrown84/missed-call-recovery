@@ -36,6 +36,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Guard rolldown optional binding pin
+        run: npm run check:rolldown-pin
+
+      - name: Opt-out SQL list parity (mig 003 ↔ opt-out-data)
+        run: npm run check:opt-out-sql
+
       - name: Lint
         run: npm run lint
 

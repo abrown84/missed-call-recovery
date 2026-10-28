@@ -1,6 +1,7 @@
 /**
  * QC r7: behavioural killers for mut.py IDs that previously relied on
- * source-text greps (#16, #19, #22, #24, #25, #26, #31, #32, #49, #50).
+ * source-text greps (#16, #19, #22, #24, #25, #26, #31, #32, #49).
+ * #50 lives in scripts/staging-ssl.mjs + src/lib/staging-ssl.test.ts.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'fs';
@@ -14,10 +15,13 @@ import {
   markRelayKeySupportConfirmed,
   resetRelayKeySupportConfirmed,
 } from '@/services/sms-sid';
-import { ENROLLMENT_CLAIM_SELECT } from '@/lib/postgrest-select';
-import { resolveStagingSsl } from '@/lib/staging-ssl';
+import {
+  ENROLLMENT_CLAIM_SELECT,
+  selectCoversFilterColumns,
+} from '@/lib/postgrest-select';
 import { switchEnrollmentCampaignWithDeps } from '@/services/campaign-runtime';
 import { defaultCampaignDeps } from '@/services/campaign-deps';
+import { CLAIM_STALE_MS } from '@/services/campaign-logic';
 
 const mockFrom = vi.fn();
 
@@ -59,23 +63,6 @@ describe('mut.py #19 compact whole-message forms', () => {
     expect(classifyOptOut('S T O P').kind).toBe('opt_out');
     expect(classifyOptOut('STOP STOP').kind).toBe('opt_out');
     expect(classifyOptOut('  S   T   O   P  ').kind).toBe('opt_out');
-  });
-});
-
-describe('mut.py #50 staging SSL env parsing', () => {
-  it('respects STAGING_PG_SSL disable and rejectUnauthorized flag', () => {
-    expect(resolveStagingSsl({ STAGING_PG_SSL: '0' })).toBe(false);
-    expect(resolveStagingSsl({ STAGING_PG_SSL: 'false' })).toBe(false);
-    expect(resolveStagingSsl({})).toEqual({ rejectUnauthorized: false });
-    expect(
-      resolveStagingSsl({ STAGING_PG_SSL_REJECT_UNAUTHORIZED: '1' })
-    ).toEqual({ rejectUnauthorized: true });
-    expect(
-      resolveStagingSsl({
-        STAGING_PG_SSL: '1',
-        STAGING_PG_SSL_REJECT_UNAUTHORIZED: '1',
-      })
-    ).toEqual({ rejectUnauthorized: true });
   });
 });
 
@@ -214,9 +201,15 @@ describe('mut.py #16 campaign leadTimezone from plan', () => {
   });
 });
 
-describe('mut.py #49 switch select uses ENROLLMENT_CLAIM_SELECT', () => {
-  it('records select(ENROLLMENT_CLAIM_SELECT) on switch update path', async () => {
-    const selectArgs: string[] = [];
+describe('mut.py #49 switch select must cover claim filter columns', () => {
+  it('switch succeeds only when claim_token/claimed_at are selectable (id-only CAS fails)', async () => {
+    const now = new Date('2026-06-15T18:00:00.000Z');
+    const staleBefore = new Date(now.getTime() - CLAIM_STALE_MS).toISOString();
+    // Claim columns referenced by the switch `.or(...)` filter (PostgREST 42703).
+    const claimFilters = [
+      { or: `claim_token.is.null,claimed_at.lt.${staleBefore}` },
+    ];
+
     mockFrom.mockImplementation((table: string) => {
       if (table === 'campaign_enrollments') {
         const b = chain({
@@ -234,21 +227,35 @@ describe('mut.py #49 switch select uses ENROLLMENT_CLAIM_SELECT', () => {
           const u = chain({
             data: {
               id: 'e',
-              campaign_id: 'new',
-              current_step: 1,
               claim_token: null,
               claimed_at: null,
             },
             error: null,
           });
           u.select = vi.fn((cols: string) => {
-            selectArgs.push(cols);
+            // Mimic PostgREST: filter columns missing from select → 42703 / lost claim.
+            const cover = selectCoversFilterColumns(cols, claimFilters);
+            if (!cover.ok) {
+              u.maybeSingle = vi.fn(async () => ({
+                data: null,
+                error: {
+                  code: '42703',
+                  message: `missing filter cols: ${cover.missing.join(',')}`,
+                },
+              }));
+            } else {
+              // Representation must include claim fields used by the CAS filters.
+              u.maybeSingle = vi.fn(async () => ({
+                data: {
+                  id: 'e',
+                  claim_token: null,
+                  claimed_at: null,
+                },
+                error: null,
+              }));
+            }
             return u;
           });
-          u.maybeSingle = vi.fn(async () => ({
-            data: { id: 'e', campaign_id: 'new', current_step: 1 },
-            error: null,
-          }));
           return u;
         });
         return b;
@@ -280,19 +287,21 @@ describe('mut.py #49 switch select uses ENROLLMENT_CLAIM_SELECT', () => {
       return chain({ data: null, error: null });
     });
 
-    const r = await switchEnrollmentCampaignWithDeps(
+    const ok = await switchEnrollmentCampaignWithDeps(
       {
         ...defaultCampaignDeps(),
         db: () => ({ from: mockFrom }) as never,
-        clock: () => new Date('2026-06-15T18:00:00.000Z'),
+        clock: () => now,
       } as never,
       'L',
       'new'
     );
-    expect(r.enrolled).toBe(true);
-    expect(selectArgs).toContain(ENROLLMENT_CLAIM_SELECT);
-    expect(selectArgs.some((s) => s === 'id')).toBe(false);
-    expect(ENROLLMENT_CLAIM_SELECT).toContain('claim_token');
+    expect(ok.enrolled).toBe(true);
+    // Document the mutant: select('id') alone cannot cover claim filters.
+    expect(selectCoversFilterColumns('id', claimFilters).ok).toBe(false);
+    expect(
+      selectCoversFilterColumns(ENROLLMENT_CLAIM_SELECT, claimFilters).ok
+    ).toBe(true);
   });
 });
 

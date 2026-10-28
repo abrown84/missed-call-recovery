@@ -1,9 +1,13 @@
 #!/usr/bin/env node
 /**
- * Enforce mutation scores per targeted module (QC r7).
+ * Enforce mutation scores per targeted module (QC r7/r8).
  * Counts no-coverage mutants in the denominator (honest gate).
  * Ignored mutants are reported separately and counted as not-killed
  * in the "suppressed-as-survived" score for disclosure.
+ *
+ * QC r8:
+ * - Fail any non-barrel target with 0 tested mutants (vacuous 100%).
+ * - Cap ignored mutants per file (MAX_IGNORED_PER_FILE).
  * Reads reports/mutation/mutation.json from the last `stryker run`.
  */
 import { readFileSync } from 'fs';
@@ -11,6 +15,8 @@ import { join } from 'path';
 
 const REPORT = join(process.cwd(), 'reports/mutation/mutation.json');
 const MIN = Number(process.env.MUTATION_MIN ?? '90');
+const MAX_IGNORED_PER_FILE = Number(process.env.MUTATION_MAX_IGNORED ?? '80');
+const MIN_SUPPRESSED = Number(process.env.MUTATION_MIN_SUPPRESSED ?? '0');
 const TARGETS = [
   'src/services/send/index.ts',
   'src/services/send/decisions.ts',
@@ -39,11 +45,16 @@ const TARGETS = [
   'src/services/inbound.ts',
   'src/services/inbound-io-plans.ts',
   'src/services/quiet-hours.ts',
-  'src/services/quiet-hours-zones.ts',
+  // quiet-hours-zones.ts removed from mutate (QC r8): 689 static / 0 tested
   'src/services/missed-call.ts',
   'src/services/missed-call-io-plans.ts',
   'src/services/reconcile-logic.ts',
 ];
+
+const BARRELS = new Set([
+  'src/services/campaigns.ts',
+  'src/services/campaigns-impl.ts',
+]);
 
 const report = JSON.parse(readFileSync(REPORT, 'utf8'));
 const files = report.files || {};
@@ -57,11 +68,7 @@ let totalIgnored = 0;
 for (const path of TARGETS) {
   const f = files[path];
   if (!f) {
-    // Thin barrels may produce 0 mutants — treat missing as OK only for barrels.
-    if (
-      path.endsWith('campaigns.ts') ||
-      path.endsWith('campaigns-impl.ts')
-    ) {
+    if (BARRELS.has(path)) {
       rows.push({
         path,
         score: 100,
@@ -87,7 +94,6 @@ for (const path of TARGETS) {
   const ignored = mutants.filter((m) => m.status === 'Ignored').length;
   const tested = detected + survived + noCov;
   const score = tested === 0 ? 100 : (100 * detected) / tested;
-  // QC r7 disclosure: ignored count as not-killed
   const suppressedDenom = tested + ignored;
   const suppressedScore =
     suppressedDenom === 0 ? 100 : (100 * detected) / suppressedDenom;
@@ -106,10 +112,23 @@ for (const path of TARGETS) {
   totalNoCov += noCov;
   totalIgnored += ignored;
   if (score < MIN) failed = true;
+  // QC r8: vacuous 100% with only ignored mutants is a gate failure
+  if (!BARRELS.has(path) && tested === 0 && ignored > 0) {
+    console.error(
+      `FAIL ${path}: 0 tested mutants but ${ignored} ignored (vacuous score)`
+    );
+    failed = true;
+  }
+  if (!BARRELS.has(path) && ignored > MAX_IGNORED_PER_FILE) {
+    console.error(
+      `FAIL ${path}: ignored=${ignored} exceeds MAX_IGNORED_PER_FILE=${MAX_IGNORED_PER_FILE}`
+    );
+    failed = true;
+  }
 }
 
 console.log(
-  `Mutation scores (killed+timeout / killed+timeout+survived+no-cov) MIN=${MIN}:`
+  `Mutation scores (killed+timeout / killed+timeout+survived+no-cov) MIN=${MIN} MAX_IGNORED=${MAX_IGNORED_PER_FILE}:`
 );
 for (const r of rows) {
   const mark = r.score >= MIN ? 'OK' : 'FAIL';
@@ -133,8 +152,15 @@ console.log(
   `Overall suppressed-as-survived: ${suppressed.toFixed(2)}% (Ignored=${totalIgnored})`
 );
 
+if (MIN_SUPPRESSED > 0 && suppressed < MIN_SUPPRESSED) {
+  console.error(
+    `\nSuppressed-as-survived ${suppressed.toFixed(2)}% < floor ${MIN_SUPPRESSED}%`
+  );
+  failed = true;
+}
+
 if (failed) {
-  console.error(`\nMutation gate failed: need ≥${MIN}% per module.`);
+  console.error(`\nMutation gate failed: need ≥${MIN}% per module; no 0-tested+ignored; ignored≤${MAX_IGNORED_PER_FILE}.`);
   process.exit(1);
 }
 console.log(`\nAll targeted modules ≥${MIN}%.`);

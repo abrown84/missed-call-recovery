@@ -42,7 +42,7 @@ muts=[
 ('22','r4#7 backfill ON CONFLICT dropped',G,"ON CONFLICT (business_id, phone) DO NOTHING;",";",2),
 ('23','r4#7 enrollment dedupe prefers non-active',G,"CASE WHEN status = 'active' THEN 0 ELSE 1 END,","CASE WHEN status = 'active' THEN 1 ELSE 0 END,",1),
 ('24','r4#7 NULLS LAST -> FIRST',G,"enrolled_at DESC NULLS LAST,","enrolled_at DESC NULLS FIRST,",1),
-('25','r4#7 NFKC removed from backfill',G,"normalize(btrim(m.body), NFKC),","btrim(m.body),",1),
+('25','r4#7 NFKC removed from backfill',G,"normalize(btrim(raw), NFKC),","btrim(raw),",1),
 ('26','r4#7 STOP PLEASE removed from backfill',G,"'PLEASE STOP', 'STOP PLEASE', 'STOP IT', 'STOP PLS',","'PLEASE STOP', 'STOP IT', 'STOP PLS',",1),
 ('27','r4b A caps probe removed',I,"    capsBeforeSend = await deps.ensureCaps(adapter);","    capsBeforeSend = true;",1),
 ('28','r4b A echo-only gate',M,"keySupportedAtSend: capsBeforeSend && signal.keyEchoed,","keySupportedAtSend: signal.keyEchoed,",1),
@@ -68,7 +68,7 @@ muts=[
 ('47','(b) urgency gate removed',CI,"if (lead.urgency == null || String(lead.urgency).trim() === '') {","if (false) {",1),  # intentional NOMATCH — urgency gate removed for Standard enroll
 ('48','(c) ENROLLMENT_CLAIM_SELECT -> id','src/lib/postgrest-select.ts',"export const ENROLLMENT_CLAIM_SELECT = 'id, claim_token, claimed_at';","export const ENROLLMENT_CLAIM_SELECT = 'id';",1),
 ('49','(c) switch uses select(id)',CI,"    .or(`claim_token.is.null,claimed_at.lt.${staleBefore}`)\n    .select(ENROLLMENT_CLAIM_SELECT)","    .or(`claim_token.is.null,claimed_at.lt.${staleBefore}`)\n    .select('id')",1),
-('50','SSL rejectUnauthorized forced false','src/lib/staging-ssl.ts',"  return sslDisabled ? false : { rejectUnauthorized };","  return { rejectUnauthorized: false };",1),
+('50','SSL rejectUnauthorized forced false','scripts/staging-ssl.mjs',"  return sslDisabled ? false : { rejectUnauthorized };","  return { rejectUnauthorized: false };",1),
 ('51','dry-run redaction removed','src/lib/messaging/dry-run.ts',"const bodyPreview = redactPhonesInText(input.body).slice(0, 120);","const bodyPreview = input.body.slice(0, 120);",1),
 ('52','dry-run to redaction removed','src/lib/messaging/dry-run.ts',"queue SMS to ${redactPhone(input.to)}","queue SMS to ${input.to}",1),
 ('53','ONE_GATEWAY_URL unset non-prod uses default','src/lib/gemini.ts',"    throw new Error(\n      'ONE_GATEWAY_URL is unset — refusing","    return PRODUCTION_DEFAULT_GATEWAY_URL; throw new Error(\n      'ONE_GATEWAY_URL is unset — refusing",1),

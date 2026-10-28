@@ -59,7 +59,6 @@ export function selectCampaignForUrgency<T extends CampaignLike>(
   campaigns: T[],
   urgency: string | null | undefined
 ): T | undefined {
-  // Stryker disable next-line ConditionalExpression: urgency == null falls through to the same null-filter find
   if (urgency != null) {
     const exact = campaigns.find((c) => c.urgency_filter === urgency);
     if (exact) return exact;
@@ -205,10 +204,8 @@ export function hasFreshClaim(
   now: Date = new Date(),
   staleMs: number = CLAIM_STALE_MS
 ): boolean {
-  // Stryker disable next-line ConditionalExpression: falsy claimed_at → Date NaN/0 still fails the < staleMs check
   if (!enrollment.claimed_at) return false;
   const claimedAt = new Date(enrollment.claimed_at).getTime();
-  // Stryker disable next-line ConditionalExpression: NaN age comparison is also false
   if (Number.isNaN(claimedAt)) return false;
   return now.getTime() - claimedAt < staleMs;
 }
@@ -218,10 +215,8 @@ export function isLeadWithinLookupAge(
   now: Date = new Date(),
   maxAgeDays: number = LEAD_LOOKUP_MAX_AGE_DAYS
 ): boolean {
-  // Stryker disable next-line ConditionalExpression: new Date(Date) preserves time for domain inputs
   const created =
     typeof createdAt === 'string' ? new Date(createdAt) : createdAt;
-  // Stryker disable next-line ConditionalExpression: NaN age comparisons are false either way
   if (Number.isNaN(created.getTime())) return false;
   const ageMs = now.getTime() - created.getTime();
   return ageMs >= 0 && ageMs <= maxAgeDays * 24 * 60 * 60 * 1000;

@@ -144,7 +144,6 @@ export async function processMissedCallWithDeps(
     return { missedCallId: missedCall.id, leadId: lead.id };
   }
 
-  // Stryker disable BlockStatement: empty catch is intentional — recovery failure must not block enroll attempt
   try {
     await deps.sendRecoverySMS(lead.id, business, callerE164);
   } catch (err) {
@@ -155,9 +154,7 @@ export async function processMissedCallWithDeps(
     );
     // Stryker restore StringLiteral,CallExpression
   }
-  // Stryker restore BlockStatement
 
-  // Stryker disable BlockStatement: empty catch is intentional — enroll failure must not fail webhook
   try {
     await deps.enrollLeadInCampaign(lead.id);
   } catch (err) {
@@ -168,7 +165,6 @@ export async function processMissedCallWithDeps(
     );
     // Stryker restore StringLiteral,CallExpression
   }
-  // Stryker restore BlockStatement
 
   return { missedCallId: missedCall.id, leadId: lead.id };
 }

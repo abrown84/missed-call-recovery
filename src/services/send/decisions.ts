@@ -147,7 +147,9 @@ export function decideDuplicateSid(
     return { action: 'needs_review', reason: 'duplicate_failed' };
   }
   const st = String(existingStatus ?? '').toLowerCase();
-  if (st === 'deferred' || st === 'abandoned_retry') {
+  // Only deferred can win the CAS (eq status=deferred → sending).
+  // abandoned_retry is terminal for reclaim — block as in-flight/stale.
+  if (st === 'deferred') {
     return { action: 'claim_deferred' };
   }
   return {

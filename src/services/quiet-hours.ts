@@ -21,7 +21,6 @@ import { AREA_CODE_ZONES, FL_AREA, OK_AREA } from './quiet-hours-zones';
 const VALID_TZ_CACHE = new Map<string, boolean>();
 
 export function isValidTimeZone(tz: string): boolean {
-  // Stryker disable next-line ConditionalExpression: cache hit is a pure perf shortcut (same result)
   if (VALID_TZ_CACHE.has(tz)) return VALID_TZ_CACHE.get(tz)!;
   try {
     Intl.DateTimeFormat('en-US', { timeZone: tz }).format(new Date());
@@ -163,7 +162,7 @@ export function nextLocalHour(
   if (p0.hour === hour && p0.minute === 0 && p0.second === 0) return from;
 
   // Align to the next whole UTC minute (avoids landing on :59 forever).
-  // Stryker disable next-line ArithmeticOperator: +1 vs -1 ms is equivalent for IANA zones (see EQUIVALENT.md)
+  // +1 ms so an exact minute boundary advances to the next minute grid.
   let t = Math.ceil((from.getTime() + 1) / 60_000) * 60_000;
   for (let i = 0; i < 60 * 50; i++) {
     const p = localParts(new Date(t), timeZone);

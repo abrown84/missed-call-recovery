@@ -1,6 +1,7 @@
 /**
- * Pure SSL option resolver for staging evidence.
- * Canonical TypeScript copy: src/lib/staging-ssl.ts (keep in sync; mut.py #50).
+ * Pure SSL option resolver for staging evidence (mut.py #50).
+ * Imported by staging-campaign-evidence.mjs — keep behaviour covered by
+ * src/lib/staging-ssl.test.ts (dynamic import of this file).
  */
 export function resolveStagingSsl(env = process.env) {
   const sslEnv = String(env.STAGING_PG_SSL ?? '1').trim().toLowerCase();

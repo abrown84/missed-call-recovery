@@ -128,14 +128,17 @@ describe('decisions survivors', () => {
       action: 'needs_review',
       reason: 'duplicate_failed',
     });
-    expect(decideDuplicateSid('Abandoned_Retry')).toEqual({
-      action: 'claim_deferred',
-    });
     expect(decideDuplicateSid('deferred')).toEqual({
       action: 'claim_deferred',
     });
+    // abandoned_retry is not reclaimable via deferred CAS
+    expect(decideDuplicateSid('Abandoned_Retry')).toEqual({
+      action: 'block_in_flight',
+      detail: 'Abandoned_Retry',
+    });
     expect(decideDuplicateSid('abandoned_retry')).toEqual({
-      action: 'claim_deferred',
+      action: 'block_in_flight',
+      detail: 'abandoned_retry',
     });
     expect(decideDuplicateSid(null)).toEqual({
       action: 'block_in_flight',

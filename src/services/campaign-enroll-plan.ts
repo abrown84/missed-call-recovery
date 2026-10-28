@@ -81,7 +81,6 @@ export function planEnroll(input: {
   );
   // Empty steps also rejected inside decideEnrollmentPlan; keep the early
   // return for a stable reason token without depending on that fallthrough.
-  // Stryker disable next-line ConditionalExpression,BlockStatement -- empty steps ≡ decideEnrollmentPlan no_steps
   if (steps.length === 0) {
     return { type: 'reject', reason: 'no_steps' };
   }

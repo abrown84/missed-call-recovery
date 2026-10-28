@@ -31,12 +31,6 @@ describe('dry-run phone redaction (QC r6 P2)', () => {
     expect(line).toContain('***-***-4567');
     expect(line).not.toContain('442071234567');
     expect(line).not.toContain('+442071234567');
-    // Source must call the helpers (mut.py string revert)
-    const src = await import('fs').then((fs) =>
-      fs.readFileSync(new URL('./dry-run.ts', import.meta.url), 'utf8')
-    );
-    expect(src).toContain('redactPhonesInText(input.body)');
-    expect(src).toContain('redactPhone(input.to)');
     log.mockRestore();
   });
 });

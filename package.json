@@ -10,7 +10,10 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:mutation": "stryker run"
+    "test:mutation": "stryker run",
+    "check:opt-out-sql": "node scripts/check-opt-out-sql.mjs",
+    "check:rolldown-pin": "node scripts/check-rolldown-pin.mjs",
+    "check:mutation-scores": "node scripts/check-mutation-scores.mjs"
   },
   "engines": {
     "node": ">=22.12"
@@ -42,6 +45,7 @@
     "fast-check": "^4.10.2",
     "pg-mem": "^3.0.14",
     "postcss": "^8.5.32",
+    "qs": "^6.17.0",
     "tailwindcss": "^3.4.17",
     "typescript": "^5.9.3",
     "vitest": "^5.0.5"
@@ -50,6 +54,7 @@
     "@rolldown/binding-linux-x64-gnu": "1.2.15"
   },
   "overrides": {
-    "postcss": "$postcss"
+    "postcss": "$postcss",
+    "qs": "$qs"
   }
 }

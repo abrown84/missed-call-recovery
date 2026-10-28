@@ -61,12 +61,10 @@ mutants here when no test can distinguish original from replacement.
   status sets / ambiguous OR-chain, so the early return matched the fallthrough.
   Refactored to `String(status ?? '')` without a separate guard.
 
-### quiet-hours-tz-cache-hit
+### quiet-hours-tz-cache-hit — REMOVED (QC r8)
 
-- file: `src/services/quiet-hours.ts` / mutator: ConditionalExpression / line: 24
-- original → replacement: `if (VALID_TZ_CACHE.has(tz))` → `if (false)`
-- justification: skipping the cache only re-runs the same `Intl` probe; return
-  value is unchanged. Disabled in source.
+- Was claimed equivalent for `if (false)` cache-skip only; `if (true)` early
+  return is killable. Disable dropped so non-equivalent mutants stay tested.
 
 ### quiet-hours-lead-tz-empty-coalesce
 
@@ -224,12 +222,9 @@ are unchanged. Each site annotated `// Stryker disable next-line StringLiteral`.
 - justification: without a STOP word, none of the three service-talk alternatives
   can match, so skipping the guard still returns false. Disabled in source.
 
-### opt-out-empty-normalized-early-return
+### opt-out-empty-normalized-early-return — REMOVED (QC r8)
 
-- file: `src/services/opt-out.ts` / mutator: ConditionalExpression / `if (!normalized)`
-- original → replacement: `if (!normalized)` → `if (false)`
-- justification: empty normalized never matches EXACT/COMPACT/contains/AMBIGUOUS, so
-  fallthrough also returns `{ kind: 'not_opt_out' }`. Disabled in source.
+- Pre-r7 claim; `if (true)` always-not-opt-out is killable. Disable dropped.
 
 ### opt-out-compact-stem-regex-redundant
 
@@ -269,13 +264,10 @@ values, DB writes, or control flow.
   same normalized strings as `normalized.includes('OPT OUT')`, and the `OPTOUT`
   compact path remains as a backstop. Disabled in source.
 
-### enroll-plan-empty-steps-early-return
+### enroll-plan-empty-steps-early-return — REMOVED (QC r8)
 
-- file: `src/services/campaign-enroll-plan.ts` / mutator: ConditionalExpression,BlockStatement /
-  `if (steps.length === 0) return no_steps`
-- original → replacement: skip / empty the early return
-- justification: `decideEnrollmentPlan` also returns `{ ok:false, reason:'no_steps' }`
-  for empty steps, so the early return is observationally identical. Disabled in source.
+- Not equivalent under ConditionalExpression/BlockStatement mutants (tests kill).
+  Disable dropped.
 
 ### enroll-plan-switch-options-object-with-treat-false
 
@@ -338,14 +330,10 @@ values, DB writes, or control flow.
   `recoveryState === 'pending'`; any other string (including `''`) takes the
   same non-pending path as `'absent'`. Disabled in source.
 
-### process-due-empty-short-circuit
+### process-due-empty-short-circuit — REMOVED (QC r8)
 
-- file: `src/services/campaign-runtime.ts` / mutator: ConditionalExpression,BlockStatement /
-  `if (ids.length === 0) return { processed:0, errors:0, skipped:0, … }`
-- original → replacement: force false / empty the early return
-- justification: `emptyDueCounts()` is `{ processed:0, errors:0, skipped:0 }`,
-  and an empty `ids` loop body is a no-op, so falling through produces the same
-  return shape (provider + reconcile fields unchanged). Disabled in source.
+- Not equivalent: `if (true)` early-return skips all enrollment processing.
+  Disable dropped; log-only disables inside the block kept.
 
 
 ### quiet-hours nextLocalHour / multi-zone search — REMOVED disable-all (QC r7)
@@ -355,13 +343,10 @@ values, DB writes, or control flow.
 - Behavioural coverage: DST spring/fall, 850 dual-zone `Math.max` (not min),
   HI/AK area codes — see `quiet-hours.r7.test.ts`.
 
-### quiet-hours-nextlocalhour-ceil-plus-one
+### quiet-hours-nextlocalhour-ceil-plus-one — REMOVED (QC r8)
 
-- file: `src/services/quiet-hours.ts` / mutator: ArithmeticOperator / line: 166
-- original → replacement: `(from.getTime() + 1)` → `(from.getTime() - 1)`
-- justification: brute-force over sub-minute offsets in `America/New_York`
-  (and the 7:59:59.999 alignment case) yields identical `nextLocalHour` results;
-  the `+ 1` ms bump is defensive for minute-grid alignment only. Disabled in source.
+- ArithmeticOperator disable also hid `/60_000`→`*60_000` (tests kill).
+  Disable dropped.
 
 ### inbound-missed-call-log-only
 
@@ -369,6 +354,9 @@ values, DB writes, or control flow.
   StringLiteral,CallExpression on `console.error` / `console.warn` / `console.log`
 - justification: log-only messages; return values, DB writes, and control flow
   unchanged. Wrapped with Stryker disable/restore blocks like campaign-runtime.
+  (QC r8: BlockStatement disables wrapping entire try/catch in missed-call were
+  REMOVED — they hid try-body mutants; log-only StringLiteral/CallExpression in
+  catch kept.)
 
 ### inbound-updateError-log-only-guard
 
@@ -378,13 +366,9 @@ values, DB writes, or control flow.
 - justification: the branch only logs; enrollment/escalation/return continue
   identically. Disabled in source.
 
-### campaign-logic-urgency-null-guard
+### campaign-logic-urgency-null-guard — REMOVED (QC r8)
 
-- file: `src/services/campaign-logic.ts` / mutator: ConditionalExpression /
-  `if (urgency != null)`
-- original → replacement: `if (true)`
-- justification: when urgency is null/undefined, `find(urgency_filter === urgency)`
-  is the same null-filter catch-all the fallthrough already returns. Disabled.
+- Not equivalent under tests (`if (true)` / forced null paths diverge). Disable dropped.
 
 ### campaign-logic-reply-mode-empty-default
 
@@ -394,26 +378,17 @@ values, DB writes, or control flow.
 - justification: both `''` and `'pause'` fail `=== 'continue'` and return
   `'pause'`. Disabled in source.
 
-### campaign-logic-fresh-claim-naN-guards
+### campaign-logic-fresh-claim-naN-guards — REMOVED (QC r8)
 
-- file: `src/services/campaign-logic.ts` / mutator: ConditionalExpression /
-  `if (!enrollment.claimed_at)` / `if (Number.isNaN(claimedAt))`
-- justification: falsy/`NaN` claimed_at yields a non-fresh comparison
-  (`now - 0|NaN < staleMs` is false for wall-clock `now`). Disabled.
+- NaN/falsy ConditionalExpression disables killed by tests. Disable dropped.
 
-### campaign-logic-lookup-age-string-date-naN
+### campaign-logic-lookup-age-string-date-naN — REMOVED (QC r8)
 
-- file: `src/services/campaign-logic.ts` / mutator: ConditionalExpression /
-  typeof-string ternary / `Number.isNaN(created.getTime())`
-- justification: `new Date(Date)` preserves time; NaN ages fail the
-  `>= 0 && <= max` window either way. Disabled.
+- NaN/typeof ConditionalExpression disables killed by tests. Disable dropped.
 
-### opt-out-empty-normalized-early-return (r7 rewrite)
+### opt-out-empty-normalized-early-return (r7 rewrite) — REMOVED (QC r8)
 
-- file: `src/services/opt-out.ts` / mutator: ConditionalExpression /
-  `if (!normalized)` in `classifyOptOut` / `wouldBackfillSuppress`
-- justification: empty never matches whole-message or stem sets; fallthrough
-  returns the same not_opt_out / false. Disabled.
+- `if (!normalized)` → `if (true)` always-not-opt-out is killable. Disable dropped.
 
 ### opt-out-newline-plus-vs-star (r7 rewrite)
 
