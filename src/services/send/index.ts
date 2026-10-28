@@ -1,41 +1,21 @@
 /**
- * Single outbound SMS module.
+ * Single outbound SMS module — thin I/O shell over pure decisions + machine.
  *
- * EVERY live send and every relay lookup goes through here:
- *   - missed-call recovery
- *   - campaign cron steps
- *   - reconcile of ambiguous rows
- *   - escalation / manual notify
- *
- * Nothing else may import BrwnRelayAdapter or call getMessagingAdapter().sendMessage.
+ * EVERY live send and every relay lookup goes through here.
+ * Decisions live in ./decisions and ./machine; this file only does I/O.
  */
 
-import { createServerClient } from '@/lib/supabase';
-import { getMessagingAdapter } from '@/lib/messaging';
-import {
-  ensureRelayKeySupportProbed,
-  warnIfRelayLookupUnsupported,
-} from '@/lib/messaging/brwn-relay';
 import { tryNormalizeToE164 } from '@/lib/phone';
 import { redactPhone } from '@/lib/pii';
 import {
-  campaignStepMessageSid,
   classifyRelayLookupResponse,
-  isRelayKeySupportConfirmed,
-  markRelayKeySupportConfirmed,
   parseMessageSid,
-  recoveryMessageSid,
+  markRelayKeySupportConfirmed,
   resetRelayKeySupportConfirmed,
+  recoveryMessageSid,
 } from '@/services/sms-sid';
-import { deferUntilQuietHoursOpen } from '@/services/quiet-hours';
-import {
-  SuppressionLookupError,
-  isPhoneSuppressed,
-} from '@/services/suppressions';
 import {
   classifyRecoveryStatus,
-  isConfirmedStatus,
-  isFailedStatus,
   parkNextAt,
   transitionSend,
   MAX_RECONCILE_ATTEMPTS,
@@ -43,6 +23,13 @@ import {
   type RelaySendSignal,
 } from './machine';
 import { isSendsEnabled } from './policy';
+import {
+  decideCustomerFacingGates,
+  decideDuplicateSid,
+  mapRelaySendResult,
+  resolveIdempotencySid,
+} from './decisions';
+import { defaultSendDeps, type SendDeps, type SupabaseClient } from './deps';
 import type {
   ReconcileOutcome,
   SendOutcome,
@@ -67,20 +54,27 @@ export type {
   SendKind,
   RecoveryResolvedOutcome,
 } from './types';
-
-type Supabase = ReturnType<typeof createServerClient>;
+export type { SendDeps } from './deps';
+export { defaultSendDeps } from './deps';
 
 /** Test-only: dry-run must not set production key-support trust. */
 export function noteDryRunIsTestOnly(): void {
   // Documented for CAMPAIGNS.md / PR disclosure. No runtime effect.
 }
 
+export async function sendMessage(req: SendRequest): Promise<SendOutcome> {
+  return sendMessageWithDeps(defaultSendDeps(), req);
+}
+
 /**
- * THE single send entry point. Normalizes to E.164, gates on SENDS_ENABLED,
+ * THE single send entry point (DI). Normalizes to E.164, gates on SENDS_ENABLED,
  * quiet hours, suppression, and (for campaign step 1) recovery resolution.
  */
-export async function sendMessage(req: SendRequest): Promise<SendOutcome> {
-  if (!isSendsEnabled()) {
+export async function sendMessageWithDeps(
+  deps: SendDeps,
+  req: SendRequest
+): Promise<SendOutcome> {
+  if (!deps.sendsEnabled()) {
     return { kind: 'blocked', reason: 'sends_disabled' };
   }
 
@@ -93,17 +87,19 @@ export async function sendMessage(req: SendRequest): Promise<SendOutcome> {
     };
   }
 
-  const supabase = createServerClient();
+  const supabase = deps.db();
 
-  // Suppression / opt-out (customer-facing kinds only)
   if (req.kind === 'recovery' || req.kind === 'campaign') {
+    let suppressed = false;
     try {
-      if (await isPhoneSuppressed(req.businessId, toE164)) {
-        return { kind: 'blocked', reason: 'suppressed' };
-      }
+      suppressed = await deps.isPhoneSuppressed(req.businessId, toE164);
     } catch (err) {
-      if (err instanceof SuppressionLookupError) {
-        return { kind: 'blocked', reason: 'suppressed', detail: 'lookup_failed_closed' };
+      if (err instanceof deps.SuppressionLookupError) {
+        return {
+          kind: 'blocked',
+          reason: 'suppressed',
+          detail: 'lookup_failed_closed',
+        };
       }
       throw err;
     }
@@ -114,65 +110,49 @@ export async function sendMessage(req: SendRequest): Promise<SendOutcome> {
       .eq('id', req.leadId)
       .maybeSingle();
 
-    if (lead?.opted_out) {
-      return { kind: 'blocked', reason: 'opted_out' };
-    }
-
-    // Campaign step 1 gated on recovery's *resolved* outcome
+    let recovery:
+      | ReturnType<typeof classifyRecoveryStatus>
+      | undefined;
     if (
       req.kind === 'campaign' &&
       req.stepNumber === 1 &&
       !req.skipRecoveryGate
     ) {
-      const recovery = await resolveRecoveryOutcome(supabase, req.leadId);
-      if (recovery === 'pending') {
-        return { kind: 'blocked', reason: 'recovery_pending' };
-      }
-      if (recovery === 'resolved_sent') {
-        return {
-          kind: 'skipped',
-          reason: 'recovery_already_sent_skip_step_1',
-        };
-      }
+      recovery = await resolveRecoveryOutcomeWithDeps(
+        deps,
+        supabase,
+        req.leadId
+      );
     }
 
-    // Quiet hours / TCPA
+    let quiet = undefined;
     if (!req.skipQuietHours) {
       const leadTz =
         req.leadTimezone ??
         (lead as { timezone?: string | null } | null)?.timezone ??
         null;
-      const quiet = deferUntilQuietHoursOpen(new Date(), {
+      quiet = deps.quietHours(deps.clock(), {
         callerPhoneE164: toE164,
         leadTimezone: leadTz,
         businessTimezone: req.businessTimezone,
       });
-      if (!quiet.allowed) {
-        if ('unresolved' in quiet && quiet.unresolved) {
-          return {
-            kind: 'blocked',
-            reason: 'quiet_hours_unresolved',
-            detail: quiet.reason,
-          };
-        }
-        return {
-          kind: 'blocked',
-          reason: 'quiet_hours_deferred',
-          nextSendAt: quiet.nextSendAt.toISOString(),
-        };
-      }
     }
+
+    const gate = decideCustomerFacingGates({
+      kind: req.kind,
+      stepNumber: req.stepNumber,
+      skipRecoveryGate: req.skipRecoveryGate,
+      skipQuietHours: req.skipQuietHours,
+      suppressed,
+      optedOut: Boolean(lead?.opted_out),
+      recovery,
+      quiet,
+    });
+    if (gate) return gate;
   }
 
-  const sid =
-    req.idempotencyKey ||
-    (req.kind === 'recovery'
-      ? recoveryMessageSid(req.leadId)
-      : req.kind === 'campaign' && req.enrollmentId && req.campaignId && req.stepNumber
-        ? campaignStepMessageSid(req.enrollmentId, req.campaignId, req.stepNumber)
-        : `mlf:${req.kind}:${req.leadId}:${Date.now()}`);
+  const sid = resolveIdempotencySid(req, deps.clock().getTime());
 
-  // Insert-before-send for idempotent kinds
   if (req.kind === 'recovery' || req.kind === 'campaign') {
     const { error: insertError } = await supabase.from('sms_messages').insert({
       lead_id: req.leadId,
@@ -189,21 +169,20 @@ export async function sendMessage(req: SendRequest): Promise<SendOutcome> {
         .select('status')
         .eq('message_sid', sid)
         .maybeSingle();
-      if (isConfirmedStatus(existing?.status)) {
+      const dup = decideDuplicateSid(existing?.status);
+      if (dup.action === 'confirm_existing') {
         return {
           kind: 'sent',
           sid,
           messageId: sid,
-          providerStatus: existing!.status!,
+          providerStatus: dup.status,
           keySupportedAtSend: false,
         };
       }
-      if (isFailedStatus(existing?.status) || existing?.status === 'needs_review') {
-        return { kind: 'needs_review', sid, reason: 'duplicate_failed' };
+      if (dup.action === 'needs_review') {
+        return { kind: 'needs_review', sid, reason: dup.reason };
       }
-      // Deferred quiet-hours row (or abandoned_retry) → claim and send now.
-      const st = String(existing?.status ?? '').toLowerCase();
-      if (st === 'deferred' || st === 'abandoned_retry') {
+      if (dup.action === 'claim_deferred') {
         await supabase
           .from('sms_messages')
           .update({
@@ -212,12 +191,12 @@ export async function sendMessage(req: SendRequest): Promise<SendOutcome> {
             body: req.body,
           })
           .eq('message_sid', sid);
-        return dispatchToRelay(supabase, req, sid, toE164);
+        return dispatchToRelay(deps, supabase, req, sid, toE164);
       }
       return {
         kind: 'blocked',
         reason: 'duplicate_in_flight',
-        detail: existing?.status ?? 'missing',
+        detail: dup.detail,
       };
     }
     if (insertError) {
@@ -225,21 +204,21 @@ export async function sendMessage(req: SendRequest): Promise<SendOutcome> {
     }
   }
 
-  return dispatchToRelay(supabase, req, sid, toE164);
+  return dispatchToRelay(deps, supabase, req, sid, toE164);
 }
 
 async function dispatchToRelay(
-  supabase: Supabase,
+  deps: SendDeps,
+  supabase: SupabaseClient,
   req: SendRequest,
   sid: string,
   toE164: string
 ): Promise<SendOutcome> {
-  const adapter = getMessagingAdapter();
+  const adapter = deps.adapter();
 
-  // Caps must be true *before* send for key_supported_at_send trust.
-  let capsBeforeSend = isRelayKeySupportConfirmed();
+  let capsBeforeSend = deps.capsConfirmed();
   if (!capsBeforeSend && adapter.checkLookupSupport) {
-    capsBeforeSend = await ensureRelayKeySupportProbed(adapter);
+    capsBeforeSend = await deps.ensureCaps(adapter);
   }
 
   let signal: RelaySendSignal;
@@ -250,26 +229,7 @@ async function dispatchToRelay(
       auto: req.auto ?? true,
       idempotencyKey: sid,
     });
-
-    if (result.conflict) {
-      signal = { type: 'conflict' };
-    } else if (result.ambiguous) {
-      // Distinguish maintenance vs rate limit via status/reason when present
-      signal =
-        result.status === 'maintenance'
-          ? { type: 'maintenance' }
-          : { type: 'rate_limit' };
-    } else if (isFailedStatus(result.status)) {
-      signal = { type: 'failed', status: result.status };
-    } else {
-      signal = {
-        type: 'ok',
-        messageId: result.id,
-        status: result.status || 'queued',
-        keyEchoed: Boolean(result.keyEchoed),
-        duplicate: result.duplicate,
-      };
-    }
+    signal = mapRelaySendResult(result);
   } catch (err) {
     console.error(
       `sendMessage relay error sid=${sid}:`,
@@ -319,11 +279,13 @@ async function dispatchToRelay(
     return { kind: 'needs_review', sid, reason: decision.reason };
   }
 
-  // park_ambiguous (429 / 503 / error) — never count maintenance as failure
   if (decision.action !== 'park_ambiguous') {
     return { kind: 'needs_review', sid, reason: 'unexpected_decision' };
   }
-  const nextRetryAt = parkNextAt(decision.nextAttempts).toISOString();
+  const nextRetryAt = parkNextAt(
+    decision.nextAttempts,
+    deps.clock()
+  ).toISOString();
   if (req.kind === 'recovery' || req.kind === 'campaign') {
     await supabase
       .from('sms_messages')
@@ -342,13 +304,19 @@ async function dispatchToRelay(
   };
 }
 
-/**
- * Resolve recovery send state for campaign step-1 gating.
- */
 export async function resolveRecoveryOutcome(
-  supabase: Supabase,
+  supabase: SupabaseClient,
   leadId: string
 ): Promise<ReturnType<typeof classifyRecoveryStatus>> {
+  return resolveRecoveryOutcomeWithDeps(defaultSendDeps(), supabase, leadId);
+}
+
+export async function resolveRecoveryOutcomeWithDeps(
+  deps: SendDeps,
+  supabase: SupabaseClient,
+  leadId: string
+): Promise<ReturnType<typeof classifyRecoveryStatus>> {
+  void deps;
   const sid = recoveryMessageSid(leadId);
   const { data } = await supabase
     .from('sms_messages')
@@ -371,9 +339,6 @@ export async function resolveRecoveryOutcome(
   return classifyRecoveryStatus(byLead?.status);
 }
 
-/**
- * Reconcile one ambiguous/sending row via relay lookup (only path that lookups).
- */
 export async function reconcileOne(
   row: {
     id: string;
@@ -385,11 +350,26 @@ export async function reconcileOne(
     next_retry_at?: string | null;
   }
 ): Promise<ReconcileOutcome> {
-  if (!isSendsEnabled()) {
+  return reconcileOneWithDeps(defaultSendDeps(), row);
+}
+
+export async function reconcileOneWithDeps(
+  deps: SendDeps,
+  row: {
+    id: string;
+    lead_id: string;
+    message_sid: string;
+    status: string;
+    reconcile_attempts?: number | null;
+    key_supported_at_send?: boolean | null;
+    next_retry_at?: string | null;
+  }
+): Promise<ReconcileOutcome> {
+  if (!deps.sendsEnabled()) {
     return { kind: 'blocked', reason: 'sends_disabled' };
   }
 
-  const adapter = getMessagingAdapter();
+  const adapter = deps.adapter();
   if (!adapter.lookupByIdempotencyKey) {
     return {
       kind: 'needs_review',
@@ -398,7 +378,7 @@ export async function reconcileOne(
     };
   }
 
-  const supabase = createServerClient();
+  const supabase = deps.db();
   let signal: RelayLookupSignal;
   try {
     const lookup = await adapter.lookupByIdempotencyKey(row.message_sid);
@@ -409,7 +389,10 @@ export async function reconcileOne(
         body: lookup,
       });
     if (outcome === 'sent') {
-      signal = { type: 'sent', status: 'status' in lookup ? lookup.status : 'queued' };
+      signal = {
+        type: 'sent',
+        status: 'status' in lookup ? lookup.status : 'queued',
+      };
     } else if (outcome === 'failed') {
       signal = {
         type: 'failed',
@@ -445,7 +428,7 @@ export async function reconcileOne(
   }
 
   if (decision.action === 'requeue_never_sent') {
-    const abandoned = `${row.message_sid}:abandoned:${Date.now()}`;
+    const abandoned = `${row.message_sid}:abandoned:${deps.clock().getTime()}`;
     await supabase
       .from('sms_messages')
       .update({ status: 'abandoned_retry', message_sid: abandoned })
@@ -473,7 +456,7 @@ export async function reconcileOne(
     };
   }
   const nextAttempts = decision.nextAttempts;
-  const nextRetryAt = parkNextAt(nextAttempts).toISOString();
+  const nextRetryAt = parkNextAt(nextAttempts, deps.clock()).toISOString();
   await supabase
     .from('sms_messages')
     .update({
@@ -499,19 +482,30 @@ export async function reconcileAmbiguousSms(): Promise<{
   needsReview: number;
   alert: boolean;
 }> {
+  return reconcileAmbiguousSmsWithDeps(defaultSendDeps());
+}
+
+export async function reconcileAmbiguousSmsWithDeps(deps: SendDeps): Promise<{
+  unknownCount: number;
+  stuckSendingCount: number;
+  requeued: number;
+  confirmed: number;
+  parked: number;
+  needsReview: number;
+  alert: boolean;
+}> {
   const { UNKNOWN_SMS_ALERT_THRESHOLD, STUCK_SENDING_MS } = await import(
     '@/services/campaign-logic'
   );
-  const supabase = createServerClient();
-  const adapter = getMessagingAdapter();
+  const supabase = deps.db();
+  const adapter = deps.adapter();
   if (adapter.checkLookupSupport) {
-    await warnIfRelayLookupUnsupported(adapter);
+    await deps.warnLookupUnsupported(adapter);
   }
 
-  const cutoff = new Date(Date.now() - STUCK_SENDING_MS).toISOString();
-  const nowIso = new Date().toISOString();
-  // Persist backoff: only reclaim unknown rows whose next_retry_at is due
-  // (or null for legacy rows). ≈2.5h total across 5 attempts before needs_review.
+  const now = deps.clock();
+  const cutoff = new Date(now.getTime() - STUCK_SENDING_MS).toISOString();
+  const nowIso = now.toISOString();
   const { data: rows } = await supabase
     .from('sms_messages')
     .select(
@@ -537,7 +531,7 @@ export async function reconcileAmbiguousSms(): Promise<{
     if (row.status === 'unknown') unknownCount += 1;
     if (row.status === 'sending') stuckSendingCount += 1;
 
-    const result = await reconcileOne(row);
+    const result = await reconcileOneWithDeps(deps, row);
     if (result.kind === 'resolved') {
       confirmed += 1;
       await onReconcileResolved(supabase, row.message_sid);
@@ -565,22 +559,20 @@ export async function reconcileAmbiguousSms(): Promise<{
   };
 }
 
-async function onReconcileResolved(supabase: Supabase, sid: string) {
+async function onReconcileResolved(supabase: SupabaseClient, sid: string) {
   const parsed = parseMessageSid(sid);
   if (parsed.kind !== 'campaign') return;
-  // Advance is owned by campaigns.ts after confirm — leave hook for caller.
   void supabase;
   void parsed;
 }
 
 async function onReconcileNeverSent(
-  supabase: Supabase,
+  supabase: SupabaseClient,
   sid: string,
   leadId: string
 ) {
   const parsed = parseMessageSid(sid);
   if (parsed.kind === 'recovery') {
-    // Clear marker so recovery can resend through sendMessage
     await supabase
       .from('leads')
       .update({ sms_outbound_sid: null })

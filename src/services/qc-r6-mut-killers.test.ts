@@ -261,13 +261,15 @@ describe('QC r6 mut.py killers', () => {
     expect(redactPhonesInText('x +442071234567 y')).toMatch(/4567/);
   });
 
-  it('#01/#02 recovery pending/resolved_sent gates exist in send/index', () => {
-    const src = readSrc('src/services/send/index.ts');
-    if (!src) return;
-    expect(src).toContain("if (recovery === 'pending') {");
-    expect(src).toContain("if (recovery === 'resolved_sent') {");
-    expect(src).toContain("reason: 'recovery_pending'");
-    expect(src).toContain("reason: 'recovery_already_sent_skip_step_1'");
+  it('#01/#02 recovery pending/resolved_sent gates exist in decisions', () => {
+    const decisions = readSrc('src/services/send/decisions.ts');
+    const index = readSrc('src/services/send/index.ts');
+    if (!decisions || !index) return;
+    expect(decisions).toContain("reason: 'recovery_pending'");
+    expect(decisions).toContain("reason: 'recovery_already_sent_skip_step_1'");
+    expect(decisions).toContain("input.recovery === 'pending'");
+    expect(decisions).toContain("input.recovery === 'resolved_sent'");
+    expect(index).toContain('decideCustomerFacingGates');
   });
 
   it('persistDeferredRecovery writes deferred + next_retry_at', async () => {
@@ -302,73 +304,82 @@ describe('QC r6 mut.py killers', () => {
 
   it('campaigns.ts quiet_hours_deferred releases with nextSendAt', () => {
     const src = readSrc('src/services/campaigns.ts');
-    if (!src) return;
-    expect(src).toMatch(
+    const decisions = readSrc('src/services/send/decisions.ts');
+    const campDec = readSrc('src/services/campaign-decisions.ts');
+    if (!src || !decisions || !campDec) return;
+    expect(decisions).toMatch(
       /outcome\.reason === 'quiet_hours_deferred' && outcome\.nextSendAt/
     );
-    expect(src).toMatch(/suppressed' \|\| outcome\.reason === 'opted_out'/);
+    expect(decisions).toMatch(
+      /outcome\.reason === 'suppressed' \|\| outcome\.reason === 'opted_out'/
+    );
     expect(src).toMatch(/status: 'needs_review'/); // terminal enrollment
     expect(src).toMatch(/\.eq\('claim_token', claimToken\)/);
     expect(src).toMatch(/requeueExactCampaignStep/);
-    expect(src).toMatch(/if \(enrollment\.claim_token\) return/);
+    expect(campDec).toContain('hasClaimToken');
+    expect(src).toContain('decideReconcileAdvanceEligibility');
   });
 
   it('send/index.ts orders reconcile ascending and increments attempts', () => {
     const src = readSrc('src/services/send/index.ts');
-    if (!src) return;
+    const decisions = readSrc('src/services/send/decisions.ts');
+    if (!src || !decisions) return;
     expect(src).toMatch(/\.order\('sent_at', \{ ascending: true \}\)/);
     expect(src).toMatch(/reconcile_attempts: nextAttempts/);
     expect(src).toMatch(/next_retry_at: nextRetryAt/);
     expect(src).toMatch(/needsReview > 0/);
-    expect(src).toMatch(/keyEchoed: Boolean\(result\.keyEchoed\)/);
+    expect(decisions).toMatch(/keyEchoed: Boolean\(result\.keyEchoed\)/);
     expect(src).toMatch(/key_supported_at_send: decision\.keySupportedAtSend/);
     expect(src).toMatch(/keySupportedAtSend: Boolean\(row\.key_supported_at_send\)/);
-    expect(src).toMatch(/if \(result\.conflict\)/);
-    expect(src).toMatch(/isFailedStatus\(result\.status\)/);
-    expect(src).toMatch(/result\.ambiguous/);
+    expect(decisions).toMatch(/if \(result\.conflict\)/);
+    expect(decisions).toMatch(/isFailedStatus\(result\.status\)/);
+    expect(decisions).toMatch(/result\.ambiguous/);
     expect(src).toContain("status: 'unknown'");
     expect(src).not.toMatch(/\.update\(\{\s*status:\s*'queued'\s*\}\)/);
     expect(src).toMatch(/status: 'needs_review'/);
     expect(src).toMatch(/sms_outbound_sid: null/);
     expect(src).toMatch(/tryNormalizeToE164/);
     expect(src).toMatch(/to: toE164/);
-    expect(src).toMatch(/result\.status === 'maintenance'/);
-    expect(src).toContain('capsBeforeSend = await ensureRelayKeySupportProbed');
-    expect(src).toContain("if (!quiet.allowed) {");
-    expect(src).not.toContain("if (!quiet.allowed && !('unresolved' in quiet))");
+    expect(decisions).toMatch(/result\.status === 'maintenance'/);
+    expect(src).toContain('capsBeforeSend = await deps.ensureCaps(adapter)');
+    expect(decisions).toContain('!input.quiet.allowed');
     expect(src).toContain('leadTimezone: leadTz,');
-    expect(src).toContain(
-      "if (isFailedStatus(existing?.status) || existing?.status === 'needs_review')"
-    );
-    expect(src).toContain('if (isConfirmedStatus(existing?.status))');
+    expect(src).toContain('decideDuplicateSid');
+    expect(src).toContain('mapRelaySendResult');
     expect(src).toContain(".update({ status: 'needs_review' })");
   });
 
   it('campaigns.ts keeps recovery park / claim / requeue / leadTimezone', () => {
     const src = readSrc('src/services/campaigns.ts');
-    if (!src) return;
-    expect(src).toContain(
-      "if (recoveryState === 'pending' && !recoveryConfirmed) {"
+    const campDec = readSrc('src/services/campaign-decisions.ts');
+    const decisions = readSrc('src/services/send/decisions.ts');
+    if (!src || !campDec || !decisions) return;
+    expect(campDec).toContain(
+      "input.recoveryState === 'pending' && !input.recoveryConfirmed"
     );
     expect(src).toContain('await resendRecoveryIdempotent');
-    expect(src).toContain('skipRecoveryGate: !(');
+    expect(src).toContain('skipRecoveryGate: decideSkipRecoveryGate(');
     expect(src).not.toContain('skipRecoveryGate: true || !(');
     expect(src).toContain('leadTimezone: leadTz,');
     expect(src).not.toContain('leadTimezone: null,');
-    expect(src).toContain("if (outcome.reason === 'quiet_hours_unresolved') {");
-    expect(src).toContain("if (outcome.kind === 'needs_review') {");
-    expect(src).toContain("if (outcome.kind === 'ambiguous') {");
-    expect(src).toContain("if (outcome.reason === 'recovery_pending') {");
-    // needs_review / ambiguous / recovery_pending must NOT advance inline
-    expect(src).not.toMatch(
-      /if \(outcome\.kind === 'needs_review'\) \{ await advanceEnrollment/
+    expect(decisions).toContain("outcome.reason === 'quiet_hours_unresolved'");
+    expect(decisions).toContain("outcome.kind === 'needs_review'");
+    expect(decisions).toContain("outcome.kind === 'ambiguous'");
+    expect(decisions).toContain("outcome.reason === 'recovery_pending'");
+    expect(src).toContain('decideCampaignSendDispatch');
+    // needs_review / park must NOT call advanceEnrollment in their case bodies
+    const reviewCase = src.slice(
+      src.indexOf("case 'needs_review_terminal':"),
+      src.indexOf("case 'noop_false':")
     );
-    expect(src).not.toMatch(
-      /if \(outcome\.kind === 'ambiguous'\) \{ await advanceEnrollment/
+    expect(reviewCase).toContain('markEnrollmentNeedsReview');
+    expect(reviewCase).not.toContain('advanceEnrollment');
+    const parkCase = src.slice(
+      src.indexOf("case 'park':"),
+      src.indexOf("case 'pause_opt_out':")
     );
-    expect(src).not.toMatch(
-      /if \(outcome\.reason === 'recovery_pending'\) \{ await advanceEnrollment/
-    );
+    expect(parkCase).toContain('parkEnrollmentForReconcile');
+    expect(parkCase).not.toContain('advanceEnrollment');
     expect(src).toContain(".eq('claim_token', claimToken)");
     expect(src).toContain('const ok = await requeueExactCampaignStep(');
     expect(src).not.toContain('const ok = false && await requeueExactCampaignStep(');

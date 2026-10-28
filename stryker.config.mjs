@@ -8,8 +8,10 @@ const config = {
   // exclusions; no-coverage mutants count in the gate denominator.
   mutate: [
     'src/services/send/index.ts',
+    'src/services/send/decisions.ts',
     'src/services/send/machine.ts',
     'src/services/send/policy.ts',
+    'src/services/campaign-decisions.ts',
     'src/services/campaigns.ts',
     'src/services/sms.ts',
     'src/services/opt-out.ts',

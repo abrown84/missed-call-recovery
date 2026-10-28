@@ -23,6 +23,17 @@ import {
   sendMessage,
   resolveRecoveryOutcome,
 } from '@/services/send';
+import {
+  decideCampaignLeadGates,
+  decideCampaignSendDispatch,
+  decideEnrollmentGates,
+  decideEnrollmentPlan,
+  decideReconcileAdvanceEligibility,
+  decideRequeueEligibility,
+  decideSkipRecoveryGate,
+  decideSwitchClaimGate,
+  mapRecoveryOutcomeToState,
+} from '@/services/campaign-decisions';
 import { processDeferredRecoveries, sendRecoverySMS } from '@/services/sms';
 import {
   SuppressionLookupError,
@@ -62,26 +73,22 @@ export async function enrollLeadInCampaign(
     .eq('id', leadId)
     .single();
 
-  if (leadError || !lead) {
-    console.error('Failed to fetch lead for enrollment:', leadError);
-    return { enrolled: false, reason: 'lead_not_found' };
-  }
-
-  if (lead.opted_out) {
-    return { enrolled: false, reason: 'opted_out' };
-  }
-
   // QC r6 P0: enroll non-responders into Standard (urgency null → Standard
   // campaign). Classification still switches Emergency/High on reply.
-  // Alex flag: confirm non-responder path; urgency gate was dropped for
-  // after-hours recovery persistence via enrollment + deferred recovery.
-
   const existing = await getEnrollmentForLead(leadId);
-  if (existing) {
-    return {
-      enrolled: false,
-      reason: `already_enrolled:${existing.status}`,
-    };
+  const gate = decideEnrollmentGates({
+    leadFound: Boolean(lead) && !leadError,
+    optedOut: Boolean(lead?.opted_out),
+    existingStatus: existing?.status ?? null,
+  });
+  if (!gate.ok) {
+    if (gate.reason === 'lead_not_found') {
+      console.error('Failed to fetch lead for enrollment:', leadError);
+    }
+    return { enrolled: false, reason: gate.reason };
+  }
+  if (!lead) {
+    return { enrolled: false, reason: 'lead_not_found' };
   }
 
   const { data: campaigns, error: campaignError } = await supabase
@@ -117,30 +124,21 @@ export async function enrollLeadInCampaign(
   }
 
   // Gate step 1 on recovery's *resolved* outcome — not just sms_outbound_sid.
-  // Pending/unknown recovery → start at step 1 but park until reconcile decides.
   const recoveryState = await getRecoverySendState(supabase, leadId);
   const recoveryConfirmed =
     recoveryState === 'confirmed' || Boolean(lead.sms_outbound_sid);
   // Recovery only substitutes Standard's delay-0 initial — never Emergency/High
   // (staging evidence c: first Emergency step must still go out).
-  const plan = planEnrollmentStart(steps, {
-    recoveryAlreadySent: recoveryConfirmed,
+  const plan = decideEnrollmentPlan({
+    steps,
+    recoveryState,
+    recoveryConfirmed,
     treatRecoveryAsInitial: selectedCampaign.urgency_filter == null,
   });
-
-  if (
-    plan.skippedInitial &&
-    plan.currentStep === steps[0].step_number &&
-    steps.length === 1
-  ) {
-    return { enrolled: false, reason: 'only_initial_already_sent' };
+  if (!plan.ok) {
+    return { enrolled: false, reason: plan.reason };
   }
-
-  let nextSendAt = plan.nextSendAt.toISOString();
-  if (recoveryState === 'pending' && !recoveryConfirmed) {
-    // Don't fire campaign step 1 while recovery is ambiguous.
-    nextSendAt = parkedNextSendAt();
-  }
+  const nextSendAt = plan.nextSendAt;
 
   const { error: enrollError } = await supabase
     .from('campaign_enrollments')
@@ -189,11 +187,12 @@ export async function switchEnrollmentCampaign(
   const supabase = createServerClient();
 
   const existing = await getEnrollmentForLead(leadId);
-  if (!existing) {
-    return { enrolled: false, reason: 'no_enrollment' };
-  }
-  if (hasFreshClaim(existing)) {
-    return { enrolled: false, reason: 'deferred_fresh_claim' };
+  const switchGate = decideSwitchClaimGate({
+    hasEnrollment: Boolean(existing),
+    freshClaim: existing ? hasFreshClaim(existing) : false,
+  });
+  if (!switchGate.ok) {
+    return { enrolled: false, reason: switchGate.reason };
   }
 
   const { data: lead, error: leadError } = await supabase
@@ -389,24 +388,33 @@ export async function sendCampaignSMS(
   const business = lead.businesses;
   const campaign = (enrollment as any).campaigns as Campaign;
 
-  if (lead.opted_out) {
-    await pauseCampaignForLead(lead.id);
-    return true;
-  }
-
+  let suppressed = false;
+  let suppressionLookupFailed = false;
   try {
-    if (await isPhoneSuppressed(business.id, lead.caller_phone)) {
-      console.log(`Suppressed phone for enrollment ${enrollmentId}; pausing`);
-      await pauseCampaignForLead(lead.id);
-      return true;
-    }
+    suppressed = await isPhoneSuppressed(business.id, lead.caller_phone);
   } catch (err) {
     if (err instanceof SuppressionLookupError) {
       console.error('Suppression check failed closed:', err.message);
-      await releaseClaim(supabase, enrollmentId, token);
-      return false;
+      suppressionLookupFailed = true;
+    } else {
+      throw err;
     }
-    throw err;
+  }
+  const leadGate = decideCampaignLeadGates({
+    optedOut: Boolean(lead.opted_out),
+    suppressed,
+    suppressionLookupFailed,
+  });
+  if (leadGate.action === 'pause') {
+    if (suppressed) {
+      console.log(`Suppressed phone for enrollment ${enrollmentId}; pausing`);
+    }
+    await pauseCampaignForLead(lead.id);
+    return leadGate.success;
+  }
+  if (leadGate.action === 'release_fail') {
+    await releaseClaim(supabase, enrollmentId, token);
+    return leadGate.success;
   }
 
   const { data: steps, error: stepsError } = await supabase
@@ -444,6 +452,7 @@ export async function sendCampaignSMS(
   });
 
   const leadTz = (lead as { timezone?: string | null }).timezone ?? null;
+  const parkedFallback = parkedNextSendAt();
 
   // Single send module: E.164, quiet hours, recovery gate, caps+echo, relay.
   const outcome = await sendMessage({
@@ -459,31 +468,40 @@ export async function sendCampaignSMS(
     claimToken: token,
     leadTimezone: leadTz,
     businessTimezone: business.timezone,
-    skipRecoveryGate: !(
-      currentStep.delay_minutes === 0 &&
-      enrollment.current_step === steps[0]?.step_number
-    ),
+    skipRecoveryGate: decideSkipRecoveryGate({
+      delayMinutes: currentStep.delay_minutes,
+      currentStep: enrollment.current_step,
+      firstStepNumber: steps[0]?.step_number,
+    }),
   });
 
-  if (outcome.kind === 'skipped' && outcome.reason === 'recovery_already_sent_skip_step_1') {
-    await advanceEnrollment(
-      supabase,
-      enrollmentId,
-      token,
-      enrollment.current_step,
-      steps
-    );
-    return true;
-  }
+  const dispatch = decideCampaignSendDispatch(outcome, parkedFallback);
 
-  if (outcome.kind === 'blocked') {
-    if (outcome.reason === 'quiet_hours_deferred' && outcome.nextSendAt) {
-      await releaseClaim(supabase, enrollmentId, token, {
-        nextSendAt: outcome.nextSendAt,
-      });
-      return true;
+  switch (dispatch.type) {
+    case 'advance': {
+      const advanced = await advanceEnrollment(
+        supabase,
+        enrollmentId,
+        token,
+        enrollment.current_step,
+        steps
+      );
+      if (!advanced && outcome.kind === 'sent') {
+        console.warn(`Post-send advance lost claim for ${enrollmentId}`);
+      }
+      if (outcome.kind === 'sent') {
+        console.log(
+          `Campaign SMS sent for ${enrollmentId} step ${enrollment.current_step} sid=${outcome.sid}`
+        );
+      }
+      return dispatch.success;
     }
-    if (outcome.reason === 'quiet_hours_unresolved') {
+    case 'release':
+      await releaseClaim(supabase, enrollmentId, token, {
+        nextSendAt: dispatch.nextSendAt,
+      });
+      return dispatch.success;
+    case 'flag_unresolved_tz':
       console.error(
         `ALERT: quiet-hours unresolved for enrollment ${enrollmentId}; needs_review`
       );
@@ -496,73 +514,40 @@ export async function sendCampaignSMS(
         })
         .eq('id', lead.id);
       await releaseClaim(supabase, enrollmentId, token, {
-        nextSendAt: parkedNextSendAt(),
+        nextSendAt: dispatch.nextSendAt,
       });
-      return false;
-    }
-    if (outcome.reason === 'recovery_pending') {
-      await parkEnrollmentForReconcile(supabase, enrollmentId, token);
-      return false;
-    }
-    if (outcome.reason === 'suppressed' || outcome.reason === 'opted_out') {
+      return dispatch.success;
+    case 'park':
+      await parkEnrollmentForReconcile(supabase, enrollmentId, token, {
+        nextSendAt: dispatch.nextSendAt,
+      });
+      if (outcome.kind === 'ambiguous') {
+        console.warn(
+          `Campaign SMS ambiguous for ${enrollmentId} (${outcome.reason}); parked`
+        );
+      }
+      return dispatch.success;
+    case 'pause_opt_out':
       await pauseCampaignForLead(lead.id);
-      return true;
-    }
-    if (outcome.reason === 'sends_disabled') {
-      await releaseClaim(supabase, enrollmentId, token, {
-        nextSendAt: parkedNextSendAt(),
-      });
-      return false;
-    }
-    if (outcome.reason === 'duplicate_in_flight') {
-      await parkEnrollmentForReconcile(supabase, enrollmentId, token);
-      return false;
-    }
-    await releaseClaim(supabase, enrollmentId, token);
-    return false;
-  }
-
-  if (outcome.kind === 'sent') {
-    const advanced = await advanceEnrollment(
-      supabase,
-      enrollmentId,
-      token,
-      enrollment.current_step,
-      steps
-    );
-    if (!advanced) {
-      console.warn(
-        `Post-send advance lost claim for ${enrollmentId}`
+      return dispatch.success;
+    case 'needs_review_terminal':
+      console.error(
+        `ALERT: campaign SMS needs_review ${enrollmentId} sid=${
+          outcome.kind === 'needs_review' ? outcome.sid : ''
+        } (${dispatch.reason})`
       );
-    }
-    console.log(
-      `Campaign SMS sent for ${enrollmentId} step ${enrollment.current_step} sid=${outcome.sid}`
-    );
-    return true;
+      // Terminal status — do not re-park every 30 min (QC r6 P1 #7).
+      await markEnrollmentNeedsReview(
+        supabase,
+        enrollmentId,
+        token,
+        dispatch.reason
+      );
+      return dispatch.success;
+    case 'noop_false':
+      await releaseClaim(supabase, enrollmentId, token);
+      return dispatch.success;
   }
-
-  if (outcome.kind === 'needs_review') {
-    console.error(
-      `ALERT: campaign SMS needs_review ${enrollmentId} sid=${outcome.sid} (${outcome.reason})`
-    );
-    // Terminal status — do not re-park every 30 min (QC r6 P1 #7).
-    await markEnrollmentNeedsReview(supabase, enrollmentId, token, outcome.reason);
-    return false;
-  }
-
-  if (outcome.kind === 'ambiguous') {
-    await parkEnrollmentForReconcile(supabase, enrollmentId, token, {
-      nextSendAt: outcome.nextRetryAt ?? parkNextAt(0).toISOString(),
-    });
-    console.warn(
-      `Campaign SMS ambiguous for ${enrollmentId} (${outcome.reason}); parked`
-    );
-    return false;
-  }
-
-  // never_sent should not appear on the live send path
-  await parkEnrollmentForReconcile(supabase, enrollmentId, token);
-  return false;
 }
 
 /**
@@ -905,10 +890,7 @@ async function getRecoverySendState(
   leadId: string
 ): Promise<'confirmed' | 'pending' | 'absent' | 'abandoned'> {
   const outcome = await resolveRecoveryOutcome(supabase, leadId);
-  if (outcome === 'resolved_sent') return 'confirmed';
-  if (outcome === 'resolved_abandoned') return 'abandoned';
-  if (outcome === 'pending') return 'pending';
-  return 'absent';
+  return mapRecoveryOutcomeToState(outcome);
 }
 
 /**
@@ -966,11 +948,16 @@ async function advanceEnrollmentAfterConfirmedSend(
     .eq('status', 'active')
     .maybeSingle();
 
-  if (!enrollment) return;
-  if (enrollment.campaign_id !== campaignId) return;
-  if (enrollment.current_step !== stepNumber) return;
-  // Don't steal a live claim — the in-flight sender owns advance.
-  if (enrollment.claim_token) return;
+  if (
+    !decideReconcileAdvanceEligibility({
+      enrollmentFound: Boolean(enrollment),
+      campaignMatches: enrollment?.campaign_id === campaignId,
+      stepMatches: enrollment?.current_step === stepNumber,
+      hasClaimToken: Boolean(enrollment?.claim_token),
+    })
+  ) {
+    return;
+  }
 
   const { data: steps } = await supabase
     .from('campaign_steps')
@@ -1032,7 +1019,12 @@ async function requeueExactCampaignStep(
     .eq('status', 'active')
     .maybeSingle();
 
-  if (!enrollment || enrollment.campaign_id !== campaignId) {
+  if (
+    !decideRequeueEligibility({
+      enrollmentFound: Boolean(enrollment),
+      campaignMatches: enrollment?.campaign_id === campaignId,
+    })
+  ) {
     return false;
   }
 
