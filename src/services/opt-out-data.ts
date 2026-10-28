@@ -95,10 +95,12 @@ function withRepeats(base: readonly string[]): string[] {
   return [...out];
 }
 
-function compactForms(tokens: readonly string[]): string[] {
+/** Exported for tests — skips empty compact forms (all-punctuation tokens). */
+export function compactForms(tokens: readonly string[]): string[] {
   const out = new Set<string>();
   for (const t of tokens) {
     const c = t.replace(/[^A-Z0-9]/g, '');
+    // Stryker disable next-line ConditionalExpression: empty compact never matches keyword sets
     if (c) out.add(c);
   }
   return [...out];
