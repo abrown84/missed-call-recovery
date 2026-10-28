@@ -575,6 +575,22 @@ export async function sendCampaignSMSWithDeps(
           })
         )
         .eq(COL.id, lead!.id);
+      // QC r11: unknown zone parks must alert the owner (best-effort).
+      try {
+        await deps.notifyUnresolvedTimezone(
+          lead!.id,
+          business!,
+          lead!.caller_phone,
+          deps.sleep
+        );
+      } catch (err) {
+        // Stryker disable StringLiteral,CallExpression,BlockStatement: log-only
+        console.error(
+          'ALERT: unresolved-timezone owner notify threw',
+          err instanceof Error ? err.message : 'unknown'
+        );
+        // Stryker restore StringLiteral,CallExpression,BlockStatement
+      }
       await releaseClaim(supabase, enrollmentId, token!, deps.clock, {
         nextSendAt,
       });

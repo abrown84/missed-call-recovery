@@ -8,7 +8,7 @@ import {
 describe('TCPA quiet hours (QC r5 D)', () => {
   it('850 is Eastern AND Central (stricter = both must be open)', () => {
     const r = resolveLeadTimezones({ callerPhoneE164: '+18505551234' });
-    expect(r.zones).toEqual(['America/New_York', 'America/Chicago']);
+    expect(r.zones).toEqual(['America/Chicago', 'America/New_York']);
     expect(r.ambiguous).toBe(true);
     expect(r.known).toBe(true);
     expect(r.endHour).toBe(20);

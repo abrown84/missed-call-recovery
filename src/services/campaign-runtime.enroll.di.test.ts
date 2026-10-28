@@ -117,6 +117,7 @@ describe('campaign-runtime enroll/claim DI', () => {
       getTemplate: () => 'x',
       uuid: () => 'uuid-fixed',
       sleep: vi.fn(async () => undefined),
+      notifyUnresolvedTimezone: vi.fn(async () => true),
     };
   });
 

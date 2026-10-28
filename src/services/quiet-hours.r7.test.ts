@@ -80,7 +80,7 @@ describe('QC r7 quiet-hours: 850 dual-zone uses Math.max (latest)', () => {
   it('850 zones resolve to ET+CT', () => {
     expect(
       resolveLeadTimezones({ callerPhoneE164: '+18505550100' }).zones
-    ).toEqual(['America/New_York', 'America/Chicago']);
+    ).toEqual(['America/Chicago', 'America/New_York']);
   });
 });
 
@@ -106,26 +106,34 @@ describe('QC r7 quiet-hours: HI / AK area codes', () => {
     }
   });
 
-  it('907 Alaska defers to Anchorage local 8:00', () => {
-    // 2026-07-01 10:00 UTC = 02:00 AKDT — quiet
+  it('907 Alaska is multi-zone (Adak/Anchorage/…) — deferred while any zone is quiet', () => {
+    // 2026-07-01 10:00 UTC = 02:00 AKDT — quiet in Anchorage (and Adak)
     const now = new Date('2026-07-01T10:00:00.000Z');
     const d = deferUntilQuietHoursOpen(now, {
       callerPhoneE164: '+19075550100',
     });
     expect(d.allowed).toBe(false);
+    const r = resolveLeadTimezones({ callerPhoneE164: '+19075550100' });
+    expect(r.ambiguous).toBe(true);
+    expect(r.zones).toEqual(
+      expect.arrayContaining(['America/Adak', 'America/Anchorage'])
+    );
     if (!d.allowed && !('unresolved' in d && d.unresolved)) {
-      const p = localParts(d.nextSendAt, 'America/Anchorage');
-      expect(p.hour).toBe(8);
-      expect(p.minute).toBe(0);
+      // Conservative: next open is when EVERY candidate zone is in-window.
+      for (const z of r.zones) {
+        expect(isWithinQuietHoursWindow(d.nextSendAt, z, d.endHour)).toBe(true);
+      }
     }
   });
 
-  it('808 / 907 resolve to single zone each', () => {
+  it('808 is Honolulu; 907 is multi-zone (libphonenumber union)', () => {
     expect(
       resolveLeadTimezones({ callerPhoneE164: '+18085550100' }).zones
     ).toEqual(['Pacific/Honolulu']);
     expect(
       resolveLeadTimezones({ callerPhoneE164: '+19075550100' }).zones
-    ).toEqual(['America/Anchorage']);
+    ).toEqual(
+      expect.arrayContaining(['America/Adak', 'America/Anchorage'])
+    );
   });
 });

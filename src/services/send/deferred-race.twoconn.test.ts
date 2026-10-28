@@ -1,16 +1,11 @@
 /**
- * QC r10 P2: real two-connection race on the app's deferred claim path.
+ * QC r10/r11 P2: real two-connection race on the app's deferred claim path.
  *
- * Shared-file PGlite cannot enforce MVCC across two WASM instances (both can
- * "win" a CAS), so the app-path race runs on real Postgres (CI postgres:16
- * service via RACE_DATABASE_URL). A separate raw-SQL check still opens two
- * PGlite instances on one data dir as a smoke that the file backend loads.
+ * Runs sendMessageWithDeps over two pg.Pool clients (CI postgres:16 via
+ * RACE_DATABASE_URL). Shared-file PGlite smoke removed (load-flaky under
+ * Stryker; real Postgres covers the race).
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { PGlite } from '@electric-sql/pglite';
-import fs from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
 import pg from 'pg';
 import { sendMessageWithDeps, type SendDeps } from './index';
 import { SuppressionLookupError } from '@/services/suppressions';
@@ -204,55 +199,12 @@ const pgUrl =
   process.env.DATABASE_URL?.trim() ||
   '';
 
-describe('deferred claim two-connection race (QC r10)', () => {
+describe('deferred claim two-connection race (QC r10/r11)', () => {
   beforeEach(() => {
     resetRelayKeySupportConfirmed();
     markRelayKeySupportConfirmed();
   });
 
-  it('shared-file PGlite: two instances; raw SQL CAS has exactly one winner', async () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'pglite-race-'));
-    try {
-      const boot = new PGlite(dir);
-      await boot.exec(`
-        CREATE TABLE sms_messages (
-          message_sid text PRIMARY KEY,
-          status text NOT NULL
-        );
-        INSERT INTO sms_messages VALUES ('mlf:recovery:raw', 'deferred');
-      `);
-      await boot.close();
-
-      const a = new PGlite(dir);
-      const b = new PGlite(dir);
-      const claim = (db: PGlite) =>
-        db.query(
-          `UPDATE sms_messages SET status = 'sending'
-           WHERE message_sid = $1 AND status = 'deferred' RETURNING *`,
-          ['mlf:recovery:raw']
-        );
-      const [r1, r2] = await Promise.all([claim(a), claim(b)]);
-      const winners = [r1, r2].filter((r) => r.rows.length === 1);
-      // File backend may serialize; assert at most one winner and final=sending.
-      expect(winners.length).toBeLessThanOrEqual(1);
-      const final = await a.query<{ status: string }>(
-        `SELECT status FROM sms_messages WHERE message_sid = $1`,
-        ['mlf:recovery:raw']
-      );
-      expect(final.rows[0]?.status).toBe('sending');
-      // Prefer the strong outcome when the FS serializes cleanly.
-      if (winners.length === 1) {
-        expect(winners[0].rows[0]).toMatchObject({ status: 'sending' });
-      }
-      await a.close();
-      await b.close();
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
-  });
-
-  // build-and-test CI sets RACE_DATABASE_URL + postgres:16. Mutation job
-  // skips this block (no DB) so Stryker dry-run still passes.
   const pgDescribe = pgUrl ? describe : describe.skip;
 
   pgDescribe('real Postgres sendMessageWithDeps claim path', () => {
@@ -273,7 +225,6 @@ describe('deferred claim two-connection race (QC r10)', () => {
     });
 
     it('exactly one of two concurrent claimers dispatches (50 rounds)', async () => {
-
       let winners = 0;
       let losers = 0;
 
@@ -326,9 +277,6 @@ describe('deferred claim two-connection race (QC r10)', () => {
             sendMessageWithDeps(baseDeps(makeSqlClient(execB), send), req),
           ]);
 
-          // Exactly one relay dispatch. The loser is either:
-          // - blocked (lost CAS / saw sending), or
-          // - kind=sent via confirm_existing after the winner already confirmed.
           expect(send).toHaveBeenCalledTimes(1);
           const kinds = [a.kind, b.kind].sort();
           const okPair =
@@ -361,7 +309,6 @@ describe('deferred claim two-connection race (QC r10)', () => {
       }
 
       expect(winners).toBe(50);
-      // Losers counted only when blocked; confirm_existing pairs still OK.
       expect(losers).toBeGreaterThan(0);
     }, 60_000);
   });

@@ -56,6 +56,7 @@ function baseDeps(overrides: Partial<CampaignDeps> = {}): CampaignDeps {
     getTemplate: (_k, v) => `${v.business}:${v.issue}:${v.name}`,
     uuid: () => 'u',
     sleep: vi.fn(async () => undefined),
+      notifyUnresolvedTimezone: vi.fn(async () => true),
     ...overrides,
   };
 }
@@ -264,6 +265,7 @@ describe('campaign-runtime survivor killers', () => {
     const enrollmentSelects: string[] = [];
     const deps = baseDeps({
       sleep: vi.fn(async () => undefined),
+      notifyUnresolvedTimezone: vi.fn(async () => true),
       adapter: () => ({ name: 'mock' }) as any, // no checkLookupSupport
       db: () =>
         ({

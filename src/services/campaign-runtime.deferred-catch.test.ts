@@ -69,6 +69,7 @@ function baseDeps(overrides: Partial<CampaignDeps> = {}): CampaignDeps {
     getTemplate: () => 'hi',
     uuid: () => 'u',
     sleep: async () => undefined,
+    notifyUnresolvedTimezone: async () => true,
     ...overrides,
   } as CampaignDeps;
 }

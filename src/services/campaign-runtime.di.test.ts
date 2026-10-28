@@ -139,6 +139,7 @@ describe('campaign-runtime DI send path', () => {
         `Hi from ${vars.business} about ${vars.issue}`,
       uuid: () => 'uuid-fixed',
       sleep: vi.fn(async () => undefined),
+      notifyUnresolvedTimezone: vi.fn(async () => true),
     };
   });
 
@@ -196,7 +197,7 @@ describe('campaign-runtime DI send path', () => {
     ).toBe(true);
   });
 
-  it('quiet_hours_unresolved → lead review + release', async () => {
+  it('quiet_hours_unresolved → lead review + owner alert + release', async () => {
     await expect(
       run({ kind: 'blocked', reason: 'quiet_hours_unresolved' })
     ).resolves.toBe(false);
@@ -208,6 +209,12 @@ describe('campaign-runtime DI send path', () => {
             ?.needs_human_review === true
       )
     ).toBe(true);
+    expect(deps.notifyUnresolvedTimezone).toHaveBeenCalledWith(
+      'L',
+      expect.objectContaining({ id: 'B' }),
+      '+12135550100',
+      deps.sleep
+    );
   });
 
   it('ambiguous → park release (next_send_at set)', async () => {

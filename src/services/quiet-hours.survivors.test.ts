@@ -77,7 +77,7 @@ describe('deferUntilQuietHoursOpen survivors', () => {
       deferUntilQuietHoursOpen(bothOpen, { callerPhoneE164: '+18505550100' })
     ).toEqual({
       allowed: true,
-      zones: ['America/New_York', 'America/Chicago'],
+      zones: ['America/Chicago', 'America/New_York'],
     });
   });
 

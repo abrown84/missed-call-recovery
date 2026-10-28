@@ -42,11 +42,11 @@ const config = {
     'src/services/reconcile-logic.ts',
     'src/services/quiet-hours.ts',
     // zonesForAreaCode() under mutate. quiet-hours-zones-data.ts is NOT:
-    // ~800 static ObjectLiteral mutants dominate CI; golden fixture pin +
-    // mut.py #13 cover the map (see data file header / QC r10).
+    // generated from libphonenumber map_data (~static explosion); golden
+    // snapshot + check:nanp-zones + mut.py #13 cover it (QC r11).
     'src/services/quiet-hours-zones.ts',
   ],
-  // QC r8/r10: test static mutants in opt-out-data (CONFUSABLES), not the NANP map.
+  // QC r8/r11: test static mutants in opt-out-data (CONFUSABLES), not the NANP map.
   ignoreStatic: false,
   thresholds: {
     high: 90,

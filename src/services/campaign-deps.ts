@@ -11,10 +11,13 @@ import {
 } from '@/services/suppressions';
 import { sendMessage } from '@/services/send';
 import { processDeferredRecoveries, sendRecoverySMS } from '@/services/sms';
+import { notifyUnresolvedTimezone } from '@/services/escalation';
 import { getTemplate } from '@/lib/templates';
 import { randomUUID } from 'crypto';
+import type { Database } from '@/types/database';
 
 export type SupabaseClient = ReturnType<typeof createServerClient>;
+type Business = Database['public']['Tables']['businesses']['Row'];
 
 export type CampaignDeps = {
   db: () => SupabaseClient;
@@ -31,6 +34,13 @@ export type CampaignDeps = {
   getTemplate: typeof getTemplate;
   uuid: () => string;
   sleep: (ms: number) => Promise<void>;
+  /** Owner alert when quiet-hours zone is unknown (QC r11). */
+  notifyUnresolvedTimezone: (
+    leadId: string,
+    business: Business,
+    callerPhone: string,
+    sleep?: (ms: number) => Promise<void>
+  ) => Promise<boolean>;
 };
 
 export function defaultCampaignDeps(): CampaignDeps {
@@ -46,5 +56,6 @@ export function defaultCampaignDeps(): CampaignDeps {
     getTemplate,
     uuid: () => randomUUID(),
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    notifyUnresolvedTimezone,
   };
 }

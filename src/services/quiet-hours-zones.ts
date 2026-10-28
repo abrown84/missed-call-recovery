@@ -1,7 +1,8 @@
 /**
- * NANP area-code → IANA zone lookups (QC r9).
- * Static map lives in quiet-hours-zones-data.ts (table-driven tests + mut.py #13).
- * This module is under Stryker mutate for zonesForAreaCode().
+ * NANP area-code → IANA zone lookups (QC r11).
+ * Map generated from Google libphonenumber map_data.txt
+ * (see third_party/libphonenumber/SOURCE.md + npm run generate:nanp-zones).
+ * This module is under Stryker mutate for zonesForAreaCode(); the data file is not.
  */
 import {
   AREA_CODE_ZONES,

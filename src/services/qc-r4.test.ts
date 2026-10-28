@@ -151,8 +151,8 @@ describe('QC r4 #5 — quiet hours coverage', () => {
     ]);
     expect(quietEndHourForPhone('+12395551234')).toBe(20);
     expect(resolveLeadTimezones({ callerPhoneE164: '+18505551234' }).zones).toEqual([
-      'America/New_York',
       'America/Chicago',
+      'America/New_York',
     ]);
     expect(quietEndHourForPhone('+15725551234')).toBe(20);
   });

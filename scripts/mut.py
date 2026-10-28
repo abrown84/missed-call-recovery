@@ -29,7 +29,7 @@ muts=[
 ('10','r4#4 cron per-row catch rethrows',CI,"      // Isolate per-enrollment failures (e.g. invalid timezone) so one bad","      throw err; //",1),
 ('11','r4#4 quiet unresolved treated as allowed',D,"  if (!input.skipQuietHours && input.quiet && !input.quiet.allowed) {","  if (!input.skipQuietHours && input.quiet && !input.quiet.allowed && !('unresolved' in input.quiet)) {",1),
 ('12','r4#4 unresolved -> campaign release w/o review',D,"    if (outcome.reason === 'quiet_hours_unresolved') {\n      return { type: 'flag_unresolved_tz', nextSendAt: parkedFallbackIso };\n    }","    if (false) {\n      return { type: 'flag_unresolved_tz', nextSendAt: parkedFallbackIso };\n    }",1),
-('13','r4#5 850 Central only',Z,"'850': ['America/New_York', 'America/Chicago'],","'850': ['America/Chicago'],",1),
+('13','r4#5 850 Central only',Z,'  "850": [\n    "America/Chicago",\n    "America/New_York"\n  ],','  "850": [\n    "America/Chicago"\n  ],',1),
 ('14','r4#5 unmapped -> business TZ',Q,"return { zones: [], ambiguous: false, known: false, endHour };","return { zones: opts.businessTimezone ? [opts.businessTimezone] : [], ambiguous: false, known: false, endHour };",1),
 ('15','r4#5 OK dropped from 8pm rule',Q,"if (ac && (FL_AREA.has(ac) || OK_AREA.has(ac))) return QUIET_END_HOUR_FL_OK;","if (ac && FL_AREA.has(ac)) return QUIET_END_HOUR_FL_OK;",1),
 ('16','r4#5 leadTimezone not passed (campaign)',CI,"    leadTimezone: pre.leadTimezone,","    leadTimezone: null,",1),

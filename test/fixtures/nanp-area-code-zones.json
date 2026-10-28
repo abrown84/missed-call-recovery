@@ -8,6 +8,9 @@
   "203": [
     "America/New_York"
   ],
+  "204": [
+    "America/Winnipeg"
+  ],
   "205": [
     "America/Chicago"
   ],
@@ -18,6 +21,7 @@
     "America/New_York"
   ],
   "208": [
+    "America/Boise",
     "America/Denver",
     "America/Los_Angeles"
   ],
@@ -52,11 +56,23 @@
     "America/Chicago",
     "America/New_York"
   ],
+  "220": [
+    "America/New_York"
+  ],
+  "223": [
+    "America/New_York"
+  ],
   "224": [
     "America/Chicago"
   ],
   "225": [
     "America/Chicago"
+  ],
+  "226": [
+    "America/Toronto"
+  ],
+  "227": [
+    "America/New_York"
   ],
   "228": [
     "America/Chicago"
@@ -65,11 +81,13 @@
     "America/New_York"
   ],
   "231": [
-    "America/New_York",
-    "America/Chicago"
+    "America/New_York"
   ],
   "234": [
     "America/New_York"
+  ],
+  "235": [
+    "America/Chicago"
   ],
   "236": [
     "America/Vancouver"
@@ -80,10 +98,20 @@
   "240": [
     "America/New_York"
   ],
+  "242": [
+    "America/Nassau"
+  ],
+  "246": [
+    "America/Barbados"
+  ],
   "248": [
     "America/New_York"
   ],
+  "249": [
+    "America/Toronto"
+  ],
   "250": [
+    "America/Edmonton",
     "America/Vancouver"
   ],
   "251": [
@@ -101,32 +129,60 @@
   "256": [
     "America/Chicago"
   ],
+  "257": [
+    "America/Vancouver"
+  ],
   "260": [
-    "America/New_York",
-    "America/Chicago"
+    "America/New_York"
   ],
   "262": [
     "America/Chicago"
   ],
+  "263": [
+    "America/Toronto"
+  ],
+  "264": [
+    "America/Anguilla"
+  ],
   "267": [
     "America/New_York"
   ],
+  "268": [
+    "America/Antigua"
+  ],
   "269": [
-    "America/New_York",
-    "America/Chicago"
+    "America/New_York"
   ],
   "270": [
-    "America/New_York",
-    "America/Chicago"
+    "America/Chicago",
+    "America/New_York"
   ],
   "272": [
     "America/New_York"
   ],
+  "273": [
+    "America/Toronto"
+  ],
+  "274": [
+    "America/Chicago"
+  ],
   "276": [
     "America/New_York"
   ],
+  "279": [
+    "America/Los_Angeles"
+  ],
   "281": [
     "America/Chicago"
+  ],
+  "283": [
+    "America/New_York"
+  ],
+  "284": [
+    "America/Tortola"
+  ],
+  "289": [
+    "America/Toronto"
   ],
   "301": [
     "America/New_York"
@@ -142,6 +198,9 @@
   ],
   "305": [
     "America/New_York"
+  ],
+  "306": [
+    "America/Regina"
   ],
   "307": [
     "America/Denver"
@@ -172,8 +231,7 @@
     "America/Chicago"
   ],
   "317": [
-    "America/New_York",
-    "America/Chicago"
+    "America/New_York"
   ],
   "318": [
     "America/Chicago"
@@ -190,8 +248,20 @@
   "323": [
     "America/Los_Angeles"
   ],
+  "324": [
+    "America/New_York"
+  ],
   "325": [
     "America/Chicago"
+  ],
+  "326": [
+    "America/New_York"
+  ],
+  "327": [
+    "America/Chicago"
+  ],
+  "329": [
+    "America/New_York"
   ],
   "330": [
     "America/New_York"
@@ -220,11 +290,20 @@
   "341": [
     "America/Los_Angeles"
   ],
+  "343": [
+    "America/Toronto"
+  ],
+  "345": [
+    "America/Cayman"
+  ],
   "346": [
     "America/Chicago"
   ],
   "347": [
     "America/New_York"
+  ],
+  "350": [
+    "America/Los_Angeles"
   ],
   "351": [
     "America/New_York"
@@ -232,18 +311,41 @@
   "352": [
     "America/New_York"
   ],
+  "353": [
+    "America/Chicago"
+  ],
+  "354": [
+    "America/Toronto"
+  ],
   "360": [
     "America/Los_Angeles"
   ],
   "361": [
     "America/Chicago"
   ],
+  "363": [
+    "America/New_York"
+  ],
   "364": [
-    "America/New_York",
-    "America/Chicago"
+    "America/New_York"
+  ],
+  "365": [
+    "America/Toronto"
+  ],
+  "367": [
+    "America/Toronto"
+  ],
+  "368": [
+    "America/Edmonton"
+  ],
+  "369": [
+    "America/Los_Angeles"
   ],
   "380": [
     "America/New_York"
+  ],
+  "382": [
+    "America/Toronto"
   ],
   "385": [
     "America/Denver"
@@ -256,6 +358,9 @@
   ],
   "402": [
     "America/Chicago"
+  ],
+  "403": [
+    "America/Edmonton"
   ],
   "404": [
     "America/New_York"
@@ -290,13 +395,21 @@
   "415": [
     "America/Los_Angeles"
   ],
+  "416": [
+    "America/Toronto"
+  ],
   "417": [
     "America/Chicago"
+  ],
+  "418": [
+    "America/Halifax",
+    "America/Toronto"
   ],
   "419": [
     "America/New_York"
   ],
   "423": [
+    "America/Chicago",
     "America/New_York"
   ],
   "424": [
@@ -305,8 +418,14 @@
   "425": [
     "America/Los_Angeles"
   ],
+  "428": [
+    "America/Halifax"
+  ],
   "430": [
     "America/Chicago"
+  ],
+  "431": [
+    "America/Winnipeg"
   ],
   "432": [
     "America/Chicago"
@@ -317,8 +436,17 @@
   "435": [
     "America/Denver"
   ],
+  "437": [
+    "America/Toronto"
+  ],
+  "438": [
+    "America/Toronto"
+  ],
   "440": [
     "America/New_York"
+  ],
+  "441": [
+    "Atlantic/Bermuda"
   ],
   "442": [
     "America/Los_Angeles"
@@ -329,21 +457,41 @@
   "445": [
     "America/New_York"
   ],
+  "447": [
+    "America/Chicago"
+  ],
   "448": [
     "America/New_York"
+  ],
+  "450": [
+    "America/Toronto"
   ],
   "458": [
     "America/Los_Angeles"
   ],
   "463": [
-    "America/New_York",
+    "America/New_York"
+  ],
+  "464": [
     "America/Chicago"
+  ],
+  "468": [
+    "America/Toronto"
   ],
   "469": [
     "America/Chicago"
   ],
   "470": [
     "America/New_York"
+  ],
+  "472": [
+    "America/New_York"
+  ],
+  "473": [
+    "America/Grenada"
+  ],
+  "474": [
+    "America/Winnipeg"
   ],
   "475": [
     "America/New_York"
@@ -364,8 +512,7 @@
     "America/Chicago"
   ],
   "502": [
-    "America/New_York",
-    "America/Chicago"
+    "America/New_York"
   ],
   "503": [
     "America/Los_Angeles"
@@ -375,6 +522,9 @@
   ],
   "505": [
     "America/Denver"
+  ],
+  "506": [
+    "America/Halifax"
   ],
   "507": [
     "America/Chicago"
@@ -394,6 +544,9 @@
   "513": [
     "America/New_York"
   ],
+  "514": [
+    "America/Toronto"
+  ],
   "515": [
     "America/Chicago"
   ],
@@ -405,6 +558,9 @@
   ],
   "518": [
     "America/New_York"
+  ],
+  "519": [
+    "America/Toronto"
   ],
   "520": [
     "America/Phoenix"
@@ -425,11 +581,17 @@
     "America/New_York"
   ],
   "541": [
-    "America/Los_Angeles",
-    "America/Denver"
+    "America/Denver",
+    "America/Los_Angeles"
+  ],
+  "548": [
+    "America/Toronto"
   ],
   "551": [
     "America/New_York"
+  ],
+  "557": [
+    "America/Chicago"
   ],
   "559": [
     "America/Los_Angeles"
@@ -442,6 +604,9 @@
   ],
   "563": [
     "America/Chicago"
+  ],
+  "564": [
+    "America/Los_Angeles"
   ],
   "567": [
     "America/New_York"
@@ -459,20 +624,35 @@
     "America/Chicago"
   ],
   "574": [
-    "America/New_York",
-    "America/Chicago"
+    "America/Chicago",
+    "America/New_York"
   ],
   "575": [
     "America/Denver"
   ],
+  "579": [
+    "America/Toronto"
+  ],
   "580": [
     "America/Chicago"
+  ],
+  "581": [
+    "America/Toronto"
+  ],
+  "582": [
+    "America/New_York"
+  ],
+  "584": [
+    "America/Winnipeg"
   ],
   "585": [
     "America/New_York"
   ],
   "586": [
     "America/New_York"
+  ],
+  "587": [
+    "America/Edmonton"
   ],
   "601": [
     "America/Chicago"
@@ -488,9 +668,11 @@
   ],
   "605": [
     "America/Chicago",
-    "America/Denver"
+    "America/Denver",
+    "America/North_Dakota/Center"
   ],
   "606": [
+    "America/Chicago",
     "America/New_York"
   ],
   "607": [
@@ -507,6 +689,9 @@
   ],
   "612": [
     "America/Chicago"
+  ],
+  "613": [
+    "America/Toronto"
   ],
   "614": [
     "America/New_York"
@@ -551,6 +736,12 @@
   "636": [
     "America/Chicago"
   ],
+  "639": [
+    "America/Regina"
+  ],
+  "640": [
+    "America/New_York"
+  ],
   "641": [
     "America/Chicago"
   ],
@@ -559,6 +750,12 @@
   ],
   "646": [
     "America/New_York"
+  ],
+  "647": [
+    "America/Toronto"
+  ],
+  "649": [
+    "America/Grand_Turk"
   ],
   "650": [
     "America/Los_Angeles"
@@ -572,6 +769,12 @@
   "657": [
     "America/Los_Angeles"
   ],
+  "658": [
+    "America/Jamaica"
+  ],
+  "659": [
+    "America/Chicago"
+  ],
   "660": [
     "America/Chicago"
   ],
@@ -580,6 +783,9 @@
   ],
   "662": [
     "America/Chicago"
+  ],
+  "664": [
+    "America/Montserrat"
   ],
   "667": [
     "America/New_York"
@@ -593,7 +799,13 @@
   "671": [
     "Pacific/Guam"
   ],
+  "672": [
+    "America/Vancouver"
+  ],
   "678": [
+    "America/New_York"
+  ],
+  "680": [
     "America/New_York"
   ],
   "681": [
@@ -602,15 +814,22 @@
   "682": [
     "America/Chicago"
   ],
+  "683": [
+    "America/Toronto"
+  ],
   "684": [
     "Pacific/Pago_Pago"
   ],
-  "689": [
+  "686": [
     "America/New_York"
+  ],
+  "689": [
+    "America/Chicago"
   ],
   "701": [
     "America/Chicago",
-    "America/Denver"
+    "America/Denver",
+    "America/North_Dakota/Center"
   ],
   "702": [
     "America/Los_Angeles"
@@ -621,6 +840,9 @@
   "704": [
     "America/New_York"
   ],
+  "705": [
+    "America/Toronto"
+  ],
   "706": [
     "America/New_York"
   ],
@@ -629,6 +851,10 @@
   ],
   "708": [
     "America/Chicago"
+  ],
+  "709": [
+    "America/Halifax",
+    "America/St_Johns"
   ],
   "712": [
     "America/Chicago"
@@ -657,6 +883,9 @@
   "720": [
     "America/Denver"
   ],
+  "721": [
+    "America/Lower_Princes"
+  ],
   "724": [
     "America/New_York"
   ],
@@ -672,6 +901,9 @@
   "728": [
     "America/New_York"
   ],
+  "730": [
+    "America/Chicago"
+  ],
   "731": [
     "America/Chicago"
   ],
@@ -684,8 +916,14 @@
   "737": [
     "America/Chicago"
   ],
+  "738": [
+    "America/Los_Angeles"
+  ],
   "740": [
     "America/New_York"
+  ],
+  "742": [
+    "America/Toronto"
   ],
   "743": [
     "America/New_York"
@@ -693,11 +931,20 @@
   "747": [
     "America/Los_Angeles"
   ],
+  "748": [
+    "America/Denver"
+  ],
+  "753": [
+    "America/Toronto"
+  ],
   "754": [
     "America/New_York"
   ],
   "757": [
     "America/New_York"
+  ],
+  "758": [
+    "America/St_Lucia"
   ],
   "760": [
     "America/Los_Angeles"
@@ -709,13 +956,18 @@
     "America/Chicago"
   ],
   "765": [
-    "America/New_York",
-    "America/Chicago"
+    "America/New_York"
+  ],
+  "767": [
+    "America/Dominica"
   ],
   "769": [
     "America/Chicago"
   ],
   "770": [
+    "America/New_York"
+  ],
+  "771": [
     "America/New_York"
   ],
   "772": [
@@ -728,6 +980,8 @@
     "America/New_York"
   ],
   "775": [
+    "America/Boise",
+    "America/Denver",
     "America/Los_Angeles"
   ],
   "778": [
@@ -736,8 +990,17 @@
   "779": [
     "America/Chicago"
   ],
+  "780": [
+    "America/Edmonton"
+  ],
   "781": [
     "America/New_York"
+  ],
+  "782": [
+    "America/Halifax"
+  ],
+  "784": [
+    "America/St_Vincent"
   ],
   "785": [
     "America/Chicago",
@@ -767,15 +1030,22 @@
   "806": [
     "America/Chicago"
   ],
+  "807": [
+    "America/Toronto",
+    "America/Winnipeg"
+  ],
   "808": [
     "Pacific/Honolulu"
+  ],
+  "809": [
+    "America/Santo_Domingo"
   ],
   "810": [
     "America/New_York"
   ],
   "812": [
-    "America/New_York",
-    "America/Chicago"
+    "America/Chicago",
+    "America/New_York"
   ],
   "813": [
     "America/New_York"
@@ -795,8 +1065,26 @@
   "818": [
     "America/Los_Angeles"
   ],
+  "819": [
+    "America/Toronto"
+  ],
+  "820": [
+    "America/Los_Angeles"
+  ],
+  "821": [
+    "America/New_York"
+  ],
+  "825": [
+    "America/Edmonton"
+  ],
+  "826": [
+    "America/New_York"
+  ],
   "828": [
     "America/New_York"
+  ],
+  "829": [
+    "America/Santo_Domingo"
   ],
   "830": [
     "America/Chicago"
@@ -806,6 +1094,18 @@
   ],
   "832": [
     "America/Chicago"
+  ],
+  "835": [
+    "America/New_York"
+  ],
+  "838": [
+    "America/New_York"
+  ],
+  "839": [
+    "America/New_York"
+  ],
+  "840": [
+    "America/Los_Angeles"
   ],
   "843": [
     "America/New_York"
@@ -819,9 +1119,12 @@
   "848": [
     "America/New_York"
   ],
+  "849": [
+    "America/Santo_Domingo"
+  ],
   "850": [
-    "America/New_York",
-    "America/Chicago"
+    "America/Chicago",
+    "America/New_York"
   ],
   "854": [
     "America/New_York"
@@ -853,17 +1156,43 @@
   "865": [
     "America/New_York"
   ],
+  "867": [
+    "America/Edmonton",
+    "America/Fort_Nelson",
+    "America/Toronto",
+    "America/Vancouver",
+    "America/Winnipeg"
+  ],
+  "868": [
+    "America/Port_of_Spain"
+  ],
+  "869": [
+    "America/St_Kitts"
+  ],
   "870": [
     "America/Chicago"
   ],
   "872": [
     "America/Chicago"
   ],
+  "873": [
+    "America/Toronto"
+  ],
+  "876": [
+    "America/Jamaica"
+  ],
   "878": [
     "America/New_York"
   ],
+  "879": [
+    "America/Puerto_Rico",
+    "America/St_Johns"
+  ],
   "901": [
     "America/Chicago"
+  ],
+  "902": [
+    "America/Halifax"
   ],
   "903": [
     "America/Chicago"
@@ -871,12 +1200,18 @@
   "904": [
     "America/New_York"
   ],
+  "905": [
+    "America/Toronto"
+  ],
   "906": [
-    "America/New_York",
-    "America/Chicago"
+    "America/Chicago",
+    "America/New_York"
   ],
   "907": [
-    "America/Anchorage"
+    "America/Adak",
+    "America/Anchorage",
+    "America/Juneau",
+    "Pacific/Honolulu"
   ],
   "908": [
     "America/New_York"
@@ -918,17 +1253,19 @@
     "America/Los_Angeles"
   ],
   "928": [
+    "America/Denver",
     "America/Phoenix"
   ],
   "929": [
     "America/New_York"
   ],
   "930": [
-    "America/New_York",
-    "America/Chicago"
+    "America/New_York"
   ],
   "931": [
-    "America/Chicago",
+    "America/Chicago"
+  ],
+  "934": [
     "America/New_York"
   ],
   "936": [
@@ -949,7 +1286,19 @@
   "941": [
     "America/New_York"
   ],
+  "942": [
+    "America/Toronto"
+  ],
+  "943": [
+    "America/New_York"
+  ],
+  "945": [
+    "America/Chicago"
+  ],
   "947": [
+    "America/New_York"
+  ],
+  "948": [
     "America/New_York"
   ],
   "949": [
@@ -982,6 +1331,9 @@
   "973": [
     "America/New_York"
   ],
+  "975": [
+    "America/Chicago"
+  ],
   "978": [
     "America/New_York"
   ],
@@ -991,11 +1343,18 @@
   "980": [
     "America/New_York"
   ],
+  "983": [
+    "America/Denver"
+  ],
   "984": [
     "America/New_York"
   ],
   "985": [
     "America/Chicago"
+  ],
+  "986": [
+    "America/Boise",
+    "America/Los_Angeles"
   ],
   "989": [
     "America/New_York"

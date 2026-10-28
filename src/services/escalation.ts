@@ -88,38 +88,38 @@ function buildEscalationMessage(
   ].join('\n');
 }
 
-/** Cap retries for owner possible-opt-out SMS (QC r10). */
+/** Cap retries for owner notify SMS (QC r10/r11). */
 export const OWNER_NOTIFY_MAX_ATTEMPTS = 3;
 
 /**
- * Notify the business owner that a reply may be an opt-out (ambiguous keyword
- * in a longer sentence). Does not change lead status to escalated — that is
- * reserved for classified high/emergency urgency.
- *
- * Retries up to OWNER_NOTIFY_MAX_ATTEMPTS. On exhaustion logs an ALERT and
- * returns false so inbound can fail closed (HTTP 5xx → BRWN relay retry).
- *
- * @returns true when the owner SMS was accepted (sent or ambiguous/parked).
+ * Exponential backoff before retries (ms). Index 0 unused (no wait before first
+ * attempt); after failure on attempt n wait OWNER_NOTIFY_BACKOFF_MS[n] before n+1.
+ * QC r11: 200ms, 800ms (≈ 200 * 2^(attempt-1)).
  */
-export async function notifyPossibleOptOut(
+export const OWNER_NOTIFY_BACKOFF_MS = [0, 200, 800] as const;
+
+export type OwnerNotifySleep = (ms: number) => Promise<void>;
+
+const defaultSleep: OwnerNotifySleep = (ms) =>
+  new Promise((resolve) => setTimeout(resolve, ms));
+
+async function notifyOwnerWithRetries(
   leadId: string,
   business: Business,
-  body: string,
-  reason: string
+  message: string,
+  alertLabel: string,
+  sleep: OwnerNotifySleep = defaultSleep
 ): Promise<boolean> {
   const escalationPhone = business.emergency_phone || business.phone;
-  const message = [
-    '⚠️ POSSIBLE OPT-OUT — campaign paused',
-    `Lead: ${leadId}`,
-    `Reason: ${reason}`,
-    `Reply: "${body.slice(0, 160)}"`,
-    'Review before sending more texts.',
-  ].join('\n');
-
   let lastKind = 'unknown';
   let lastReason = '';
 
   for (let attempt = 1; attempt <= OWNER_NOTIFY_MAX_ATTEMPTS; attempt++) {
+    if (attempt > 1) {
+      const wait = OWNER_NOTIFY_BACKOFF_MS[attempt - 1] ?? 800;
+      if (wait > 0) await sleep(wait);
+    }
+
     const outcome = await sendMessage({
       kind: 'escalation',
       leadId,
@@ -133,7 +133,7 @@ export async function notifyPossibleOptOut(
 
     if (outcome.kind === 'sent' || outcome.kind === 'ambiguous') {
       console.log(
-        `Possible opt-out notified for lead ${redactId(leadId)} → ${redactPhone(escalationPhone)} (attempt ${attempt})`
+        `${alertLabel} notified for lead ${redactId(leadId)} → ${redactPhone(escalationPhone)} (attempt ${attempt})`
       );
       return true;
     }
@@ -141,23 +141,80 @@ export async function notifyPossibleOptOut(
     lastKind = outcome.kind;
     lastReason = 'reason' in outcome ? String(outcome.reason) : '';
     console.error(
-      `Possible-opt-out notify failed (attempt ${attempt}/${OWNER_NOTIFY_MAX_ATTEMPTS}):`,
+      `${alertLabel} notify failed (attempt ${attempt}/${OWNER_NOTIFY_MAX_ATTEMPTS}):`,
       lastKind,
       lastReason
     );
   }
 
   console.error(
-    'ALERT: possible-opt-out owner notify exhausted retries',
+    `ALERT: ${alertLabel} owner notify exhausted retries`,
     JSON.stringify({
       leadId: redactId(leadId),
-      reason,
       lastKind,
       lastReason,
       attempts: OWNER_NOTIFY_MAX_ATTEMPTS,
     })
   );
   return false;
+}
+
+/**
+ * Notify the business owner that a reply may be an opt-out (ambiguous keyword
+ * in a longer sentence). Does not change lead status to escalated — that is
+ * reserved for classified high/emergency urgency.
+ *
+ * Retries up to OWNER_NOTIFY_MAX_ATTEMPTS with exponential backoff. On exhaustion
+ * logs an ALERT and returns false so inbound can fail closed (HTTP 5xx → BRWN
+ * relay retry).
+ */
+export async function notifyPossibleOptOut(
+  leadId: string,
+  business: Business,
+  body: string,
+  reason: string,
+  sleep: OwnerNotifySleep = defaultSleep
+): Promise<boolean> {
+  const message = [
+    '⚠️ POSSIBLE OPT-OUT — campaign paused',
+    `Lead: ${leadId}`,
+    `Reason: ${reason}`,
+    `Reply: "${body.slice(0, 160)}"`,
+    'Review before sending more texts.',
+  ].join('\n');
+  return notifyOwnerWithRetries(
+    leadId,
+    business,
+    message,
+    'possible-opt-out',
+    sleep
+  );
+}
+
+/**
+ * Alert the owner when a lead parks because the caller area code has no mapped
+ * timezone (QC r11). Unknown zone → unresolved quiet hours → no customer SMS.
+ */
+export async function notifyUnresolvedTimezone(
+  leadId: string,
+  business: Business,
+  callerPhone: string,
+  sleep: OwnerNotifySleep = defaultSleep
+): Promise<boolean> {
+  const message = [
+    '⚠️ UNKNOWN TIMEZONE — campaign send parked',
+    `Lead: ${leadId}`,
+    `Caller: ${callerPhone}`,
+    'Area code has no quiet-hours zone map entry.',
+    'Review / set lead timezone before sending.',
+  ].join('\n');
+  return notifyOwnerWithRetries(
+    leadId,
+    business,
+    message,
+    'unresolved-timezone',
+    sleep
+  );
 }
 
 export function shouldEscalate(

@@ -40,8 +40,8 @@ describe('quiet hours timezone resolution', () => {
     expect(quietEndHourForPhone('+12395551234')).toBe(QUIET_END_HOUR_FL_OK);
     expect(quietEndHourForPhone('+15725551234')).toBe(QUIET_END_HOUR_FL_OK);
     expect(resolveLeadTimezones({ callerPhoneE164: '+18505551234' }).zones).toEqual([
-      'America/New_York',
       'America/Chicago',
+      'America/New_York',
     ]);
     expect(quietEndHourForPhone('+12125551234')).toBe(QUIET_END_HOUR_DEFAULT);
     expect(resolveLeadTimezones({ callerPhoneE164: '+18085551234' }).zones).toEqual([

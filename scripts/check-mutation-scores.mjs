@@ -15,17 +15,49 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 
 const REPORT = join(process.cwd(), 'reports/mutation/mutation.json');
-const MIN = Number(process.env.MUTATION_MIN ?? '90');
-// Per-file cap — campaign-runtime log-only ~195; QC r10 tightens to ~200.
-const MAX_IGNORED_PER_FILE = Number(process.env.MUTATION_MAX_IGNORED ?? '200');
-// Global ignored budget (QC r10: ~320, ratchet vs committed baseline).
-const MAX_IGNORED_TOTAL = Number(
-  process.env.MUTATION_MAX_IGNORED_TOTAL ?? '320'
+
+/** Hard floors/caps — QC r11: env must not loosen these in CI. */
+const HARD_MIN = 90;
+const HARD_MAX_IGNORED_PER_FILE = 200;
+const HARD_MAX_IGNORED_TOTAL = 320;
+const HARD_BASELINE_IGNORED = 305;
+
+const IN_CI =
+  process.env.CI === 'true' || process.env.GITHUB_ACTIONS === 'true';
+
+function gateNumber(envName, hardDefault, { higherIsLooser }) {
+  const raw = process.env[envName];
+  if (raw === undefined || raw === '') return hardDefault;
+  const n = Number(raw);
+  if (!Number.isFinite(n)) return hardDefault;
+  if (IN_CI) {
+    // In CI, env may only tighten (never loosen) the hard gate.
+    if (higherIsLooser) return Math.min(n, hardDefault);
+    return Math.max(n, hardDefault);
+  }
+  return n;
+}
+
+const MIN = gateNumber('MUTATION_MIN', HARD_MIN, { higherIsLooser: false });
+// Per-file cap — campaign-runtime log-only ~195; QC r10/r11: 200.
+const MAX_IGNORED_PER_FILE = gateNumber(
+  'MUTATION_MAX_IGNORED',
+  HARD_MAX_IGNORED_PER_FILE,
+  { higherIsLooser: true }
 );
-const BASELINE_IGNORED = Number(
-  process.env.MUTATION_IGNORED_BASELINE ?? '305'
+const MAX_IGNORED_TOTAL = gateNumber(
+  'MUTATION_MAX_IGNORED_TOTAL',
+  HARD_MAX_IGNORED_TOTAL,
+  { higherIsLooser: true }
 );
-const MIN_SUPPRESSED = Number(process.env.MUTATION_MIN_SUPPRESSED ?? '0');
+const BASELINE_IGNORED = gateNumber(
+  'MUTATION_IGNORED_BASELINE',
+  HARD_BASELINE_IGNORED,
+  { higherIsLooser: true }
+);
+const MIN_SUPPRESSED = IN_CI
+  ? 0
+  : Number(process.env.MUTATION_MIN_SUPPRESSED ?? '0');
 const TARGETS = [
   'src/services/send/index.ts',
   'src/services/send/decisions.ts',
