@@ -13,6 +13,9 @@ const ENABLED_VALUES = new Set(['', '1', 'true', 'yes', 'on']);
 export function isSendsEnabled(
   env: Record<string, string | undefined> = process.env
 ): boolean {
-  const raw = (env.SENDS_ENABLED ?? 'true').trim().toLowerCase();
+  // Missing var → enabled. Do not default via ?? 'true' (equivalent to ?? ''
+  // because '' is also in ENABLED_VALUES).
+  if (env.SENDS_ENABLED === undefined) return true;
+  const raw = env.SENDS_ENABLED.trim().toLowerCase();
   return ENABLED_VALUES.has(raw);
 }

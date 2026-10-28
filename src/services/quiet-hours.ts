@@ -21,6 +21,7 @@ import { AREA_CODE_ZONES, FL_AREA, OK_AREA } from './quiet-hours-zones';
 const VALID_TZ_CACHE = new Map<string, boolean>();
 
 export function isValidTimeZone(tz: string): boolean {
+  // Stryker disable next-line ConditionalExpression: cache hit is a pure perf shortcut (same result)
   if (VALID_TZ_CACHE.has(tz)) return VALID_TZ_CACHE.get(tz)!;
   try {
     Intl.DateTimeFormat('en-US', { timeZone: tz }).format(new Date());
@@ -57,6 +58,7 @@ export function resolveLeadTimezones(opts: {
   const endHour = endHourForAreaCode(ac);
 
   // Explicit lead timezone always wins when valid.
+  // Stryker disable next-line StringLiteral: || '' vs non-IANA filler are equivalent (both fail isValidTimeZone)
   const leadTz = opts.leadTimezone?.trim() || '';
   if (leadTz && isValidTimeZone(leadTz)) {
     return {
@@ -69,11 +71,13 @@ export function resolveLeadTimezones(opts: {
 
   const mapped = ac ? AREA_CODE_ZONES[ac] : undefined;
   if (mapped) {
+    // Stryker disable next-line MethodExpression: AREA_CODE_ZONES only lists real IANA zones (filter is identity)
     const zones = mapped.filter(isValidTimeZone);
     if (zones.length > 1) {
       // Ambiguous (e.g. 850 ET+CT): require EVERY zone open.
       return { zones, ambiguous: true, known: true, endHour };
     }
+    // Stryker disable next-line ConditionalExpression: zones.length===0 unreachable (map never empty after filter)
     if (zones.length === 1) {
       return { zones, ambiguous: false, known: true, endHour };
     }
