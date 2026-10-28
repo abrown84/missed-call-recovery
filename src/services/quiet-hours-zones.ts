@@ -1,7 +1,8 @@
 /**
  * Static NANP area-code → IANA zone map.
- * Excluded from Stryker mutate (QC r8) — covered by quiet-hours-zones.test.ts
- * and mut.py #13 (850 dual-zone string replace).
+ * Under Stryker mutate (QC r9) — lookups go through zonesForAreaCode() so
+ * non-static mutants are covered quickly; table-driven tests pin map content.
+ * mut.py #13 still string-replaces '850' dual zones.
  */
 
 /** NANP area code → IANA zone(s). Multiple = ambiguous (require all open). */
@@ -172,7 +173,8 @@ export const AREA_CODE_ZONES: Record<string, string[]> = {
   '531': ['America/Chicago'],
   '534': ['America/Chicago'],
   '540': ['America/New_York'],
-  '541': ['America/Los_Angeles'],
+  // OR 541: mostly Pacific; Malheur County is Mountain — require both.
+  '541': ['America/Los_Angeles', 'America/Denver'],
   '551': ['America/New_York'],
   '559': ['America/Los_Angeles'],
   '562': ['America/Los_Angeles'],
@@ -188,7 +190,8 @@ export const AREA_CODE_ZONES: Record<string, string[]> = {
   '601': ['America/Chicago'],
   '602': ['America/Phoenix'],
   '603': ['America/New_York'],
-  '605': ['America/Chicago'],
+  // SD 605: East River Central, West River Mountain — require both.
+  '605': ['America/Chicago', 'America/Denver'],
   '606': ['America/New_York'],
   '607': ['America/New_York'],
   '608': ['America/Chicago'],
@@ -312,7 +315,9 @@ export const AREA_CODE_ZONES: Record<string, string[]> = {
   '928': ['America/Phoenix'],
   '929': ['America/New_York'],
   '930': ['America/New_York', 'America/Chicago'],
-  '931': ['America/Chicago'],
+  // TN 931 (Middle TN): mostly Central; eastern counties near the ET/CT
+  // divide may observe Eastern — dual-zone toward TCPA safety.
+  '931': ['America/Chicago', 'America/New_York'],
   '936': ['America/Chicago'],
   '937': ['America/New_York'],
   '938': ['America/Chicago'],
@@ -333,7 +338,16 @@ export const AREA_CODE_ZONES: Record<string, string[]> = {
   '984': ['America/New_York'],
   '985': ['America/Chicago'],
   '989': ['America/New_York'],
+  // Puerto Rico / Guam (NANP territories)
+  '787': ['America/Puerto_Rico'],
+  '939': ['America/Puerto_Rico'],
+  '671': ['Pacific/Guam'],
 };
+
+/** Lookup helper — preferred over direct map access so mutants are non-static. */
+export function zonesForAreaCode(ac: string): string[] | undefined {
+  return AREA_CODE_ZONES[ac];
+}
 
 export const FL_AREA = new Set([
   '239', '305', '321', '352', '386', '407', '448', '561', '645', '656', '689',

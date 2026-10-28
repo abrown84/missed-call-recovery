@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 /**
- * Enforce mutation scores per targeted module (QC r7/r8).
+ * Enforce mutation scores per targeted module (QC r7/r8/r9).
  * Counts no-coverage mutants in the denominator (honest gate).
  * Ignored mutants are reported separately and counted as not-killed
  * in the "suppressed-as-survived" score for disclosure.
  *
- * QC r8:
+ * QC r8/r9:
  * - Fail any non-barrel target with 0 tested mutants (vacuous 100%).
  * - Cap ignored mutants per file (MAX_IGNORED_PER_FILE).
+ * - Cap total ignored across targets (MAX_IGNORED_TOTAL).
  * Reads reports/mutation/mutation.json from the last `stryker run`.
  */
 import { readFileSync } from 'fs';
@@ -15,9 +16,12 @@ import { join } from 'path';
 
 const REPORT = join(process.cwd(), 'reports/mutation/mutation.json');
 const MIN = Number(process.env.MUTATION_MIN ?? '90');
-// Cap stops vacuous data maps (quiet-hours-zones had 689). Log-only
-// disable blocks in campaign-runtime (~195) are below this ceiling.
+// Per-file cap (campaign-runtime log-only disables ~195 sit under this).
 const MAX_IGNORED_PER_FILE = Number(process.env.MUTATION_MAX_IGNORED ?? '220');
+// Global ignored budget across all TARGETS (QC r9 P2).
+const MAX_IGNORED_TOTAL = Number(
+  process.env.MUTATION_MAX_IGNORED_TOTAL ?? '400'
+);
 const MIN_SUPPRESSED = Number(process.env.MUTATION_MIN_SUPPRESSED ?? '0');
 const TARGETS = [
   'src/services/send/index.ts',
@@ -47,7 +51,7 @@ const TARGETS = [
   'src/services/inbound.ts',
   'src/services/inbound-io-plans.ts',
   'src/services/quiet-hours.ts',
-  // quiet-hours-zones.ts removed from mutate (QC r8): 689 static / 0 tested
+  'src/services/quiet-hours-zones.ts',
   'src/services/missed-call.ts',
   'src/services/missed-call-io-plans.ts',
   'src/services/reconcile-logic.ts',
@@ -134,7 +138,7 @@ for (const path of TARGETS) {
 }
 
 console.log(
-  `Mutation scores (killed+timeout / killed+timeout+survived+no-cov) MIN=${MIN} MAX_IGNORED=${MAX_IGNORED_PER_FILE}:`
+  `Mutation scores (killed+timeout / killed+timeout+survived+no-cov) MIN=${MIN} MAX_IGNORED_PER_FILE=${MAX_IGNORED_PER_FILE} MAX_IGNORED_TOTAL=${MAX_IGNORED_TOTAL}:`
 );
 for (const r of rows) {
   const mark = r.score >= MIN ? 'OK' : 'FAIL';
@@ -158,6 +162,13 @@ console.log(
   `Overall suppressed-as-survived: ${suppressed.toFixed(2)}% (Ignored=${totalIgnored})`
 );
 
+if (totalIgnored > MAX_IGNORED_TOTAL) {
+  console.error(
+    `FAIL totalIgnored=${totalIgnored} exceeds MAX_IGNORED_TOTAL=${MAX_IGNORED_TOTAL}`
+  );
+  failed = true;
+}
+
 if (MIN_SUPPRESSED > 0 && suppressed < MIN_SUPPRESSED) {
   console.error(
     `\nSuppressed-as-survived ${suppressed.toFixed(2)}% < floor ${MIN_SUPPRESSED}%`
@@ -166,7 +177,9 @@ if (MIN_SUPPRESSED > 0 && suppressed < MIN_SUPPRESSED) {
 }
 
 if (failed) {
-  console.error(`\nMutation gate failed: need ≥${MIN}% per module; no 0-tested+ignored; ignored≤${MAX_IGNORED_PER_FILE}.`);
+  console.error(
+    `\nMutation gate failed: need ≥${MIN}% per module; no 0-tested+ignored; ignored≤${MAX_IGNORED_PER_FILE}/file; totalIgnored≤${MAX_IGNORED_TOTAL}.`
+  );
   process.exit(1);
 }
 console.log(`\nAll targeted modules ≥${MIN}%.`);

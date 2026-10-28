@@ -41,10 +41,11 @@ const config = {
     'src/services/missed-call-io-plans.ts',
     'src/services/reconcile-logic.ts',
     'src/services/quiet-hours.ts',
-    // quiet-hours-zones.ts excluded (QC r8): pure data map → 689 static /
-    // 0 tested vacuous 100%. Covered by quiet-hours-zones.test.ts instead.
+    // QC r9: back under mutate — zonesForAreaCode() + table-driven tests.
+    // Static map mutants are expensive; CI mutation timeout is 90m.
+    'src/services/quiet-hours-zones.ts',
   ],
-  // QC r8: test CONFUSABLES / keyword-list static mutants in opt-out-data.ts
+  // QC r8/r9: test static mutants (opt-out-data CONFUSABLES, zone map, etc.)
   ignoreStatic: false,
   thresholds: {
     high: 90,

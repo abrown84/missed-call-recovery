@@ -19,7 +19,11 @@ describe('staging-ssl.mjs resolveStagingSsl (mut.py #50)', () => {
     expect(resolveStagingSsl({ STAGING_PG_SSL: '0' })).toBe(false);
     expect(resolveStagingSsl({ STAGING_PG_SSL: 'false' })).toBe(false);
     expect(resolveStagingSsl({ STAGING_PG_SSL: 'off' })).toBe(false);
-    expect(resolveStagingSsl({})).toEqual({ rejectUnauthorized: false });
+    // QC r9: default rejectUnauthorized is true.
+    expect(resolveStagingSsl({})).toEqual({ rejectUnauthorized: true });
+    expect(
+      resolveStagingSsl({ STAGING_PG_SSL_REJECT_UNAUTHORIZED: '0' })
+    ).toEqual({ rejectUnauthorized: false });
     expect(
       resolveStagingSsl({ STAGING_PG_SSL_REJECT_UNAUTHORIZED: '1' })
     ).toEqual({ rejectUnauthorized: true });

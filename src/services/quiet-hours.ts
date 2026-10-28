@@ -15,7 +15,7 @@ export const QUIET_START_HOUR = 8;
 export const QUIET_END_HOUR_DEFAULT = 21; // exclusive
 export const QUIET_END_HOUR_FL_OK = 20; // exclusive
 
-import { AREA_CODE_ZONES, FL_AREA, OK_AREA } from './quiet-hours-zones';
+import { FL_AREA, OK_AREA, zonesForAreaCode } from './quiet-hours-zones';
 
 
 const VALID_TZ_CACHE = new Map<string, boolean>();
@@ -68,9 +68,9 @@ export function resolveLeadTimezones(opts: {
     };
   }
 
-  const mapped = ac ? AREA_CODE_ZONES[ac] : undefined;
+  const mapped = ac ? zonesForAreaCode(ac) : undefined;
   if (mapped) {
-    // Stryker disable next-line MethodExpression: AREA_CODE_ZONES only lists real IANA zones (filter is identity)
+    // Stryker disable next-line MethodExpression: zonesForAreaCode only lists real IANA zones (filter is identity)
     const zones = mapped.filter(isValidTimeZone);
     if (zones.length > 1) {
       // Ambiguous (e.g. 850 ET+CT): require EVERY zone open.

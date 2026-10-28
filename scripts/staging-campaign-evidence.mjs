@@ -183,8 +183,8 @@ async function runDryRunDb() {
     process.exit(0);
   }
 
-  // SSL: set STAGING_PG_SSL=0/false to disable; STAGING_PG_SSL_REJECT_UNAUTHORIZED=1
-  // to verify certs (default: encrypt but allow self-signed for staging).
+  // SSL: set STAGING_PG_SSL=0/false to disable; STAGING_PG_SSL_REJECT_UNAUTHORIZED=0
+  // to allow self-signed (default: rejectUnauthorized=true).
   const ssl = resolveStagingSsl(process.env);
   const client = new Client({ connectionString: url, ssl });
   await client.connect();
