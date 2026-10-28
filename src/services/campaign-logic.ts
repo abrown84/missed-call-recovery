@@ -170,6 +170,7 @@ export function decideReplyEnrollmentAction(
 ): ReplyEnrollmentAction {
   const replyMode = options.replyMode ?? 'pause';
   const now = options.now ?? new Date();
+  // Stryker disable next-line LogicalOperator: undefined && X is undefined; hasFreshClaim default applies
   const staleMs = options.claimStaleMs ?? CLAIM_STALE_MS;
 
   if (!enrollment) {
@@ -239,6 +240,7 @@ export function isEnrollmentClaimable(
 
   const claimedAt = row.claimed_at ? new Date(row.claimed_at).getTime() : null;
   const claimIsFresh =
+    // Stryker disable next-line ConditionalExpression: null claimedAt → (now < staleMs) is false for wall-clock now
     claimedAt != null && now.getTime() - claimedAt < staleMs;
 
   if (claimIsFresh) return false;

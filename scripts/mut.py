@@ -38,7 +38,8 @@ muts=[
 ('19','r4#6 compact form removed','src/services/opt-out.ts',"  if (WHOLE_MESSAGE_SET.has(normalized) || WHOLE_COMPACT_SET.has(compact)) {\n    return { kind: 'opt_out' };\n  }","  if (WHOLE_MESSAGE_SET.has(normalized)) {\n    return { kind: 'opt_out' };\n  }",1),
 ('20','r4#6 opted_out gate in module',D,"  if (input.optedOut) {\n    return { kind: 'blocked', reason: 'opted_out' };\n  }","  if (false) {\n    return { kind: 'blocked', reason: 'opted_out' };\n  }",1),
 ('21','r4#6 suppression gate in module',D,"  if (input.suppressed) {\n    return { kind: 'blocked', reason: 'suppressed' };\n  }","  if (false) {\n    return { kind: 'blocked', reason: 'suppressed' };\n  }",1),
-('22','r4#7 backfill ON CONFLICT dropped',G,"ON CONFLICT (business_id, phone) DO NOTHING;",";",1),
+# occurrence 2 = STOP backfill INSERT (load-bearing); rebuild staging is #1
+('22','r4#7 backfill ON CONFLICT dropped',G,"ON CONFLICT (business_id, phone) DO NOTHING;",";",2),
 ('23','r4#7 enrollment dedupe prefers non-active',G,"CASE WHEN status = 'active' THEN 0 ELSE 1 END,","CASE WHEN status = 'active' THEN 1 ELSE 0 END,",1),
 ('24','r4#7 NULLS LAST -> FIRST',G,"enrolled_at DESC NULLS LAST,","enrolled_at DESC NULLS FIRST,",1),
 ('25','r4#7 NFKC removed from backfill',G,"normalize(btrim(m.body), NFKC),","btrim(m.body),",1),

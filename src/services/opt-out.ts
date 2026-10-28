@@ -70,7 +70,7 @@ export function normalizeOptOutText(raw: string): string {
     .replace(ZERO_WIDTH_RE, '')
     .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, '');
   const spaced = replaceNbspWithSpace(folded);
-  // Stryker disable next-line Regex: later /\s+/g collapse makes + vs empty quantifier equivalent
+  // Stryker disable next-line Regex,MethodExpression: later /\s+/g + final trim make newline/+ and mid-trim equivalent
   const lined = spaced.replace(/[\r\n]+/g, ' ').trim();
   return stripEdgeQuotes(lined)
     .replace(/[\s?!.,…]+$/g, '')
@@ -144,6 +144,7 @@ export function classifyOptOut(raw: string): OptOutVerdict {
 /** Join runs of single-letter tokens: "S T O P PLEASE" → "STOP PLEASE". */
 export function collapseSpacedLetterTokens(normalized: string): string {
   return normalized.replace(/\b(?:[A-Z]\s+){1,}[A-Z]\b/g, (m) =>
+    // Stryker disable next-line Regex: /\s/g vs /\s+/g identical for space runs here
     m.replace(/\s+/g, '')
   );
 }

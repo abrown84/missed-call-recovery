@@ -105,25 +105,7 @@ describe('mut.py #32 reconcile uses stored key_supported_at_send', () => {
     markRelayKeySupportConfirmed();
   });
 
-  it('Boolean(row.key_supported_at_send) preserves false (not forced true)', () => {
-    // Mirrors send/index.ts reconcile wiring — mut.py #32 forces `true`.
-    const rowFalse = { key_supported_at_send: false };
-    const rowTrue = { key_supported_at_send: true };
-    const rowMissing = { key_supported_at_send: null };
-    expect(Boolean(rowFalse.key_supported_at_send)).toBe(false);
-    expect(Boolean(rowTrue.key_supported_at_send)).toBe(true);
-    expect(Boolean(rowMissing.key_supported_at_send)).toBe(false);
-    // Forcing true would break the false case:
-    const forced = true;
-    expect(Boolean(rowFalse.key_supported_at_send)).not.toBe(forced);
-  });
-
-  it('reconcile with key_supported false still runs lookup', async () => {
-    const lookup = vi.fn(async () => ({
-      outcome: 'sent' as const,
-      status: 'delivered',
-      found: true,
-    }));
+  function reconcileDeps(lookup: ReturnType<typeof vi.fn>) {
     const api: Record<string, any> = {};
     const self = () => api;
     for (const m of [
@@ -141,8 +123,9 @@ describe('mut.py #32 reconcile uses stored key_supported_at_send', () => {
       api[m] = vi.fn(self);
     }
     api.maybeSingle = vi.fn(async () => ({ data: null, error: null }));
-    await reconcileOneWithDeps(
-      {
+    return {
+      api,
+      deps: {
         db: () => ({ from: () => api }) as never,
         adapter: () =>
           ({
@@ -163,16 +146,47 @@ describe('mut.py #32 reconcile uses stored key_supported_at_send', () => {
         ensureCaps: async () => true,
         warnLookupUnsupported: async () => ({ supported: true }),
       },
-      {
-        id: '1',
-        lead_id: 'L',
-        message_sid: 'mlf:campaign:E:C:step:1',
-        status: 'unknown',
-        reconcile_attempts: 0,
-        key_supported_at_send: false,
-      }
-    );
+    };
+  }
+
+  it('never_sent + key_supported false → needs_review (not requeue)', async () => {
+    // mut.py #32 forces keySupportedAtSend: true, which would requeue_never_sent.
+    const lookup = vi.fn(async () => ({
+      outcome: 'never_sent' as const,
+      found: false,
+    }));
+    const { deps } = reconcileDeps(lookup);
+    const result = await reconcileOneWithDeps(deps, {
+      id: '1',
+      lead_id: 'L',
+      message_sid: 'mlf:campaign:E:C:step:1',
+      status: 'unknown',
+      reconcile_attempts: 0,
+      key_supported_at_send: false,
+    });
     expect(lookup).toHaveBeenCalled();
+    expect(result.kind).toBe('needs_review');
+    expect(result).toMatchObject({
+      kind: 'needs_review',
+      reason: 'never_sent_without_key_support',
+    });
+  });
+
+  it('never_sent + key_supported true → requeue path', async () => {
+    const lookup = vi.fn(async () => ({
+      outcome: 'never_sent' as const,
+      found: false,
+    }));
+    const { deps } = reconcileDeps(lookup);
+    const result = await reconcileOneWithDeps(deps, {
+      id: '1',
+      lead_id: 'L',
+      message_sid: 'mlf:campaign:E:C:step:1',
+      status: 'unknown',
+      reconcile_attempts: 0,
+      key_supported_at_send: true,
+    });
+    expect(result.kind).toBe('never_sent');
   });
 });
 
@@ -368,21 +382,38 @@ describe('mut.py #22/#24/#25/#26 migration 003 behavioural (PGlite)', () => {
     expect(lead.rows[0].opted_out).toBe(true);
   }, 90_000);
 
-  it('#25 NFKC fullwidth STOP backfills', async () => {
-    const db = await bootWithMessages([
-      { body: '\uFF33\uFF34\uFF2F\uFF30', sid: 'fw1' },
-    ]);
+  it('#25 NFKC fullwidth STOP PLEASE backfills (exact arm, not compact)', async () => {
+    // Fullwidth "STOP PLEASE" — compact form STOPPLEASE is NOT in the compact
+    // list, so only the NFKC exact-arm match works. mut.py #25 strips the
+    // first normalize(..., NFKC); without it this must not suppress.
+    const body =
+      '\uFF33\uFF34\uFF2F\uFF30\u0020\uFF30\uFF2C\uFF25\uFF21\uFF33\uFF25';
+    const db = await bootWithMessages([{ body, sid: 'fw1' }]);
     const suppress = await db.query<{ n: number }>(
       `SELECT COUNT(*)::int AS n FROM sms_suppressions WHERE reason = 'opt_out_backfill'`
     );
     expect(suppress.rows[0].n).toBe(1);
   }, 90_000);
 
-  it('#22 ON CONFLICT keeps a single suppression row', async () => {
-    const db = await bootWithMessages([
-      { body: 'STOP', sid: 'a' },
-      { body: 'STOP', sid: 'b' },
-    ]);
+  it('#22 ON CONFLICT keeps a single suppression row after rebuild+backfill', async () => {
+    // Pre-seed a suppression that survives DELETE→rebuild, then STOP backfill
+    // hits the same (business_id, phone) — requires ON CONFLICT DO NOTHING.
+    const db = await bootWithMessages([{ body: 'STOP', sid: 'a' }]);
+    // Re-run only the backfill insert would conflict; full migration already
+    // ran once. Insert a duplicate-prone second STOP and re-exec backfill SQL.
+    await db.exec(
+      `INSERT INTO sms_messages (lead_id, direction, body, message_sid, sent_at)
+       VALUES ('44444444-4444-4444-8444-444444444444', 'inbound', 'STOP', 'a2', NOW())`
+    );
+    const forward = readFileSync(
+      join(process.cwd(), 'supabase/migrations/003_campaign_idempotency.sql'),
+      'utf8'
+    );
+    const backfill = forward.slice(
+      forward.indexOf('-- 3) STOP backfill'),
+      forward.indexOf('-- Mark leads opted_out')
+    );
+    await db.exec(backfill);
     const suppress = await db.query<{ n: number }>(
       `SELECT COUNT(*)::int AS n FROM sms_suppressions`
     );

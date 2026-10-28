@@ -246,6 +246,13 @@ describe('processInboundSmsWithDeps', () => {
     expect(spies.markLeadOptedOut).toHaveBeenCalledWith('lead-stop');
     expect(spies.pauseCampaignForLead).toHaveBeenCalledWith('lead-stop');
     expect(db.inserts.length).toBe(1);
+    expect(db.inserts[0]).toMatchObject({
+      lead_id: 'lead-stop',
+      body: 'STOP',
+      message_sid: 'msg-fixed',
+      direction: 'inbound',
+      status: 'received',
+    });
   });
 
   it('STOP from bad phone skips suppress but still records', async () => {
@@ -970,28 +977,54 @@ describe('processInboundSmsWithDeps', () => {
       needs_human_review_reason: 'stop_in_sentence',
       needs_human_review_at: FIXED.toISOString(),
     });
+    expect(db.inserts[0]).toMatchObject({
+      lead_id: 'amb',
+      body: 'maybe stop',
+      message_sid: 'msg-fixed',
+      direction: 'inbound',
+      status: 'received',
+    });
   });
 });
 
 describe('resolveBusinessPhone', () => {
+  const ENV_KEY = ENV_BRWN_DEFAULT_BUSINESS_PHONE;
+
+  function withClearedEnv(fn: () => void) {
+    const prev = process.env[ENV_KEY];
+    delete process.env[ENV_KEY];
+    try {
+      fn();
+    } finally {
+      if (prev === undefined) delete process.env[ENV_KEY];
+      else process.env[ENV_KEY] = prev;
+    }
+  }
+
   it('prefers payload then env', () => {
-    expect(resolveBusinessPhone('+15550001111')).toBe('+15550001111');
-    expect(resolveBusinessPhone('  ')).toBe(null);
-    process.env[ENV_BRWN_DEFAULT_BUSINESS_PHONE] = '+15550009999';
-    expect(resolveBusinessPhone(undefined)).toBe('+15550009999');
-    expect(resolveBusinessPhone(null)).toBe('+15550009999');
-    expect(resolveBusinessPhone('')).toBe('+15550009999');
-    delete process.env[ENV_BRWN_DEFAULT_BUSINESS_PHONE];
-    expect(resolveBusinessPhone(undefined)).toBe(null);
+    withClearedEnv(() => {
+      expect(resolveBusinessPhone('+15550001111')).toBe('+15550001111');
+      // Whitespace-only payload falls through; with env cleared → null
+      expect(resolveBusinessPhone('  ')).toBe(null);
+      process.env[ENV_KEY] = '+15550009999';
+      expect(resolveBusinessPhone('  ')).toBe('+15550009999');
+      expect(resolveBusinessPhone(undefined)).toBe('+15550009999');
+      expect(resolveBusinessPhone(null)).toBe('+15550009999');
+      expect(resolveBusinessPhone('')).toBe('+15550009999');
+      delete process.env[ENV_KEY];
+      expect(resolveBusinessPhone(undefined)).toBe(null);
+    });
   });
 
   it('trims env fallback and ignores unrelated env keys', () => {
-    process.env[ENV_BRWN_DEFAULT_BUSINESS_PHONE] = '  +15550008888  ';
-    expect(resolveBusinessPhone(undefined)).toBe('+15550008888');
-    delete process.env[ENV_BRWN_DEFAULT_BUSINESS_PHONE];
-    process.env.OTHER_PHONE = '+15550007777';
-    expect(resolveBusinessPhone(undefined)).toBe(null);
-    delete process.env.OTHER_PHONE;
+    withClearedEnv(() => {
+      process.env[ENV_KEY] = '  +15550008888  ';
+      expect(resolveBusinessPhone(undefined)).toBe('+15550008888');
+      delete process.env[ENV_KEY];
+      process.env.OTHER_PHONE = '+15550007777';
+      expect(resolveBusinessPhone(undefined)).toBe(null);
+      delete process.env.OTHER_PHONE;
+    });
   });
 });
 

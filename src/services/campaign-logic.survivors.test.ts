@@ -182,6 +182,26 @@ describe('decideReplyEnrollmentAction / hasFreshClaim', () => {
     ).toEqual({ action: 'pause' });
   });
 
+  it('same campaign + continue mode is noop (not forced pause)', () => {
+    expect(
+      decideReplyEnrollmentAction(
+        { id: 'e', campaign_id: 'c', status: 'active' },
+        { id: 'c', name: 'S', urgency_filter: null },
+        { replyMode: 'continue', now }
+      )
+    ).toEqual({ action: 'noop' });
+  });
+
+  it('inactive same campaign is noop even in pause mode', () => {
+    expect(
+      decideReplyEnrollmentAction(
+        { id: 'e', campaign_id: 'c', status: 'paused' },
+        { id: 'c', name: 'S', urgency_filter: null },
+        { replyMode: 'pause', now }
+      )
+    ).toEqual({ action: 'noop' });
+  });
+
   it('defaults replyMode to pause when options omit replyMode', () => {
     expect(
       decideReplyEnrollmentAction(

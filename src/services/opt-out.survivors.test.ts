@@ -69,6 +69,9 @@ describe('hasWholeWordStem space vs hyphen branch (L87–88)', () => {
     expect(hasWholeWordStem('X AAA B Y', 'A+ B')).toBe(false);
     expect(hasWholeWordStem('X A+B-C Y', 'A+B-C')).toBe(true);
     expect(hasWholeWordStem('X AAABC Y', 'A+B-C')).toBe(false);
+    // Single-token path does NOT escape — forcing the multiword branch would
+    // incorrectly match literal A+B via escape.
+    expect(hasWholeWordStem('X A+B Y', 'A+B')).toBe(false);
   });
 
   it('space-only multiword stem still uses escaped whole-word boundaries', () => {
@@ -117,6 +120,16 @@ describe('classifyOptOut whole-message OR branches (L112)', () => {
     expect(collapseSpacedLetterTokens(normalized)).toBe('STOPSTOP');
     expect(classifyOptOut(body).kind).toBe('opt_out');
     expect(wouldBackfillSuppress(body)).toBe(true);
+  });
+
+  it('LEAVE ME ALONE matches only the normalized whole-message arm', () => {
+    // compact LEAVEMEALONE is not in WHOLE_COMPACT_SET — kills first-arm false /
+    // normalized&&compact mutants on classify + wouldBackfillSuppress.
+    expect(classifyOptOut('LEAVE ME ALONE').kind).toBe('opt_out');
+    expect(wouldBackfillSuppress('LEAVE ME ALONE')).toBe(true);
+    expect(compactOptOutText(normalizeOptOutText('LEAVE ME ALONE'))).toBe(
+      'LEAVEMEALONE'
+    );
   });
 });
 

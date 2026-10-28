@@ -97,8 +97,8 @@ export async function processMissedCallWithDeps(
 
   const callerE164 = deps.normalizeToE164(event.callerPhone);
 
-  let suppressed = false;
   // Stryker disable next-line BooleanLiteral: overwritten before read — fail-closed path sets true
+  let suppressed = false;
   try {
     suppressed = await deps.isPhoneSuppressed(business.id, callerE164);
   } catch (err) {
