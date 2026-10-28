@@ -42,7 +42,9 @@ muts=[
 ('22','r4#7 backfill ON CONFLICT dropped',G,"ON CONFLICT (business_id, phone) DO NOTHING;",";",2),
 ('23','r4#7 enrollment dedupe prefers non-active',G,"CASE WHEN status = 'active' THEN 0 ELSE 1 END,","CASE WHEN status = 'active' THEN 1 ELSE 0 END,",1),
 ('24','r4#7 NULLS LAST -> FIRST',G,"enrolled_at DESC NULLS LAST,","enrolled_at DESC NULLS FIRST,",1),
-('25','r4#7 NFKC removed from backfill',G,"normalize(btrim(m.body), NFKC)","btrim(m.body)",1),
+# QC r9: outer+inner NFKC sandwich — removing only the inner NFKC is equivalent
+# because the outer normalize(..., NFKC) still folds math-bold / compatibility.
+('25','r4#7 NFKC removed from backfill',G,"normalize(opt_out_finish_normalized(normalize(btrim(m.body), NFKC)), NFKC)","opt_out_finish_normalized(btrim(m.body))",1),
 # Removes compact STOPPLEASE (exact STOP PLEASE alone still leaves compact arm).
 ('26','r4#7 STOPPLEASE compact removed from backfill',G,"'PLEASESTOP', 'STOPPLEASE', 'STOPIT', 'STOPPLS',","'PLEASESTOP', 'STOPIT', 'STOPPLS',",1),
 ('27','r4b A caps probe removed',I,"    capsBeforeSend = await deps.ensureCaps(adapter);","    capsBeforeSend = true;",1),

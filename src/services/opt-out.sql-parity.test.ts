@@ -309,4 +309,40 @@ describe('migration 003 SQL normalizer parity (PGlite)', () => {
     );
     expect(suppress.rows[0].n).toBeGreaterThanOrEqual(1);
   }, 90_000);
+
+  it('full migration LATERAL NFKC suppresses math-bold STOP (mut.py #25)', async () => {
+    // Exercises the INSERT LATERAL normalize sandwich — not just opt_out_normalize_body().
+    const db = await bootFullMigrations();
+    const biz = '11111111-1111-4111-8111-111111111111';
+    const phone = '+15554444444';
+    const boldStop = 'ST\u{1D6B6}P'; // math-bold omicron — needs NFKC before translate
+    await db.exec(`
+      INSERT INTO businesses (id, name, phone) VALUES
+        ('${biz}', 'Acme', '+15551234567');
+      INSERT INTO missed_calls (id, business_id, caller_phone, call_sid) VALUES
+        ('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa4', '${biz}', '${phone}', 'mc4');
+      INSERT INTO leads (id, business_id, missed_call_id, caller_phone) VALUES
+        ('44444444-4444-4444-8444-444444444445', '${biz}',
+         'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa4', '${phone}');
+    `);
+    await db.query(
+      `INSERT INTO sms_messages (lead_id, direction, body, message_sid, sent_at)
+       VALUES ('44444444-4444-4444-8444-444444444445', 'inbound', $1, 'b-bold', NOW())`,
+      [boldStop]
+    );
+    await db.exec(
+      stripUnsupported(
+        readFileSync(
+          join(process.cwd(), 'supabase/migrations/003_campaign_idempotency.sql'),
+          'utf8'
+        )
+      )
+    );
+    const row = await db.query<{ n: number }>(
+      `SELECT COUNT(*)::int AS n FROM sms_suppressions
+       WHERE business_id = $1 AND phone = $2 AND reason = 'opt_out_backfill'`,
+      [biz, phone]
+    );
+    expect(row.rows[0].n).toBe(1);
+  }, 90_000);
 });

@@ -88,11 +88,14 @@ let failed = false;
 failed = diffSets(exA, exB, 'EXACT IN list') || failed;
 failed = diffSets(cA, cB, 'COMPACT IN list') || failed;
 
-// mut.py #25 — first occurrence must be the backfill LATERAL (m.body)
-// QC r9: translate wraps finish(normalize(...)) — no trailing comma after NFKC).
-if (!sql.includes('normalize(btrim(m.body), NFKC)')) {
+// mut.py #25 — full NFKC sandwich on the backfill LATERAL (m.body)
+if (
+  !sql.includes(
+    'normalize(opt_out_finish_normalized(normalize(btrim(m.body), NFKC)), NFKC)'
+  )
+) {
   console.error(
-    'Migration missing normalize(btrim(m.body), NFKC) (mut.py #25 needle)'
+    'Migration missing normalize(opt_out_finish_normalized(normalize(btrim(m.body), NFKC)), NFKC) (mut.py #25 needle)'
   );
   failed = true;
 }
