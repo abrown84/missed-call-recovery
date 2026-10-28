@@ -112,8 +112,12 @@ export {
 } from '@/services/sms-sid';
 import { campaignStepMessageSid } from '@/services/sms-sid';
 
-/** Far-future next_send_at used to park enrollments until reconcile runs. */
-export const PARKED_SEND_MS = 365 * 24 * 60 * 60 * 1000;
+/**
+ * Park window while waiting for reconcile (not a year).
+ * Reconcile runs every cron; this just keeps the claim off the due list
+ * until reconcile bumps next_send_at or advances.
+ */
+export const PARKED_SEND_MS = 30 * 60 * 1000; // 30 minutes
 
 export function parkedNextSendAt(now: Date = new Date()): string {
   return new Date(now.getTime() + PARKED_SEND_MS).toISOString();

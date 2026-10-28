@@ -1,4 +1,5 @@
 import { redactPhone } from '@/lib/pii';
+import { markRelayKeySupportConfirmed } from '@/services/sms-sid';
 import type {
   IdempotencyLookupResult,
   MessagingAdapter,
@@ -25,7 +26,13 @@ export class DryRunAdapter implements MessagingAdapter {
       `[dry-run] queue SMS to ${redactPhone(input.to)} id=${id} ` +
         `body=${JSON.stringify(input.body.slice(0, 120))}`
     );
-    return { id, status: 'queued' };
+    return {
+      id,
+      status: 'queued',
+      ...(input.idempotencyKey
+        ? { keyEchoed: true }
+        : {}),
+    };
   }
 
   async lookupByIdempotencyKey(
@@ -42,6 +49,10 @@ export class DryRunAdapter implements MessagingAdapter {
   }
 
   async checkLookupSupport(): Promise<RelayLookupSupport> {
-    return { supported: true };
+    markRelayKeySupportConfirmed();
+    return {
+      supported: true,
+      capabilities: { relay: 'dry-run', version: 'test', idempotency: true },
+    };
   }
 }

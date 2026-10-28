@@ -1,8 +1,13 @@
 import { createServerClient } from '@/lib/supabase';
 import { getMessagingAdapter } from '@/lib/messaging';
+import { ensureRelayKeySupportProbed } from '@/lib/messaging/brwn-relay';
 import { redactPhone } from '@/lib/pii';
 import { appendOptOutFooter } from '@/lib/templates';
-import { recoveryMessageSid } from '@/services/sms-sid';
+import {
+  isFailedSmsStatus,
+  isRelayKeySupportConfirmed,
+  recoveryMessageSid,
+} from '@/services/sms-sid';
 import {
   SuppressionLookupError,
   isPhoneSuppressed,
@@ -16,11 +21,12 @@ type Business = Database['public']['Tables']['businesses']['Row'];
  * Sends recovery SMS via the active messaging adapter (BRWN relay by default).
  */
 
+/** Kept short so body + STOP footer fit one GSM-7 segment. */
 const SMS_TEMPLATES: Record<string, string> = {
-  plumbing: `Hi, this is {business}. We noticed we missed your call. What plumbing issue can we help you with today? Reply here or call us back!`,
-  hvac: `Hi, this is {business}. Sorry we missed your call! Are you having a heating/cooling issue? Reply with details and we'll get back to you ASAP.`,
-  electrical: `Hi, this is {business}. We missed your call - what electrical issue can we help with? Reply here and we'll respond quickly!`,
-  general: `Hi, this is {business}. Sorry we missed your call! How can we help you today? Reply here or call us back.`,
+  plumbing: `Hi, {business} here - we missed your call. What plumbing issue can we help with? Reply or call back.`,
+  hvac: `Hi, {business} here - missed your call. Heating/cooling issue? Reply with details and we'll help ASAP.`,
+  electrical: `Hi, {business} here - we missed your call. What electrical issue can we help with? Reply anytime.`,
+  general: `Hi, this is {business}. Sorry we missed your call! How can we help? Reply or call us back.`,
 };
 
 export async function sendRecoverySMS(
@@ -66,12 +72,14 @@ export async function sendRecoverySMS(
   const sid = recoveryMessageSid(leadId);
 
   // Insert-before-send for recovery too (UNIQUE message_sid).
+  // key_supported_at_send set only after caps+echo (see below).
   const { error: insertError } = await supabase.from('sms_messages').insert({
     lead_id: leadId,
     direction: 'outbound',
     body: messageBody,
     message_sid: sid,
     status: 'sending',
+    key_supported_at_send: false,
   });
 
   if (insertError?.code === '23505') {
@@ -83,12 +91,34 @@ export async function sendRecoverySMS(
   }
 
   try {
-    const message = await getMessagingAdapter().sendMessage({
+    const adapter = getMessagingAdapter();
+    // Caps must be probed *before* the send for key_supported_at_send trust.
+    await ensureRelayKeySupportProbed(adapter);
+
+    const message = await adapter.sendMessage({
       to: callerPhone,
       body: messageBody,
       auto: true,
       idempotencyKey: sid,
     });
+
+    if (isRelayKeySupportConfirmed() && message.keyEchoed) {
+      await supabase
+        .from('sms_messages')
+        .update({ key_supported_at_send: true })
+        .eq('message_sid', sid);
+    }
+
+    if (message.conflict || isFailedSmsStatus(message.status)) {
+      console.error(
+        `ALERT: recovery SMS failed/conflict for lead ${leadId}; needs_review`
+      );
+      await supabase
+        .from('sms_messages')
+        .update({ status: 'needs_review' })
+        .eq('message_sid', sid);
+      return;
+    }
 
     // 429 on keyed recovery → park as unknown (do not hard-fail the webhook).
     if (message.ambiguous || message.status === 'unknown') {

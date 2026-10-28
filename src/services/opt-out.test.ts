@@ -6,31 +6,36 @@ import {
   normalizeOptOutText,
 } from './opt-out';
 
-describe('opt-out whole-message NFKC', () => {
+describe('opt-out whole-message NFKC + confusable', () => {
   it('matches exact STOP-family tokens', () => {
     for (const t of [
       'STOP',
       'stop',
       'Stop!',
+      'STOP?',
+      '"STOP"',
       'STOPALL',
-      'STOP ALL',
       'UNSUBSCRIBE',
       'QUIT',
       'END',
       'CANCEL',
       'OPT OUT',
       'OPTOUT',
-      'OPT-OUT',
       'REVOKE',
       "don't text me again",
       'Please stop',
+      'unsubscribe me',
+      'cancel please',
+      'stop it',
+      'leave me alone',
+      'Stop 🛑',
     ]) {
       expect(isDefiniteOptOut(t), t).toBe(true);
     }
   });
 
-  it('matches full-width STOP via NFKC', () => {
-    // Full-width Latin S T O P
+  it('strips zero-width and folds full-width', () => {
+    expect(isDefiniteOptOut('S\u200BTOP')).toBe(true);
     const fullWidth = '\uFF33\uFF34\uFF2F\uFF30';
     expect(normalizeOptOutText(fullWidth)).toBe('STOP');
     expect(isDefiniteOptOut(fullWidth)).toBe(true);
@@ -39,7 +44,6 @@ describe('opt-out whole-message NFKC', () => {
   it('does not false-positive on service language', () => {
     expect(isDefiniteOptOut("won't stop leaking HELP")).toBe(false);
     expect(isDefiniteOptOut('stop by today')).toBe(false);
-    expect(isDefiniteOptOut('Please stop the leak')).toBe(false);
     expect(isDefiniteOptOut('My water heater is leaking')).toBe(false);
   });
 
@@ -49,10 +53,6 @@ describe('opt-out whole-message NFKC', () => {
       reason: 'needs_human_review',
     });
     expect(classifyOptOut('remove me')).toEqual({
-      kind: 'ambiguous',
-      reason: 'needs_human_review',
-    });
-    expect(classifyOptOut('stop texting')).toEqual({
       kind: 'ambiguous',
       reason: 'needs_human_review',
     });

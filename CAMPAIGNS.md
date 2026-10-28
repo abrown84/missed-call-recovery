@@ -100,12 +100,35 @@ Tracks leads in campaigns
 
 ### BRWN Text relay version
 
-**Requeue / reconcile requires relay >= v1.7.5.** That release adds:
+**Requeue / reconcile requires relay >= v1.7.6.** That release adds:
 
-- `POST /api/messages` JSON body fields: `to`, `body`, `auto`, optional `idempotencyKey` (body field, not a header). Duplicate key → `200 { id, status, duplicate: true }`.
-- `GET /api/messages?idempotencyKey=<key>` (same Bearer) → `{ found: false }` or `{ found: true, id, to, status, error, created, updated, attempts, auto }`.
+- `GET /api/capabilities` (sender Bearer) → `{ relay, version, idempotency: true }` — authoritative probe before trusting keys.
+- `POST /api/messages` JSON: `to`, `body`, `auto`, optional `idempotencyKey` (body field, not a header). Keys are always prefixed `mlf:…`. Success echoes `idempotencyKey`. Duplicate key → `200 { id, status, duplicate: true, idempotencyKey }`. Key reused with different recipient/body → **`409 { error: 'idempotency_conflict', idempotencyKey }`** → **needs_review** (never success).
+- `GET /api/messages?idempotencyKey=<key>` → `{ found: false }` or `{ found: true, id, toLast4, status, error, created, updated, attempts, auto }` (`toLast4`, not `to`).
+- Rate limit: **`429 { error: 'recent_send' }`**. Keyed 429 → **unknown (park)**, not a hard error.
+- Older relays lack `/api/capabilities` or return 405 on GET lookup → cron logs a loud alert; parked rows stay visible.
 
-Older relays return **405** for that GET and **429 `{ detail: 'recent_send' }`** for the same number within 45s (or same number+body within 600s). This app treats keyed-send 429 as **unknown (park + reconcile)**, not a hard error; 405/404 on lookup stay **unknown**. Cron logs a loud `LOOKUP NOT SUPPORTED` warning when the probe fails so parked rows are visible until the relay is upgraded.
+**`key_supported_at_send` is set only when both are true for that row:**
+1. `GET /api/capabilities` returned `idempotency: true` *before* the send, and
+2. the send response echoed `idempotencyKey`.
+
+Trust `found:false` / `never_sent` **only** for those rows. Everything else → `needs_review` (never auto-requeue).
+
+### Relay upgrade / rollback freeze (required)
+
+A send that timed out on **&lt; 1.7.6** (no key / no capabilities) can look like `{ found: false }` after an upgrade — auto-requeue would double-text. Same risk on rollback.
+
+**Before any relay upgrade or rollback:**
+
+1. **Send freeze** — set `MESSAGING_PROVIDER=dry-run` on the app (and/or pause the GHA campaign cron + stop accepting missed-call recovery sends) so no new live SMS go out.
+2. **Drain parked rows** — keep running cron / `reconcileAmbiguousSms` until `sms_messages` has no actionable `unknown` / stuck `sending` backlog (or move leftovers to `needs_review` by hand). Do not cut over while ambiguous rows remain.
+3. Deploy / roll the relay to the target version (**>= 1.7.6** for upgrades).
+4. Confirm `GET /api/capabilities` (sender Bearer) returns `{ …, idempotency: true }` on the target version.
+5. Resume live sends (`MESSAGING_PROVIDER=brwn-relay`) only after the capabilities probe succeeds. New rows that also get a key echo receive `key_supported_at_send=true`; older rows without that flag never auto-requeue on `found:false`.
+
+**Rollback of the relay** (e.g. 1.7.6 → older): freeze + drain first. After rollback, capabilities will not report `idempotency:true`; any subsequent `found:false` on pre-rollback keys goes to `needs_review` (safe). Do not re-enable auto-requeue until back on >= 1.7.6 with a fresh freeze/drain.
+
+**Code rollback after migration 003 rollback:** reverting app code without a send freeze can text people who opted out (suppressions archived but live table may be empty). Always freeze sends, restore `sms_suppressions` from `sms_suppressions_archive_003` if needed, then unfreeze.
 
 ---
 
@@ -117,75 +140,65 @@ Webhook: /api/webhooks/brwn/missed-call
   ↓
 Create lead (skip recovery if phone is SMS-suppressed / opted out)
   ↓
-sendRecoverySMS  ← instant first text (insert-before-send, sid=recovery:{leadId})
+sendRecoverySMS  ← insert-before-send, sid=mlf:recovery:{leadId}
   ↓
-enrollLeadInCampaign → Standard (urgency null), skip step 1
-  ↓
-Non-responders still get follow-ups on the Standard cadence
+enrollLeadInCampaign → Standard; skip step 1 only when recovery is *confirmed*
+  (pending/unknown recovery → park enrollment until reconcile)
 ```
 
 ### **2. Customer Responds → Classify → Switch or Pause**
 ```
 Webhook: /api/webhooks/brwn/inbound  (leads older than 7 days ignored)
   ↓
-STOP / opt-out (whole-message NFKC) FIRST — even after 7 days
+STOP / opt-out (whole-message NFKC + confusable fold) FIRST
   ↓
-Ambiguous opt-out language → pause + human review (no auto-suppress)
+Ambiguous opt-out → persist needs_human_review + pause (no auto-suppress)
   ↓
-classifyUrgency
-  ↓
-Else handleClassifiedReplyEnrollment (see CAMPAIGN_REPLY_MODE):
-  - Standard → Emergency/High when urgency warrants (re-route / switch in place)
-  - Already on matching campaign + active → pause (default) or continue
-  - Already paused/completed on matching campaign → noop (no re-enroll)
-UNIQUE(lead_id) makes concurrent enrolls safe
+classifyUrgency → handleClassifiedReplyEnrollment (CAMPAIGN_REPLY_MODE)
 ```
 
 ### **3. Cron Job Processes Follow-ups**
 ```
-Every 5 minutes: POST /api/cron/campaigns  (GitHub Actions; see Setup)
+Every 5 minutes: POST /api/cron/campaigns
   ↓
-reconcileAmbiguousSms() FIRST (see state machine below)
+Probe relay lookup; reconcileAmbiguousSms() ORDER BY sent_at ASC
   ↓
-Quiet-hours check per lead (47 CFR 64.1200(c)(1); FL/OK end 8pm local)
+Quiet-hours (all candidate zones must be open when ambiguous)
   ↓
-List due (next_send_at<=now, claim_token null) OR stale claims (claimed_at > 10m)
+Claim → insert sms_messages (mlf:campaign:…, key_supported_at_send)
   ↓
-Claim with fresh claim_token
-  ↓
-Insert sms_messages (sid=campaign:{enrollment}:{campaign}:step:{n}, status=sending)
-  - UNIQUE hit + existing status confirmed → advance
-  - UNIQUE hit + sending/unknown → PARK (far-future next_send_at) until reconcile
-  ↓
-Send via BRWN (JSON `idempotencyKey=sid`) or dry-run
-  - success / duplicate:true → status=queued, advance, clear claim
-  - 429 recent_send (keyed) → status=unknown, PARK (reconcile later)
-  - timeout/other error → status=unknown, PARK
+Send via BRWN
+  - success / duplicate:true (non-failed) → advance
+  - duplicate/failed / 409 → needs_review (never advance)
+  - 429 {error:recent_send} keyed → unknown, PARK
+  - timeout → unknown, PARK
 ```
 
 ### **Send / reconcile state machine**
 
-Sids:
-- Campaign: `campaign:{enrollmentId}:{campaignId}:step:{n}`
-- Recovery: `recovery:{leadId}` (reconciled separately — never mutates `current_step`)
+Sids (always `mlf:` prefixed):
+- Campaign: `mlf:campaign:{enrollmentId}:{campaignId}:step:{n}`
+- Recovery: `mlf:recovery:{leadId}`
 
 | Relay lookup outcome | Action |
 |----------------------|--------|
-| `sent` | Mark sms row confirmed; for campaign sids, advance past the **exact** step in the sid |
-| `never_sent` | Only when relay (>= v1.7.5) returns HTTP 2xx + `{ found: false }`. Abandon sid (`…:abandoned:{ts}`), requeue **exact** step (or clear recovery outbound sid) |
-| `unknown` | 404, **405** (pre-v1.7.5), array body, missing `{ found }`, HTTP errors. **Park** — never auto-requeue |
+| `sent` (non-failed) | Confirm; advance exact campaign step from sid |
+| `failed` | **needs_review** — never advance |
+| `never_sent` + `key_supported_at_send` | Abandon sid; requeue exact step / resend recovery |
+| `never_sent` without key support | **needs_review** — never requeue (pre-upgrade / rollback safety) |
+| `unknown` | Park; bump `reconcile_attempts`; after N → needs_review |
 
-Alert: if `unknown + stuck sending >= UNKNOWN_SMS_ALERT_THRESHOLD` (default **5**), cron logs `ALERT: …`. Cron also probes GET lookup and logs `LOOKUP NOT SUPPORTED` when the relay is below **v1.7.5**.
+Alert on **any** parked/needs_review in a pass (and on backlog ≥ threshold).
 
-Contract tests: `brwn-relay.test.ts` / `sms-sid.test.ts`.
+Contract tests: `brwn-relay.test.ts` / `sms-sid.test.ts` / `qc-r4*.test.ts`.
 
 ---
 
 ## Quiet hours & opt-out
 
-- **Quiet hours:** texts allowed 08:00–21:00 in the lead’s local time (area code or `businesses.timezone`); Florida & Oklahoma end at 20:00. Outside the window → defer `next_send_at` to next local 08:00 (never drop).
-- **Opt-out:** whole-message match after NFKC (`STOP`, `STOPALL`, `UNSUBSCRIBE`, `QUIT`, `END`, `CANCEL`, `OPT OUT` / `OPTOUT`, `REVOKE`, “don’t text me again”, …). No false positives on “won’t stop leaking” / “stop by today”. Ambiguous → human.
-- Every outbound template appends `Reply STOP to opt out.` (FCC 26-67, effective 2026-11-25).
+- **Quiet hours:** 08:00–21:00 lead-local (FL/OK end 20:00). Area-code map includes FL 239/448/645/656/689/728 and OK 572; 850 is Central. Ambiguous/unknown zones require **every** candidate + business window open; otherwise do not send.
+- **Opt-out:** whole-message after NFKC, zero-width strip, confusable fold (`STOP?`, emoji, Greek/Cyrillic look-alikes, “unsubscribe me”, “leave me alone”, …). Ambiguous → persisted `needs_human_review`.
+- Templates trimmed so body + `Reply STOP to opt out.` fit one GSM-7 segment where possible.
 
 ---
 

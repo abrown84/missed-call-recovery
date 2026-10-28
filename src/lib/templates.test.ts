@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { OPT_OUT_FOOTER, appendOptOutFooter, getTemplate } from './templates';
+import {
+  ALL_TEMPLATES,
+  OPT_OUT_FOOTER,
+  appendOptOutFooter,
+  getTemplate,
+  smsSegmentCount,
+} from './templates';
 
 describe('getTemplate', () => {
   it('personalizes known templates and appends STOP footer (FCC 26-67)', () => {
@@ -13,14 +19,11 @@ describe('getTemplate', () => {
     expect(body).toContain(OPT_OUT_FOOTER);
   });
 
-  it('falls back safely for unknown keys with STOP footer', () => {
-    const body = getTemplate('does_not_exist', {
-      business: 'Acme',
-      name: '',
-      issue: '',
-    });
-    expect(typeof body).toBe('string');
-    expect(body).toContain(OPT_OUT_FOOTER);
+  it('fits one GSM-7 segment for typical business names', () => {
+    for (const key of Object.keys(ALL_TEMPLATES)) {
+      const body = getTemplate(key, { business: 'Acme', name: '', issue: '' });
+      expect(smsSegmentCount(body), key).toBe(1);
+    }
   });
 
   it('appendOptOutFooter is idempotent', () => {

@@ -29,8 +29,8 @@ describe('campaignStepMessageSid includes campaign', () => {
   it('differs across campaigns for the same enrollment step', () => {
     const std = campaignStepMessageSid('enr-1', 'c-std', 2);
     const em = campaignStepMessageSid('enr-1', 'c-em', 2);
-    expect(std).toBe('campaign:enr-1:c-std:step:2');
-    expect(em).toBe('campaign:enr-1:c-em:step:2');
+    expect(std).toBe('mlf:campaign:enr-1:c-std:step:2');
+    expect(em).toBe('mlf:campaign:enr-1:c-em:step:2');
     expect(std).not.toBe(em);
   });
 

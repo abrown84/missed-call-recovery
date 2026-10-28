@@ -102,6 +102,9 @@ export interface Database {
           estimated_value: number | null;
           opted_out: boolean;
           opted_out_at: string | null;
+          needs_human_review: boolean;
+          needs_human_review_at: string | null;
+          needs_human_review_reason: string | null;
           created_at: string;
           updated_at: string;
         };
@@ -121,6 +124,9 @@ export interface Database {
           estimated_value?: number | null;
           opted_out?: boolean;
           opted_out_at?: string | null;
+          needs_human_review?: boolean;
+          needs_human_review_at?: string | null;
+          needs_human_review_reason?: string | null;
           created_at?: string;
           updated_at?: string;
         };
@@ -140,6 +146,9 @@ export interface Database {
           estimated_value?: number | null;
           opted_out?: boolean;
           opted_out_at?: string | null;
+          needs_human_review?: boolean;
+          needs_human_review_at?: string | null;
+          needs_human_review_reason?: string | null;
           created_at?: string;
           updated_at?: string;
         };
@@ -176,6 +185,8 @@ export interface Database {
           message_sid: string;
           status: string;
           sent_at: string;
+          reconcile_attempts: number;
+          key_supported_at_send: boolean;
         };
         Insert: {
           id?: string;
@@ -185,6 +196,8 @@ export interface Database {
           message_sid: string;
           status?: string;
           sent_at?: string;
+          reconcile_attempts?: number;
+          key_supported_at_send?: boolean;
         };
         Update: {
           id?: string;
@@ -194,6 +207,8 @@ export interface Database {
           message_sid?: string;
           status?: string;
           sent_at?: string;
+          reconcile_attempts?: number;
+          key_supported_at_send?: boolean;
         };
       };
       campaigns: {

@@ -51,6 +51,7 @@ export type {
 } from './types';
 export {
   BrwnRelayAdapter,
+  ensureRelayKeySupportProbed,
   warnIfRelayLookupUnsupported,
   BRWN_RELAY_MIN_VERSION_FOR_REQUEUE,
 } from './brwn-relay';

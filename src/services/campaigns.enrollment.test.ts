@@ -12,13 +12,41 @@ vi.mock('@/lib/messaging', () => ({
   getMessagingAdapter: () => ({
     name: 'dry-run',
     sendMessage: (...args: unknown[]) => mockSendMessage(...args),
-    lookupByIdempotencyKey: vi.fn().mockResolvedValue({ found: false }),
+    lookupByIdempotencyKey: vi.fn().mockResolvedValue({
+      outcome: 'never_sent',
+      found: false,
+    }),
+    checkLookupSupport: vi.fn().mockResolvedValue({
+      supported: true,
+      capabilities: { relay: 'dry-run', version: 'test', idempotency: true },
+    }),
   }),
 }));
+
+vi.mock('@/lib/messaging/brwn-relay', async () => {
+  const actual = await vi.importActual<typeof import('@/lib/messaging/brwn-relay')>(
+    '@/lib/messaging/brwn-relay'
+  );
+  return {
+    ...actual,
+    ensureRelayKeySupportProbed: vi.fn().mockResolvedValue(true),
+    warnIfRelayLookupUnsupported: vi.fn().mockResolvedValue({
+      supported: true,
+      capabilities: { relay: 'dry-run', version: 'test', idempotency: true },
+    }),
+  };
+});
 
 vi.mock('@/services/suppressions', () => ({
   isPhoneSuppressed: (...args: unknown[]) => isPhoneSuppressed(...args),
   SuppressionLookupError: class SuppressionLookupError extends Error {},
+}));
+
+vi.mock('@/services/quiet-hours', () => ({
+  deferUntilQuietHoursOpen: () => ({
+    allowed: true,
+    zones: ['America/New_York'],
+  }),
 }));
 
 import {
@@ -209,7 +237,12 @@ describe('sendCampaignSMS campaign-scoped sid after switch', () => {
         sms_outbound_sid: 'recovery',
         opted_out: false,
         issue: 'flood',
-        businesses: { id: 'b', name: 'Acme', phone: '+1' },
+        businesses: {
+          id: 'b',
+          name: 'Acme',
+          phone: '+1',
+          timezone: 'America/New_York',
+        },
       },
       campaigns: { id: campEm, name: 'Emergency Follow-up' },
     };

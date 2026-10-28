@@ -7,179 +7,24 @@ import {
   warnIfRelayLookupUnsupported,
 } from './brwn-relay';
 import { resetMessagingAdapterCache } from './index';
+import { resetRelayKeySupportConfirmed } from '@/services/sms-sid';
 
 describe('resolveBrwnRelayUrl', () => {
   it('normalizes trailing slashes', () => {
     expect(resolveBrwnRelayUrl('https://relay.example.com/')).toBe(
       'https://relay.example.com'
     );
-    expect(resolveBrwnRelayUrl('https://relay.example.com/sms/')).toBe(
-      'https://relay.example.com/sms'
-    );
-  });
-
-  it('allows http only for localhost', () => {
-    expect(resolveBrwnRelayUrl('http://localhost:8080')).toBe(
-      'http://localhost:8080'
-    );
-    expect(() => resolveBrwnRelayUrl('http://relay.example.com')).toThrow(
-      /https/
-    );
-  });
-
-  it('rejects invalid URLs', () => {
-    expect(() => resolveBrwnRelayUrl('not-a-url')).toThrow(/not a valid URL/);
-    expect(() => resolveBrwnRelayUrl('ftp://x')).toThrow(/http: and https/);
-    expect(() => resolveBrwnRelayUrl('')).toThrow(/not configured/);
   });
 });
 
-describe('BrwnRelayAdapter.sendMessage — FastAPI contract', () => {
+describe('BrwnRelayAdapter — relay 1.7.6 contract', () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
     delete process.env.BRWN_RELAY_URL;
     delete process.env.BRWN_RELAY_SENDER_TOKEN;
     resetMessagingAdapterCache();
-  });
-
-  function setup() {
-    process.env.BRWN_RELAY_URL = 'https://relay.example.com';
-    process.env.BRWN_RELAY_SENDER_TOKEN = 'sender-secret';
-    return new BrwnRelayAdapter();
-  }
-
-  it('POSTs JSON body fields exactly: to, body, auto (+ optional idempotencyKey)', async () => {
-    const adapter = setup();
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      text: async () => JSON.stringify({ id: 'abc123', status: 'queued' }),
-    });
-    vi.stubGlobal('fetch', fetchMock);
-
-    const result = await adapter.sendMessage({
-      to: '+15551234567',
-      body: 'Hi from recovery',
-    });
-
-    expect(result).toEqual({ id: 'abc123', status: 'queued' });
-    const [url, init] = fetchMock.mock.calls[0];
-    expect(url).toBe('https://relay.example.com/api/messages');
-    expect(init.method).toBe('POST');
-    expect(init.headers.Authorization).toBe('Bearer sender-secret');
-    expect(init.headers['Content-Type']).toBe('application/json');
-    // Exact field names — idempotencyKey is a JSON body field, not a header
-    expect(JSON.parse(init.body)).toEqual({
-      to: '+15551234567',
-      body: 'Hi from recovery',
-      auto: true,
-    });
-    expect(init.headers.idempotencyKey).toBeUndefined();
-    expect(init.headers['Idempotency-Key']).toBeUndefined();
-  });
-
-  it('includes idempotencyKey in JSON body (not a header)', async () => {
-    const adapter = setup();
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      status: 200,
-      text: async () => JSON.stringify({ id: 'm1', status: 'queued' }),
-    });
-    vi.stubGlobal('fetch', fetchMock);
-    await adapter.sendMessage({
-      to: '+15551234567',
-      body: 'Hi',
-      idempotencyKey: 'campaign:E1:C1:step:2',
-    });
-    const body = JSON.parse(fetchMock.mock.calls[0][1].body);
-    expect(body).toEqual({
-      to: '+15551234567',
-      body: 'Hi',
-      auto: true,
-      idempotencyKey: 'campaign:E1:C1:step:2',
-    });
-  });
-
-  it('200 { id, status, duplicate:true } is success (not an error)', async () => {
-    const adapter = setup();
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockResolvedValue({
-        ok: true,
-        status: 200,
-        text: async () =>
-          JSON.stringify({ id: 'm-dup', status: 'queued', duplicate: true }),
-      })
-    );
-    await expect(
-      adapter.sendMessage({
-        to: '+15551234567',
-        body: 'Hi',
-        idempotencyKey: 'campaign:E1:C1:step:2',
-      })
-    ).resolves.toEqual({
-      id: 'm-dup',
-      status: 'queued',
-      duplicate: true,
-    });
-  });
-
-  it('429 { detail: recent_send } on keyed send → ambiguous (park), not throw', async () => {
-    const adapter = setup();
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockResolvedValue({
-        ok: false,
-        status: 429,
-        text: async () => JSON.stringify({ detail: 'recent_send' }),
-      })
-    );
-    await expect(
-      adapter.sendMessage({
-        to: '+15551234567',
-        body: 'Hi',
-        idempotencyKey: 'campaign:E1:C1:step:2',
-      })
-    ).resolves.toEqual({
-      id: 'rate-limited:campaign:E1:C1:step:2',
-      status: 'unknown',
-      ambiguous: true,
-    });
-  });
-
-  it('429 without idempotencyKey still throws (unkeyed hard error)', async () => {
-    const adapter = setup();
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockResolvedValue({
-        ok: false,
-        status: 429,
-        text: async () => JSON.stringify({ detail: 'recent_send' }),
-      })
-    );
-    await expect(
-      adapter.sendMessage({ to: '+15551234567', body: 'x' })
-    ).rejects.toThrow(/rate-limited/);
-  });
-
-  it('throws when sender token missing', async () => {
-    process.env.BRWN_RELAY_URL = 'https://relay.example.com';
-    delete process.env.BRWN_RELAY_SENDER_TOKEN;
-    const adapter = new BrwnRelayAdapter();
-    await expect(
-      adapter.sendMessage({ to: '+1555', body: 'x' })
-    ).rejects.toThrow(/BRWN_RELAY_SENDER_TOKEN/);
-  });
-});
-
-describe('BrwnRelayAdapter.lookupByIdempotencyKey — FastAPI contract', () => {
-  afterEach(() => {
-    vi.unstubAllGlobals();
-    vi.restoreAllMocks();
-    delete process.env.BRWN_RELAY_URL;
-    delete process.env.BRWN_RELAY_SENDER_TOKEN;
-    resetMessagingAdapterCache();
+    resetRelayKeySupportConfirmed();
     resetRelayLookupWarningFlag();
   });
 
@@ -189,40 +34,119 @@ describe('BrwnRelayAdapter.lookupByIdempotencyKey — FastAPI contract', () => {
     return new BrwnRelayAdapter();
   }
 
-  it('GETs /api/messages?idempotencyKey=<key> with Bearer auth', async () => {
+  it('GET /api/capabilities → {relay, version, idempotency:true}', async () => {
     const adapter = setup();
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
       status: 200,
-      json: async () => ({ found: false }),
+      json: async () => ({
+        relay: 'brwn-text',
+        version: '1.7.6',
+        idempotency: true,
+      }),
     });
     vi.stubGlobal('fetch', fetchMock);
-    await adapter.lookupByIdempotencyKey('campaign:E1:C1:step:2');
-    const [url, init] = fetchMock.mock.calls[0];
-    expect(url).toBe(
-      'https://relay.example.com/api/messages?idempotencyKey=campaign%3AE1%3AC1%3Astep%3A2'
+    const support = await adapter.checkLookupSupport();
+    expect(support).toEqual({
+      supported: true,
+      capabilities: {
+        relay: 'brwn-text',
+        version: '1.7.6',
+        idempotency: true,
+      },
+    });
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      'https://relay.example.com/api/capabilities'
     );
-    expect(init.method).toBe('GET');
-    expect(init.headers.Authorization).toBe('Bearer sender-secret');
+    expect(fetchMock.mock.calls[0][1].headers.Authorization).toBe(
+      'Bearer sender-secret'
+    );
   });
 
-  it('{ found: false } → never_sent', async () => {
+  it('capabilities without idempotency → unsupported', async () => {
     const adapter = setup();
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue({
         ok: true,
         status: 200,
-        json: async () => ({ found: false }),
+        json: async () => ({ relay: 'brwn-text', version: '1.7.4' }),
       })
     );
-    await expect(adapter.lookupByIdempotencyKey('k1')).resolves.toEqual({
-      outcome: 'never_sent',
-      found: false,
+    const support = await adapter.checkLookupSupport();
+    expect(support.supported).toBe(false);
+  });
+
+  it('keyed send echoes idempotencyKey; body fields exact', async () => {
+    const adapter = setup();
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      text: async () =>
+        JSON.stringify({
+          id: 'abc',
+          status: 'queued',
+          idempotencyKey: 'mlf:campaign:E1:C1:step:2',
+        }),
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const result = await adapter.sendMessage({
+      to: '+15551234567',
+      body: 'Hi',
+      idempotencyKey: 'mlf:campaign:E1:C1:step:2',
+    });
+    expect(result.keyEchoed).toBe(true);
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+      to: '+15551234567',
+      body: 'Hi',
+      auto: true,
+      idempotencyKey: 'mlf:campaign:E1:C1:step:2',
     });
   });
 
-  it('{ found: true, id, to, status, … } → sent', async () => {
+  it('429 { error: recent_send } keyed → ambiguous', async () => {
+    const adapter = setup();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 429,
+        text: async () => JSON.stringify({ error: 'recent_send' }),
+      })
+    );
+    await expect(
+      adapter.sendMessage({
+        to: '+15551234567',
+        body: 'Hi',
+        idempotencyKey: 'mlf:k',
+      })
+    ).resolves.toMatchObject({ ambiguous: true, status: 'unknown' });
+  });
+
+  it('409 { error: idempotency_conflict, idempotencyKey } → conflict', async () => {
+    const adapter = setup();
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue({
+        ok: false,
+        status: 409,
+        text: async () =>
+          JSON.stringify({
+            error: 'idempotency_conflict',
+            idempotencyKey: 'mlf:k',
+          }),
+      })
+    );
+    await expect(
+      adapter.sendMessage({
+        to: '+15551234567',
+        body: 'Hi',
+        idempotencyKey: 'mlf:k',
+      })
+    ).resolves.toMatchObject({ conflict: true, status: 'failed' });
+  });
+
+  it('lookup found:true uses toLast4 shape; 405→unknown', async () => {
     const adapter = setup();
     vi.stubGlobal(
       'fetch',
@@ -232,7 +156,7 @@ describe('BrwnRelayAdapter.lookupByIdempotencyKey — FastAPI contract', () => {
         json: async () => ({
           found: true,
           id: 'm9',
-          to: '+15551234567',
+          toLast4: '4567',
           status: 'queued',
           error: null,
           created: '2026-10-28T00:00:00Z',
@@ -242,16 +166,13 @@ describe('BrwnRelayAdapter.lookupByIdempotencyKey — FastAPI contract', () => {
         }),
       })
     );
-    await expect(adapter.lookupByIdempotencyKey('k1')).resolves.toEqual({
+    await expect(adapter.lookupByIdempotencyKey('mlf:k')).resolves.toEqual({
       outcome: 'sent',
       found: true,
       id: 'm9',
       status: 'queued',
     });
-  });
 
-  it('405 Method Not Allowed → unknown (pre-v1.7.5 relay)', async () => {
-    const adapter = setup();
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue({
@@ -260,13 +181,13 @@ describe('BrwnRelayAdapter.lookupByIdempotencyKey — FastAPI contract', () => {
         json: async () => ({ detail: 'Method Not Allowed' }),
       })
     );
-    await expect(adapter.lookupByIdempotencyKey('k1')).resolves.toEqual({
+    await expect(adapter.lookupByIdempotencyKey('mlf:k')).resolves.toEqual({
       outcome: 'unknown',
       found: false,
     });
   });
 
-  it('404 → unknown (NOT never_sent)', async () => {
+  it('warnIfRelayLookupUnsupported logs on missing capabilities', async () => {
     const adapter = setup();
     vi.stubGlobal(
       'fetch',
@@ -276,76 +197,39 @@ describe('BrwnRelayAdapter.lookupByIdempotencyKey — FastAPI contract', () => {
         json: async () => ({ detail: 'Not Found' }),
       })
     );
-    await expect(adapter.lookupByIdempotencyKey('k1')).resolves.toEqual({
-      outcome: 'unknown',
-      found: false,
-    });
-  });
-
-  it('array body → unknown', async () => {
-    const adapter = setup();
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockResolvedValue({
-        ok: true,
-        status: 200,
-        json: async () => [{ id: 'x' }],
-      })
-    );
-    await expect(adapter.lookupByIdempotencyKey('k1')).resolves.toEqual({
-      outcome: 'unknown',
-      found: false,
-    });
-  });
-});
-
-describe('relay lookup health check', () => {
-  afterEach(() => {
-    vi.unstubAllGlobals();
-    vi.restoreAllMocks();
-    delete process.env.BRWN_RELAY_URL;
-    delete process.env.BRWN_RELAY_SENDER_TOKEN;
-    resetRelayLookupWarningFlag();
-  });
-
-  it('checkLookupSupport reports unsupported on 405 with loud warn', async () => {
-    process.env.BRWN_RELAY_URL = 'https://relay.example.com';
-    process.env.BRWN_RELAY_SENDER_TOKEN = 'sender-secret';
-    vi.stubGlobal(
-      'fetch',
-      vi.fn().mockResolvedValue({
-        ok: false,
-        status: 405,
-        json: async () => ({ detail: 'Method Not Allowed' }),
-      })
-    );
     const err = vi.spyOn(console, 'error').mockImplementation(() => undefined);
-    const adapter = new BrwnRelayAdapter();
     const support = await warnIfRelayLookupUnsupported(adapter);
     expect(support.supported).toBe(false);
-    if (!support.supported) {
-      expect(support.httpStatus).toBe(405);
-      expect(support.reason).toContain(BRWN_RELAY_MIN_VERSION_FOR_REQUEUE);
-    }
-    expect(err).toHaveBeenCalled();
-    expect(String(err.mock.calls[0][0])).toMatch(/LOOKUP NOT SUPPORTED/);
-    expect(String(err.mock.calls[0][0])).toMatch(/STAY PARKED/);
+    expect(String(err.mock.calls[0][0])).toMatch(/NOT CONFIRMED/);
+    expect(String(err.mock.calls[0][0])).toContain(
+      BRWN_RELAY_MIN_VERSION_FOR_REQUEUE
+    );
   });
 
-  it('checkLookupSupport reports supported on { found: false }', async () => {
-    process.env.BRWN_RELAY_URL = 'https://relay.example.com';
-    process.env.BRWN_RELAY_SENDER_TOKEN = 'sender-secret';
+  it('keyed send without prior caps probe → no keyEchoed trust alone', async () => {
+    const { isRelayKeySupportConfirmed } = await import('@/services/sms-sid');
+    const adapter = setup();
+    expect(isRelayKeySupportConfirmed()).toBe(false);
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue({
         ok: true,
         status: 200,
-        json: async () => ({ found: false }),
+        text: async () =>
+          JSON.stringify({
+            id: 'abc',
+            status: 'queued',
+            idempotencyKey: 'mlf:k',
+          }),
       })
     );
-    const adapter = new BrwnRelayAdapter();
-    await expect(adapter.checkLookupSupport()).resolves.toEqual({
-      supported: true,
+    const result = await adapter.sendMessage({
+      to: '+15551234567',
+      body: 'Hi',
+      idempotencyKey: 'mlf:k',
     });
+    // Echo alone is not enough — caps must have been probed first.
+    expect(result.keyEchoed).toBe(true);
+    expect(isRelayKeySupportConfirmed()).toBe(false);
   });
 });

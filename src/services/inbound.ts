@@ -135,7 +135,7 @@ export async function processInboundSms(
   }
 
   if (optOutVerdict.kind === 'ambiguous') {
-    // Send to human review — do not auto-suppress.
+    // Persist human-review flag and pause — do not auto-suppress.
     console.warn(
       `Ambiguous opt-out language from ${redactPhone(event.from)}: needs_human_review`
     );
@@ -149,6 +149,15 @@ export async function processInboundSms(
       .maybeSingle();
 
     if (anyLead?.id) {
+      await supabase
+        .from('leads')
+        .update({
+          needs_human_review: true,
+          needs_human_review_at: new Date().toISOString(),
+          needs_human_review_reason: optOutVerdict.reason,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', anyLead.id);
       await supabase.from('sms_messages').insert({
         lead_id: anyLead.id,
         direction: 'inbound',
@@ -156,7 +165,6 @@ export async function processInboundSms(
         message_sid: messageId,
         status: 'received',
       });
-      // Pause outreach pending human review of ambiguous opt-out.
       await pauseCampaignForLead(anyLead.id).catch(() => undefined);
       return { status: 'ambiguous_opt_out', leadId: anyLead.id };
     }
