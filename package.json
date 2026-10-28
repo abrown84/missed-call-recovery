@@ -12,6 +12,7 @@
     "test:watch": "vitest",
     "test:mutation": "stryker run",
     "check:opt-out-sql": "node scripts/check-opt-out-sql.mjs",
+    "generate:opt-out-sql": "node scripts/generate-opt-out-sql.mjs",
     "check:rolldown-pin": "node scripts/check-rolldown-pin.mjs",
     "check:mutation-scores": "node scripts/check-mutation-scores.mjs"
   },

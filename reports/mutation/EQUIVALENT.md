@@ -100,7 +100,7 @@ mutants here when no test can distinguish original from replacement.
   mutants are actually tested.
 - Gate fails any non-barrel target with `tested === 0` and
   (`ignored > 0` OR any mutants), and fails if `ignored > MAX_IGNORED_PER_FILE`
-  (default 80; override via `MUTATION_MAX_IGNORED`).
+  (default 220 to allow log-only runtime ignores; override via `MUTATION_MAX_IGNORED`).
 
 ### opt-out-compact-set-redundant-with-contains — REMOVED (QC r7)
 

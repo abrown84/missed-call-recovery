@@ -35,7 +35,47 @@ function stripUnsupported(sql: string): string {
     .replace(/CREATE EXTENSION IF NOT EXISTS "pgcrypto";/g, '');
 }
 
-async function bootFunctions(): Promise<PGlite> {
+/** Extract the exact/compact IN (...) bodies from the migration INSERT. */
+function extractMigrationInLists(sql: string): {
+  exact: string;
+  compact: string;
+} {
+  function extract(afterMarker: string): string {
+    const start = sql.indexOf(afterMarker);
+    if (start < 0) throw new Error(`Marker not found: ${afterMarker}`);
+    const from = sql.indexOf('IN (', start);
+    const open = sql.indexOf('(', from);
+    let depth = 0;
+    let end = open;
+    for (; end < sql.length; end++) {
+      if (sql[end] === '(') depth++;
+      else if (sql[end] === ')') {
+        depth--;
+        if (depth === 0) break;
+      }
+    }
+    return sql.slice(open + 1, end);
+  }
+  return {
+    exact: extract('n.norm IN'),
+    compact: extract('opt_out_compact_body(n.norm) IN'),
+  };
+}
+
+function backfillPredicateSql(lists: {
+  exact: string;
+  compact: string;
+}): string {
+  return `(
+    opt_out_normalize_body($1) IN (${lists.exact})
+    OR opt_out_compact_body(opt_out_normalize_body($1)) IN (${lists.compact})
+  )`;
+}
+
+async function bootFunctions(): Promise<{
+  db: PGlite;
+  lists: { exact: string; compact: string };
+}> {
   const db = new PGlite();
   const forward = readFileSync(
     join(process.cwd(), 'supabase/migrations/003_campaign_idempotency.sql'),
@@ -44,17 +84,20 @@ async function bootFunctions(): Promise<PGlite> {
   const start = forward.indexOf(
     'CREATE OR REPLACE FUNCTION opt_out_finish_normalized'
   );
-  const end = forward.indexOf('INSERT INTO sms_suppressions (business_id, phone, reason)');
+  const end = forward.indexOf(
+    'INSERT INTO sms_suppressions (business_id, phone, reason)'
+  );
   if (start < 0 || end < 0) {
     throw new Error('Could not locate opt_out SQL functions in migration 003');
   }
   await db.exec(forward.slice(start, end));
-  return db;
+  return { db, lists: extractMigrationInLists(forward) };
 }
 
 describe('migration 003 SQL normalizer parity (PGlite)', () => {
   it('suppresses the QC r8 under-suppression corpus', async () => {
-    const db = await bootFunctions();
+    const { db, lists } = await bootFunctions();
+    const pred = backfillPredicateSql(lists);
     for (const body of MUST_SUPPRESS) {
       const app = wouldBackfillSuppress(body);
       expect(app, `app wouldBackfillSuppress(${JSON.stringify(body)})`).toBe(
@@ -67,72 +110,22 @@ describe('migration 003 SQL normalizer parity (PGlite)', () => {
       );
       const n = r.rows[0].n;
       const c = r.rows[0].c;
-      // Evaluate the same IN membership the migration uses by checking
-      // against app lists via a second query embedding the migration lists.
       const hit = await db.query<{ ok: boolean }>(
-        `SELECT (
-           opt_out_normalize_body($1) IN (
-             'STOP', 'STOPALL', 'STOP ALL', 'UNSUBSCRIBE', 'QUIT', 'END', 'CANCEL',
-             'OPTOUT', 'OPT OUT', 'OPT-OUT', 'REVOKE',
-             'DON''T TEXT ME AGAIN', 'DONT TEXT ME AGAIN', 'DO NOT TEXT ME AGAIN',
-             'DO NOT CONTACT ME', 'DONT CONTACT ME', 'DON''T CONTACT ME',
-             'PLEASE STOP', 'STOP PLEASE', 'STOP IT', 'STOP PLS',
-             'STOP TEXTING', 'STOP TEXTING ME', 'STOP MESSAGING ME', 'STOP SENDING',
-             'STOP ALL TEXTS', 'PLEASE STOP TEXTING ME',
-             'UNSUBSCRIBE ME', 'UNSUBSCRIBE ME PLEASE', 'PLEASE UNSUBSCRIBE ME',
-             'CANCEL PLEASE',
-             'LEAVE ME ALONE', 'TAKE ME OFF YOUR LIST', 'TAKE ME OFF THE LIST',
-             'DONT TEXT ME', 'DON''T TEXT ME',
-             'STOP STOP', 'STOP STOP STOP',
-             'END END', 'END END END',
-             'CANCEL CANCEL', 'CANCEL CANCEL CANCEL',
-             'QUIT QUIT', 'QUIT QUIT QUIT',
-             'UNSUBSCRIBE UNSUBSCRIBE', 'UNSUBSCRIBE UNSUBSCRIBE UNSUBSCRIBE',
-             'REVOKE REVOKE', 'REVOKE REVOKE REVOKE',
-             'OPTOUT OPTOUT', 'OPTOUT OPTOUT OPTOUT',
-             'STOPALL STOPALL', 'STOPALL STOPALL STOPALL'
-           )
-           OR opt_out_compact_body(opt_out_normalize_body($1)) IN (
-             'STOP', 'STOPALL', 'UNSUBSCRIBE', 'QUIT', 'END', 'CANCEL', 'OPTOUT', 'REVOKE',
-             'DONTTEXTMEAGAIN', 'DONOTTEXTMEAGAIN', 'DONOTCONTACTME', 'DONTCONTACTME',
-             'PLEASESTOP', 'STOPPLEASE', 'STOPIT', 'STOPPLS',
-             'STOPTEXTING', 'STOPTEXTINGME', 'STOPMESSAGINGME', 'STOPSENDING',
-             'STOPALLTEXTS', 'PLEASESTOPTEXTINGME',
-             'UNSUBSCRIBEME', 'UNSUBSCRIBEMEPLEASE', 'PLEASEUNSUBSCRIBEME',
-             'CANCELPLEASE', 'LEAVEMEALONE', 'TAKEMEOFFYOURLIST', 'TAKEMEOFFTHELIST',
-             'DONTTEXTME',
-             'STOPSTOP', 'STOPSTOPSTOP',
-             'ENDEND', 'ENDENDEND',
-             'CANCELCANCEL', 'CANCELCANCELCANCEL',
-             'QUITQUIT', 'QUITQUITQUIT',
-             'UNSUBSCRIBEUNSUBSCRIBE', 'UNSUBSCRIBEUNSUBSCRIBEUNSUBSCRIBE',
-             'REVOKEREVOKE', 'REVOKEREVOKEREVOKE',
-             'OPTOUTOPTOUT', 'OPTOUTOPTOUTOPTOUT',
-             'STOPALLSTOPALL', 'STOPALLSTOPALLSTOPALL'
-           )
-         ) AS ok`,
+        `SELECT ${pred} AS ok`,
         [body]
       );
-      expect(hit.rows[0].ok, `SQL suppress ${JSON.stringify(body)} (n=${n} c=${c})`).toBe(
-        true
-      );
+      expect(
+        hit.rows[0].ok,
+        `SQL suppress ${JSON.stringify(body)} (n=${n} c=${c})`
+      ).toBe(true);
     }
   }, 60_000);
 
   it('does not suppress negative service replies', async () => {
-    const db = await bootFunctions();
+    const { db, lists } = await bootFunctions();
+    const pred = backfillPredicateSql(lists);
     for (const body of NEGATIVE_SERVICE_REPLIES.slice(0, 40)) {
       expect(classifyOptOut(body).kind, body).not.toBe('opt_out');
-      const hit = await db.query<{ ok: boolean }>(
-        `SELECT (
-           opt_out_normalize_body($1) IN ('STOP','END','CANCEL','QUIT','UNSUBSCRIBE')
-           OR opt_out_compact_body(opt_out_normalize_body($1)) IN ('STOP','END','CANCEL','QUIT','UNSUBSCRIBE')
-         ) AS ok`,
-        [body]
-      );
-      // Spot-check: none of these should normalize to a bare carrier keyword.
-      // Full IN-list checked for a sample of booking replies below.
-      void hit;
     }
     for (const body of [
       'Can you come by end of day?',
@@ -141,47 +134,7 @@ describe('migration 003 SQL normalizer parity (PGlite)', () => {
       'Weekend works',
     ]) {
       const hit = await db.query<{ ok: boolean }>(
-        `SELECT (
-           opt_out_normalize_body($1) IN (
-             'STOP', 'STOPALL', 'STOP ALL', 'UNSUBSCRIBE', 'QUIT', 'END', 'CANCEL',
-             'OPTOUT', 'OPT OUT', 'OPT-OUT', 'REVOKE',
-             'DON''T TEXT ME AGAIN', 'DONT TEXT ME AGAIN', 'DO NOT TEXT ME AGAIN',
-             'DO NOT CONTACT ME', 'DONT CONTACT ME', 'DON''T CONTACT ME',
-             'PLEASE STOP', 'STOP PLEASE', 'STOP IT', 'STOP PLS',
-             'STOP TEXTING', 'STOP TEXTING ME', 'STOP MESSAGING ME', 'STOP SENDING',
-             'STOP ALL TEXTS', 'PLEASE STOP TEXTING ME',
-             'UNSUBSCRIBE ME', 'UNSUBSCRIBE ME PLEASE', 'PLEASE UNSUBSCRIBE ME',
-             'CANCEL PLEASE',
-             'LEAVE ME ALONE', 'TAKE ME OFF YOUR LIST', 'TAKE ME OFF THE LIST',
-             'DONT TEXT ME', 'DON''T TEXT ME',
-             'STOP STOP', 'STOP STOP STOP',
-             'END END', 'END END END',
-             'CANCEL CANCEL', 'CANCEL CANCEL CANCEL',
-             'QUIT QUIT', 'QUIT QUIT QUIT',
-             'UNSUBSCRIBE UNSUBSCRIBE', 'UNSUBSCRIBE UNSUBSCRIBE UNSUBSCRIBE',
-             'REVOKE REVOKE', 'REVOKE REVOKE REVOKE',
-             'OPTOUT OPTOUT', 'OPTOUT OPTOUT OPTOUT',
-             'STOPALL STOPALL', 'STOPALL STOPALL STOPALL'
-           )
-           OR opt_out_compact_body(opt_out_normalize_body($1)) IN (
-             'STOP', 'STOPALL', 'UNSUBSCRIBE', 'QUIT', 'END', 'CANCEL', 'OPTOUT', 'REVOKE',
-             'DONTTEXTMEAGAIN', 'DONOTTEXTMEAGAIN', 'DONOTCONTACTME', 'DONTCONTACTME',
-             'PLEASESTOP', 'STOPPLEASE', 'STOPIT', 'STOPPLS',
-             'STOPTEXTING', 'STOPTEXTINGME', 'STOPMESSAGINGME', 'STOPSENDING',
-             'STOPALLTEXTS', 'PLEASESTOPTEXTINGME',
-             'UNSUBSCRIBEME', 'UNSUBSCRIBEMEPLEASE', 'PLEASEUNSUBSCRIBEME',
-             'CANCELPLEASE', 'LEAVEMEALONE', 'TAKEMEOFFYOURLIST', 'TAKEMEOFFTHELIST',
-             'DONTTEXTME',
-             'STOPSTOP', 'STOPSTOPSTOP',
-             'ENDEND', 'ENDENDEND',
-             'CANCELCANCEL', 'CANCELCANCELCANCEL',
-             'QUITQUIT', 'QUITQUITQUIT',
-             'UNSUBSCRIBEUNSUBSCRIBE', 'UNSUBSCRIBEUNSUBSCRIBEUNSUBSCRIBE',
-             'REVOKEREVOKE', 'REVOKEREVOKEREVOKE',
-             'OPTOUTOPTOUT', 'OPTOUTOPTOUTOPTOUT',
-             'STOPALLSTOPALL', 'STOPALLSTOPALLSTOPALL'
-           )
-         ) AS ok`,
+        `SELECT ${pred} AS ok`,
         [body]
       );
       expect(hit.rows[0].ok, `must NOT suppress ${body}`).toBe(false);

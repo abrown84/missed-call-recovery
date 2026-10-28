@@ -1,4 +1,8 @@
-/** Static NANP area-code → IANA zone map (data only; not mutation-tested). */
+/**
+ * Static NANP area-code → IANA zone map.
+ * Excluded from Stryker mutate (QC r8) — covered by quiet-hours-zones.test.ts
+ * and mut.py #13 (850 dual-zone string replace).
+ */
 
 /** NANP area code → IANA zone(s). Multiple = ambiguous (require all open). */
 export const AREA_CODE_ZONES: Record<string, string[]> = {
