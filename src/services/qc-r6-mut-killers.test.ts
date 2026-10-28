@@ -326,25 +326,26 @@ describe('QC r6 mut.py killers', () => {
     const src = readSrc('src/services/send/index.ts');
     const decisions = readSrc('src/services/send/decisions.ts');
     const tally = readSrc('src/services/send/reconcile-tally.ts');
-    if (!src || !decisions || !tally) return;
+    const ioPlans = readSrc('src/services/send/send-io-plans.ts');
+    if (!src || !decisions || !tally || !ioPlans) return;
     expect(src).toMatch(/\.order\(COL\.sentAt, \{ ascending: true \}\)/);
-    expect(src).toMatch(/reconcile_attempts: nextAttempts/);
-    expect(src).toMatch(/next_retry_at: nextRetryAt/);
+    // Payload shapes live in pure send-io-plans; shell wires nextAttempts/nextRetryAt.
+    expect(ioPlans).toMatch(/reconcile_attempts: input\.nextAttempts/);
+    expect(ioPlans).toMatch(/next_retry_at: input\.nextRetryAt/);
+    expect(src).toContain('smsParkAmbiguousPayload');
     // Alert predicate lives in pure reconcile-tally (DI shell just calls it).
     expect(tally).toMatch(/needsReview > 0/);
     expect(src).toContain('decideReconcileAlert');
     expect(decisions).toMatch(/keyEchoed: Boolean\(result\.keyEchoed\)/);
-    expect(src).toMatch(/key_supported_at_send: decision\.keySupportedAtSend/);
+    expect(ioPlans).toMatch(/key_supported_at_send: input\.keySupportedAtSend/);
     expect(src).toMatch(/keySupportedAtSend: Boolean\(row\.key_supported_at_send\)/);
     expect(decisions).toMatch(/if \(result\.conflict\)/);
     expect(decisions).toMatch(/isFailedStatus\(result\.status\)/);
     expect(decisions).toMatch(/result\.ambiguous/);
-    expect(src).toMatch(/status: SMS_STATUS\.unknown|status: 'unknown'/);
+    expect(ioPlans).toMatch(/status: input\.status/);
     expect(src).not.toMatch(/\.update\(\{\s*status:\s*'queued'\s*\}\)/);
-    expect(src).toMatch(
-      /status: SMS_STATUS\.needsReview|status: 'needs_review'/
-    );
-    expect(src).toMatch(/sms_outbound_sid: null/);
+    expect(src).toContain('smsNeedsReviewPayload');
+    expect(ioPlans).toMatch(/sms_outbound_sid: null/);
     expect(src).toMatch(/tryNormalizeToE164/);
     expect(src).toMatch(/to: toE164/);
     expect(decisions).toMatch(/result\.status === 'maintenance'/);
@@ -353,9 +354,8 @@ describe('QC r6 mut.py killers', () => {
     expect(src).toContain('leadTimezone: leadTz,');
     expect(src).toContain('decideDuplicateSid');
     expect(src).toContain('mapRelaySendResult');
-    expect(src).toMatch(
-      /\.update\(\{\s*status:\s*(SMS_STATUS\.needsReview|'needs_review')\s*\}\)/
-    );
+    expect(src).toContain('smsStatusOnlyPayload(SMS_STATUS.needsReview)');
+    expect(ioPlans).toContain('sms_outbound_sid: null');
   });
 
   it('campaigns.ts keeps recovery park / claim / requeue / leadTimezone', () => {

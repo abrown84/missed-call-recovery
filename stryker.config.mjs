@@ -14,6 +14,7 @@ const config = {
     'src/services/send/machine.ts',
     'src/services/send/policy.ts',
     'src/services/send/reconcile-tally.ts',
+    'src/services/send/send-io-plans.ts',
     'src/services/campaign-decisions.ts',
     'src/services/campaign-io-plans.ts',
     'src/services/campaign-enroll-plan.ts',

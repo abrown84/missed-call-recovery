@@ -39,6 +39,17 @@ import {
   signalFromLookupOutcome,
 } from './reconcile-tally';
 import {
+  clearLeadOutboundSidPayload,
+  leadOutboundSidPayload,
+  smsAbandonedRetryPayload,
+  smsClaimDeferredPayload,
+  smsConfirmSentPayload,
+  smsNeedsReviewPayload,
+  smsParkAmbiguousPayload,
+  smsSendingInsertPayload,
+  smsStatusOnlyPayload,
+} from './send-io-plans';
+import {
   COL,
   DIRECTION_OUTBOUND,
   KIND_CAMPAIGN,
@@ -180,14 +191,15 @@ export async function sendMessageWithDeps(
   const sid = resolveIdempotencySid(req, deps.clock().getTime());
 
   if (req.kind === KIND_RECOVERY || req.kind === KIND_CAMPAIGN) {
-    const { error: insertError } = await supabase.from(TABLE.smsMessages).insert({
-      lead_id: req.leadId,
-      direction: DIRECTION_OUTBOUND,
-      body: req.body,
-      message_sid: sid,
-      status: SMS_STATUS.sending,
-      key_supported_at_send: false,
-    });
+    const { error: insertError } = await supabase.from(TABLE.smsMessages).insert(
+      smsSendingInsertPayload({
+        leadId: req.leadId,
+        body: req.body,
+        sid,
+        direction: DIRECTION_OUTBOUND,
+        status: SMS_STATUS.sending,
+      })
+    );
 
     if (insertError?.code === PG_UNIQUE) {
       const { data: existing } = await supabase
@@ -211,11 +223,12 @@ export async function sendMessageWithDeps(
       if (dup.action === 'claim_deferred') {
         await supabase
           .from(TABLE.smsMessages)
-          .update({
-            status: SMS_STATUS.sending,
-            next_retry_at: null,
-            body: req.body,
-          })
+          .update(
+            smsClaimDeferredPayload({
+              status: SMS_STATUS.sending,
+              body: req.body,
+            })
+          )
           .eq(COL.messageSid, sid);
         return dispatchToRelay(deps, supabase, req, sid, toE164);
       }
@@ -276,15 +289,17 @@ async function dispatchToRelay(
     if (req.kind === KIND_RECOVERY || req.kind === KIND_CAMPAIGN) {
       await supabase
         .from(TABLE.smsMessages)
-        .update({
-          status: decision.providerStatus,
-          key_supported_at_send: decision.keySupportedAtSend,
-        })
+        .update(
+          smsConfirmSentPayload({
+            providerStatus: decision.providerStatus,
+            keySupportedAtSend: decision.keySupportedAtSend,
+          })
+        )
         .eq(COL.messageSid, sid);
       if (req.kind === KIND_RECOVERY) {
         await supabase
           .from(TABLE.leads)
-          .update({ sms_outbound_sid: sid })
+          .update(leadOutboundSidPayload(sid))
           .eq(COL.id, req.leadId);
       }
     }
@@ -301,7 +316,7 @@ async function dispatchToRelay(
     if (req.kind === KIND_RECOVERY || req.kind === KIND_CAMPAIGN) {
       await supabase
         .from(TABLE.smsMessages)
-        .update({ status: SMS_STATUS.needsReview })
+        .update(smsStatusOnlyPayload(SMS_STATUS.needsReview))
         .eq(COL.messageSid, sid);
     }
     return { kind: 'needs_review', sid, reason: decision.reason };
@@ -317,11 +332,13 @@ async function dispatchToRelay(
   if (req.kind === KIND_RECOVERY || req.kind === KIND_CAMPAIGN) {
     await supabase
       .from(TABLE.smsMessages)
-      .update({
-        status: SMS_STATUS.unknown,
-        reconcile_attempts: decision.nextAttempts,
-        next_retry_at: nextRetryAt,
-      })
+      .update(
+        smsParkAmbiguousPayload({
+          status: SMS_STATUS.unknown,
+          nextAttempts: decision.nextAttempts,
+          nextRetryAt,
+        })
+      )
       .eq(COL.messageSid, sid);
   }
   return {
@@ -432,7 +449,7 @@ export async function reconcileOneWithDeps(
   if (decision.action === 'resolved') {
     await supabase
       .from(TABLE.smsMessages)
-      .update({ status: decision.providerStatus })
+      .update(smsStatusOnlyPayload(decision.providerStatus))
       .eq(COL.id, row.id);
     return {
       kind: 'resolved',
@@ -445,7 +462,12 @@ export async function reconcileOneWithDeps(
     const abandoned = abandonedSid(row.message_sid, deps.clock().getTime());
     await supabase
       .from(TABLE.smsMessages)
-      .update({ status: SMS_STATUS.abandonedRetry, message_sid: abandoned })
+      .update(
+        smsAbandonedRetryPayload({
+          status: SMS_STATUS.abandonedRetry,
+          abandonedSid: abandoned,
+        })
+      )
       .eq(COL.id, row.id);
     return { kind: 'never_sent', sid: row.message_sid, requeued: true };
   }
@@ -453,7 +475,7 @@ export async function reconcileOneWithDeps(
   if (decision.action === 'needs_review') {
     await supabase
       .from(TABLE.smsMessages)
-      .update({ status: SMS_STATUS.needsReview, next_retry_at: null })
+      .update(smsNeedsReviewPayload({ status: SMS_STATUS.needsReview }))
       .eq(COL.id, row.id);
     return {
       kind: 'needs_review',
@@ -473,11 +495,13 @@ export async function reconcileOneWithDeps(
   const nextRetryAt = parkNextAt(nextAttempts, deps.clock()).toISOString();
   await supabase
     .from(TABLE.smsMessages)
-    .update({
-      status: SMS_STATUS.unknown,
-      reconcile_attempts: nextAttempts,
-      next_retry_at: nextRetryAt,
-    })
+    .update(
+      smsParkAmbiguousPayload({
+        status: SMS_STATUS.unknown,
+        nextAttempts,
+        nextRetryAt,
+      })
+    )
     .eq(COL.id, row.id);
   return {
     kind: 'ambiguous',
@@ -563,7 +587,7 @@ async function onReconcileNeverSent(
   if (parsed.kind === KIND_RECOVERY) {
     await supabase
       .from(TABLE.leads)
-      .update({ sms_outbound_sid: null })
+      .update(clearLeadOutboundSidPayload())
       .eq(COL.id, leadId);
   }
 }
