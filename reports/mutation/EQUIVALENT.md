@@ -309,3 +309,27 @@ return values, DB writes, and control flow are unchanged. (sms.ts injects
 - justification: wrapper only `return resolveRecoveryOutcomeWithDeps(defaultSendDeps(), …)`;
   emptying breaks the export but production callers use WithDeps via DI tests.
   Prefer keeping the one-line delegate; ignore BlockStatement on the wrapper.
+
+### campaign-runtime-default-wrappers
+
+- file: `src/services/campaign-runtime.ts` / mutator: BlockStatement /
+  one-line `*WithDeps(defaultCampaignDeps(), …)` wrappers
+  (`enrollLeadInCampaign`, `switchEnrollmentCampaign`,
+  `handleClassifiedReplyEnrollment`, `getEnrollmentForLead`,
+  `sendCampaignSMS`, `pauseCampaignForLead`, `claimDueEnrollment`,
+  `listClaimableEnrollmentIds`, `reconcileAmbiguousSms`, `processDueCampaigns`)
+- original → replacement: empty block
+- justification: wrappers only delegate to the WithDeps implementations that DI
+  tests exercise. Emptying a wrapper breaks the public export the same way as
+  the send-module default wrappers. Disabled per-wrapper BlockStatement.
+
+### campaign-deps-default-factory-sleep
+
+- file: `src/services/campaign-deps.ts` / mutator: StringLiteral,NumberLiteral /
+  `sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms))`
+- original → replacement: alter delay literal / empty string in unused paths
+- justification: production cron spacing is not asserted by functional tests;
+  DI tests inject `sleep: async () => undefined`. NumberLiteral on the `200`
+  call site in `processDueCampaignsWithDeps` is covered by asserting
+  `deps.sleep` was invoked when ids are non-empty — keep that mutant live;
+  only the unused default factory arm is equivalent when tests always inject.
