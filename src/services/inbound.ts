@@ -1,4 +1,20 @@
+import {
+  inboundAmbiguousReviewPayload,
+  inboundQualifiedLeadPayload,
+  inboundSmsReceivedPayload,
+  stopLeadLookupResult,
+} from '@/services/inbound-io-plans';
 import { LEAD_LOOKUP_MAX_AGE_DAYS } from '@/services/campaign-logic';
+import {
+  COL,
+  ENV_BRWN_DEFAULT_BUSINESS_PHONE,
+  INBOUND_MESSAGE_ID_PREFIX,
+  LEAD_SELECT_STAR,
+  LEAD_STATUS,
+  LEGACY_LEAD_STATUSES,
+  OPEN_LEAD_STATUSES,
+  TABLE,
+} from '@/services/db-strings';
 import type { Database } from '@/types/database';
 import {
   defaultInboundDeps,
@@ -6,6 +22,9 @@ import {
 } from '@/services/inbound-deps';
 
 type Lead = Database['public']['Tables']['leads']['Row'];
+
+const OPT_OUT_SUPPRESS_REASON = 'opt_out';
+const INBOUND_BODY_MAX_LEN = 1600;
 
 export interface InboundSmsEvent {
   from: string;
@@ -29,11 +48,6 @@ export type InboundResult =
 export type { InboundDeps };
 export { defaultInboundDeps };
 
-/**
- * Handle an inbound customer SMS (forwarded from the BRWN relay webhook).
- * STOP is handled before the age-limited lead lookup so a late opt-out
- * still suppresses the number. Phone normalize must not throw before STOP.
- */
 export async function processInboundSms(
   event: InboundSmsEvent
 ): Promise<InboundResult> {
@@ -45,15 +59,15 @@ export async function processInboundSmsWithDeps(
   event: InboundSmsEvent
 ): Promise<InboundResult> {
   const supabase = deps.db();
-  const body = event.body.slice(0, 1600);
+  const body = event.body.slice(0, INBOUND_BODY_MAX_LEN);
   const messageId =
     event.messageId ||
-    `brwn-in-${deps.clock().getTime()}-${deps.randomSuffix()}`;
+    `${INBOUND_MESSAGE_ID_PREFIX}${deps.clock().getTime()}-${deps.randomSuffix()}`;
 
   const { data: business, error: bizError } = await supabase
-    .from('businesses')
-    .select('*')
-    .eq('phone', event.businessPhone)
+    .from(TABLE.businesses)
+    .select(LEAD_SELECT_STAR)
+    .eq(COL.phone, event.businessPhone)
     .single();
 
   if (bizError || !business) {
@@ -73,58 +87,64 @@ export async function processInboundSmsWithDeps(
 
   if (optOutVerdict.kind === 'opt_out' || deps.isOptOutMessage(body)) {
     if (!fromE164) {
-      // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
+      // Stryker disable StringLiteral,CallExpression,BlockStatement: log-only (no control flow)
       console.warn(
         'Definite STOP from non-normalizable sender; recording without E.164 suppress',
         deps.redactPhone(event.from)
       );
-      // Stryker restore StringLiteral,CallExpression
+      // Stryker restore StringLiteral,CallExpression,BlockStatement
     }
 
     const { data: anyLead } = await supabase
-      .from('leads')
-      .select('id')
-      .eq('business_id', business.id)
-      .eq('caller_phone', phoneForLookup)
-      .order('created_at', { ascending: false })
+      .from(TABLE.leads)
+      .select(COL.id)
+      .eq(COL.businessId, business.id)
+      .eq(COL.callerPhone, phoneForLookup)
+      .order(COL.createdAt, { ascending: false })
       .limit(1)
       .maybeSingle();
 
+    const skipSecondLookup = Boolean(anyLead || phoneForLookup === event.from);
+    const shortCircuit = stopLeadLookupResult(anyLead, skipSecondLookup);
     const { data: rawLead } =
-      anyLead || phoneForLookup === event.from
-        ? { data: anyLead }
-        : await supabase
-            .from('leads')
-            .select('id')
-            .eq('business_id', business.id)
-            .eq('caller_phone', event.from)
-            .order('created_at', { ascending: false })
+      shortCircuit === null
+        ? await supabase
+            .from(TABLE.leads)
+            .select(COL.id)
+            .eq(COL.businessId, business.id)
+            .eq(COL.callerPhone, event.from)
+            .order(COL.createdAt, { ascending: false })
             .limit(1)
-            .maybeSingle();
+            .maybeSingle()
+        : shortCircuit;
 
     const leadId = anyLead?.id || rawLead?.id;
 
     if (fromE164) {
-      await deps.suppressPhoneForBusiness(business.id, fromE164, 'opt_out');
+      await deps.suppressPhoneForBusiness(
+        business.id,
+        fromE164,
+        OPT_OUT_SUPPRESS_REASON
+      );
     }
 
     if (leadId) {
       await deps.markLeadOptedOut(leadId).catch((err) => {
-        // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
+        // Stryker disable StringLiteral,CallExpression,BlockStatement: log-only (no control flow)
         console.error(
           'Failed to mark lead opted out:',
           err instanceof Error ? err.message : 'unknown'
         );
-        // Stryker restore StringLiteral,CallExpression
+        // Stryker restore StringLiteral,CallExpression,BlockStatement
       });
       await deps.pauseCampaignForLead(leadId).catch(() => undefined);
-      await supabase.from('sms_messages').insert({
-        lead_id: leadId,
-        direction: 'inbound',
-        body,
-        message_sid: messageId,
-        status: 'received',
-      });
+      await supabase.from(TABLE.smsMessages).insert(
+        inboundSmsReceivedPayload({
+          leadId,
+          body,
+          messageSid: messageId,
+        })
+      );
       return {
         status: 'opt_out_recorded',
         leadId,
@@ -141,31 +161,31 @@ export async function processInboundSmsWithDeps(
     );
     // Stryker restore StringLiteral,CallExpression
     const { data: anyLead } = await supabase
-      .from('leads')
-      .select('id')
-      .eq('business_id', business.id)
-      .eq('caller_phone', phoneForLookup)
-      .order('created_at', { ascending: false })
+      .from(TABLE.leads)
+      .select(COL.id)
+      .eq(COL.businessId, business.id)
+      .eq(COL.callerPhone, phoneForLookup)
+      .order(COL.createdAt, { ascending: false })
       .limit(1)
       .maybeSingle();
 
     if (anyLead?.id) {
       await supabase
-        .from('leads')
-        .update({
-          needs_human_review: true,
-          needs_human_review_at: deps.clock().toISOString(),
-          needs_human_review_reason: optOutVerdict.reason,
-          updated_at: deps.clock().toISOString(),
+        .from(TABLE.leads)
+        .update(
+          inboundAmbiguousReviewPayload({
+            reason: optOutVerdict.reason,
+            flaggedAt: deps.clock().toISOString(),
+          })
+        )
+        .eq(COL.id, anyLead.id);
+      await supabase.from(TABLE.smsMessages).insert(
+        inboundSmsReceivedPayload({
+          leadId: anyLead.id,
+          body,
+          messageSid: messageId,
         })
-        .eq('id', anyLead.id);
-      await supabase.from('sms_messages').insert({
-        lead_id: anyLead.id,
-        direction: 'inbound',
-        body,
-        message_sid: messageId,
-        status: 'received',
-      });
+      );
       return { status: 'ambiguous_opt_out', leadId: anyLead.id };
     }
     return { status: 'ambiguous_opt_out' };
@@ -183,13 +203,13 @@ export async function processInboundSmsWithDeps(
   ).toISOString();
 
   const { data: pendingLead } = await supabase
-    .from('leads')
-    .select('*')
-    .eq('business_id', business.id)
-    .eq('caller_phone', fromE164)
-    .eq('status', 'pending')
-    .gte('created_at', cutoff)
-    .order('created_at', { ascending: false })
+    .from(TABLE.leads)
+    .select(LEAD_SELECT_STAR)
+    .eq(COL.businessId, business.id)
+    .eq(COL.callerPhone, fromE164)
+    .eq(COL.status, LEAD_STATUS.pending)
+    .gte(COL.createdAt, cutoff)
+    .order(COL.createdAt, { ascending: false })
     .limit(1)
     .maybeSingle();
 
@@ -197,13 +217,13 @@ export async function processInboundSmsWithDeps(
 
   if (!lead) {
     const { data: openLead } = await supabase
-      .from('leads')
-      .select('*')
-      .eq('business_id', business.id)
-      .eq('caller_phone', fromE164)
-      .in('status', ['qualified', 'escalated'])
-      .gte('created_at', cutoff)
-      .order('created_at', { ascending: false })
+      .from(TABLE.leads)
+      .select(LEAD_SELECT_STAR)
+      .eq(COL.businessId, business.id)
+      .eq(COL.callerPhone, fromE164)
+      .in(COL.status, [...OPEN_LEAD_STATUSES])
+      .gte(COL.createdAt, cutoff)
+      .order(COL.createdAt, { ascending: false })
       .limit(1)
       .maybeSingle();
     lead = openLead;
@@ -211,13 +231,13 @@ export async function processInboundSmsWithDeps(
 
   if (!lead && fromE164 !== event.from) {
     const { data: legacy } = await supabase
-      .from('leads')
-      .select('*')
-      .eq('business_id', business.id)
-      .eq('caller_phone', event.from)
-      .in('status', ['pending', 'qualified', 'escalated'])
-      .gte('created_at', cutoff)
-      .order('created_at', { ascending: false })
+      .from(TABLE.leads)
+      .select(LEAD_SELECT_STAR)
+      .eq(COL.businessId, business.id)
+      .eq(COL.callerPhone, event.from)
+      .in(COL.status, [...LEGACY_LEAD_STATUSES])
+      .gte(COL.createdAt, cutoff)
+      .order(COL.createdAt, { ascending: false })
       .limit(1)
       .maybeSingle();
     lead = legacy;
@@ -230,26 +250,27 @@ export async function processInboundSmsWithDeps(
     return { status: 'no_lead_found' };
   }
 
-  await supabase.from('sms_messages').insert({
-    lead_id: lead.id,
-    direction: 'inbound',
-    body,
-    message_sid: messageId,
-    status: 'received',
-  });
+  await supabase.from(TABLE.smsMessages).insert(
+    inboundSmsReceivedPayload({
+      leadId: lead.id,
+      body,
+      messageSid: messageId,
+    })
+  );
 
   const classification = await deps.classifyUrgency(body, business.vertical);
 
   const { error: updateError } = await supabase
-    .from('leads')
-    .update({
-      status: 'qualified',
-      urgency: classification.urgency,
-      issue: classification.issue,
-      sms_response_text: body,
-      classified_at: deps.clock().toISOString(),
-    })
-    .eq('id', lead.id);
+    .from(TABLE.leads)
+    .update(
+      inboundQualifiedLeadPayload({
+        urgency: classification.urgency,
+        issue: classification.issue ?? null,
+        body,
+        classifiedAt: deps.clock().toISOString(),
+      })
+    )
+    .eq(COL.id, lead.id);
 
   if (updateError) {
     // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
@@ -260,12 +281,12 @@ export async function processInboundSmsWithDeps(
   const enrollment = await deps
     .handleClassifiedReplyEnrollment(lead.id, classification.urgency)
     .catch((err) => {
-      // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
+      // Stryker disable StringLiteral,CallExpression,BlockStatement: log-only (no control flow)
       console.error(
         'Enrollment handling failed:',
         err instanceof Error ? err.message : 'unknown'
       );
-      // Stryker restore StringLiteral,CallExpression
+      // Stryker restore StringLiteral,CallExpression,BlockStatement
       return { action: 'error', campaignName: undefined as string | undefined };
     });
 
@@ -290,7 +311,7 @@ export function resolveBusinessPhone(
 ): string | null {
   const fromPayload = payloadTo?.trim();
   if (fromPayload) return fromPayload;
-  const fromEnv = process.env.BRWN_DEFAULT_BUSINESS_PHONE?.trim();
+  const fromEnv = process.env[ENV_BRWN_DEFAULT_BUSINESS_PHONE]?.trim();
   return fromEnv || null;
 }
 

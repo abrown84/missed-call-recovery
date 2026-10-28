@@ -145,7 +145,7 @@ describe('processMissedCallWithDeps', () => {
 
     const deps: MissedCallDeps = {
       ...buildDeps({}).deps,
-      db: () => ({ from }) as unknown as never,
+      db: () => ({ from }) as unknown as SupabaseClient,
     };
 
     const result = await processMissedCallWithDeps(deps, baseEvent());
@@ -282,6 +282,96 @@ describe('processMissedCallWithDeps', () => {
     );
   });
 
+  it('duplicate 23505 without existing lead throws 500', async () => {
+    let mcPass = 0;
+    const from = vi.fn((table: string) => {
+      if (table === 'businesses') {
+        return chain({ data: BIZ, error: null });
+      }
+      if (table === 'missed_calls') {
+        mcPass += 1;
+        if (mcPass === 1) {
+          const c = chain({
+            data: null,
+            error: { code: '23505', message: 'dup' },
+          });
+          c.insert = vi.fn(() => c);
+          return c;
+        }
+        return chain({ data: { id: 'mc-dup' }, error: null });
+      }
+      if (table === 'leads') {
+        return chain({ data: null, error: { message: 'no lead' } });
+      }
+      return chain({ data: null, error: null });
+    });
+    const deps: MissedCallDeps = {
+      ...buildDeps({}).deps,
+      db: () => ({ from }) as unknown as SupabaseClient,
+    };
+
+    await expect(processMissedCallWithDeps(deps, baseEvent())).rejects.toMatchObject(
+      { status: 500, message: 'Failed to record call' }
+    );
+  });
+
+  it('throws when business lookup returns error even if row present', async () => {
+    const { deps } = buildDeps({
+      business: { data: BIZ, error: { message: 'err' } },
+    });
+
+    await expect(processMissedCallWithDeps(deps, baseEvent())).rejects.toThrow(
+      MissedCallError
+    );
+  });
+
+  it('records missed call payload and business phone lookup', async () => {
+    const inserts: unknown[] = [];
+    const eqLog: Array<{ table: string; col: string; val: unknown }> = [];
+    const from = vi.fn((table: string) => {
+      if (table === 'businesses') {
+        const c = chain({ data: BIZ, error: null });
+        c.eq = vi.fn((col: string, val: unknown) => {
+          eqLog.push({ table, col, val });
+          return c;
+        });
+        return c;
+      }
+      if (table === 'missed_calls') {
+        const c = chain({ data: { id: 'mc-p' }, error: null });
+        c.insert = vi.fn((payload: unknown) => {
+          inserts.push(payload);
+          return c;
+        });
+        return c;
+      }
+      if (table === 'leads') {
+        const c = chain({ data: { id: 'lead-p' }, error: null });
+        c.insert = vi.fn(() => c);
+        return c;
+      }
+      return chain({ data: null, error: null });
+    });
+    const base = buildDeps({});
+    const deps: MissedCallDeps = {
+      ...base.deps,
+      db: () => ({ from }) as unknown as SupabaseClient,
+    };
+
+    await processMissedCallWithDeps(deps, baseEvent({ callId: 'device-9' }));
+
+    expect(eqLog).toContainEqual({
+      table: 'businesses',
+      col: 'phone',
+      val: '+15559999999',
+    });
+    expect(inserts[0]).toMatchObject({
+      business_id: 'biz-1',
+      call_sid: 'device-9',
+      caller_phone: '+15551234567',
+    });
+  });
+
   it('defaults ring duration to zero', async () => {
     const inserts: unknown[] = [];
     const from = vi.fn((table: string) => {
@@ -306,7 +396,7 @@ describe('processMissedCallWithDeps', () => {
     const base = buildDeps({});
     const deps: MissedCallDeps = {
       ...base.deps,
-      db: () => ({ from }) as unknown as never,
+      db: () => ({ from }) as unknown as SupabaseClient,
     };
 
     await processMissedCallWithDeps(deps, baseEvent({ ringDurationSeconds: undefined }));

@@ -11,6 +11,7 @@ export const TABLE = {
   leads: 'leads',
   businesses: 'businesses',
   smsMessages: 'sms_messages',
+  missedCalls: 'missed_calls',
   campaigns: 'campaigns',
   campaignSteps: 'campaign_steps',
   campaignEnrollments: 'campaign_enrollments',
@@ -33,7 +34,48 @@ export const COL = {
   sentAt: 'sent_at',
   smsOutboundSid: 'sms_outbound_sid',
   optedOut: 'opted_out',
+  phone: 'phone',
+  businessId: 'business_id',
+  callerPhone: 'caller_phone',
+  createdAt: 'created_at',
+  direction: 'direction',
+  callSid: 'call_sid',
+  ringDuration: 'ring_duration',
+  missedCallId: 'missed_call_id',
+  urgency: 'urgency',
+  issue: 'issue',
+  smsResponseText: 'sms_response_text',
+  classifiedAt: 'classified_at',
+  updatedAt: 'updated_at',
+  needsHumanReview: 'needs_human_review',
+  needsHumanReviewAt: 'needs_human_review_at',
+  needsHumanReviewReason: 'needs_human_review_reason',
+  optedOutAt: 'opted_out_at',
 } as const;
+
+export const DIRECTION_INBOUND = 'inbound';
+
+export const LEAD_STATUS = {
+  pending: 'pending',
+  qualified: 'qualified',
+  escalated: 'escalated',
+  spam: 'spam',
+} as const;
+
+export const OPEN_LEAD_STATUSES = [
+  LEAD_STATUS.qualified,
+  LEAD_STATUS.escalated,
+] as const;
+
+export const LEGACY_LEAD_STATUSES = [
+  LEAD_STATUS.pending,
+  LEAD_STATUS.qualified,
+  LEAD_STATUS.escalated,
+] as const;
+
+export const INBOUND_MESSAGE_ID_PREFIX = 'brwn-in-';
+
+export const ENV_BRWN_DEFAULT_BUSINESS_PHONE = 'BRWN_DEFAULT_BUSINESS_PHONE';
 
 export const SMS_STATUS = {
   sending: 'sending',
@@ -49,6 +91,7 @@ export const SMS_STATUS = {
   active: 'active',
   paused: 'paused',
   completed: 'completed',
+  received: 'received',
 } as const;
 
 export const ENROLLMENT_STATUS = {
@@ -61,6 +104,7 @@ export const ENROLLMENT_STATUS = {
 export const DIRECTION_OUTBOUND = 'outbound';
 
 export const LEAD_SELECT_GATES = 'opted_out, timezone, sms_outbound_sid';
+export const LEAD_SELECT_STAR = '*';
 export const SMS_SELECT_STATUS = 'status';
 export const SMS_SELECT_ID_STATUS = 'id, status';
 export const SMS_SELECT_DEFERRED =

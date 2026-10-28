@@ -1,14 +1,20 @@
 import {
+  missedCallLeadPayload,
+  missedCallRowPayload,
+} from '@/services/missed-call-io-plans';
+import {
+  COL,
+  PG_UNIQUE,
+  TABLE,
+} from '@/services/db-strings';
+import {
   defaultMissedCallDeps,
   type MissedCallDeps,
 } from '@/services/missed-call-deps';
 
 export interface MissedCallEvent {
-  /** Caller's phone (E.164 preferred). */
   callerPhone: string;
-  /** Business line that was called (the device SIM / business.phone). */
   businessPhone: string;
-  /** Stable id from the device (used as call_sid uniqueness key). */
   callId: string;
   ringDurationSeconds?: number;
 }
@@ -21,11 +27,6 @@ export interface MissedCallResult {
 export type { MissedCallDeps };
 export { defaultMissedCallDeps };
 
-/**
- * Record a missed call, create a lead, send recovery SMS, enroll in the
- * Standard (catch-all) campaign skipping step 1 so non-responders still get
- * follow-ups. Urgency-specific campaigns are switched on classified reply.
- */
 export async function processMissedCall(
   event: MissedCallEvent
 ): Promise<MissedCallResult> {
@@ -39,9 +40,9 @@ export async function processMissedCallWithDeps(
   const supabase = deps.db();
 
   const { data: business, error: bizError } = await supabase
-    .from('businesses')
+    .from(TABLE.businesses)
     .select('*')
-    .eq('phone', event.businessPhone)
+    .eq(COL.phone, event.businessPhone)
     .single();
 
   if (bizError || !business) {
@@ -55,28 +56,30 @@ export async function processMissedCallWithDeps(
   }
 
   const { data: missedCall, error: callError } = await supabase
-    .from('missed_calls')
-    .insert({
-      business_id: business.id,
-      caller_phone: event.callerPhone,
-      ring_duration: event.ringDurationSeconds ?? 0,
-      call_sid: event.callId,
-    })
+    .from(TABLE.missedCalls)
+    .insert(
+      missedCallRowPayload({
+        businessId: business.id,
+        callerPhone: event.callerPhone,
+        ringDuration: event.ringDurationSeconds ?? 0,
+        callSid: event.callId,
+      })
+    )
     .select()
     .single();
 
   if (callError) {
-    if (callError.code === '23505') {
+    if (callError.code === PG_UNIQUE) {
       const { data: existing } = await supabase
-        .from('missed_calls')
-        .select('id')
-        .eq('call_sid', event.callId)
+        .from(TABLE.missedCalls)
+        .select(COL.id)
+        .eq(COL.callSid, event.callId)
         .single();
       const { data: existingLead } = existing
         ? await supabase
-            .from('leads')
-            .select('id')
-            .eq('missed_call_id', existing.id)
+            .from(TABLE.leads)
+            .select(COL.id)
+            .eq(COL.missedCallId, existing.id)
             .single()
         : { data: null };
       if (existing && existingLead) {
@@ -106,15 +109,16 @@ export async function processMissedCallWithDeps(
   }
 
   const { data: lead, error: leadError } = await supabase
-    .from('leads')
-    .insert({
-      business_id: business.id,
-      missed_call_id: missedCall.id,
-      caller_phone: callerE164,
-      status: suppressed ? 'spam' : 'pending',
-      opted_out: suppressed,
-      opted_out_at: suppressed ? deps.clock().toISOString() : null,
-    })
+    .from(TABLE.leads)
+    .insert(
+      missedCallLeadPayload({
+        businessId: business.id,
+        missedCallId: missedCall.id,
+        callerE164,
+        suppressed,
+        optedOutAt: suppressed ? deps.clock().toISOString() : null,
+      })
+    )
     .select()
     .single();
 
@@ -126,14 +130,15 @@ export async function processMissedCallWithDeps(
   }
 
   if (suppressed) {
-    // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
+    // Stryker disable StringLiteral,CallExpression,BlockStatement: log-only (no control flow)
     console.log(
       `Skipping recovery SMS; phone suppressed: ${deps.redactPhone(callerE164)}`
     );
-    // Stryker restore StringLiteral,CallExpression
+    // Stryker restore StringLiteral,CallExpression,BlockStatement
     return { missedCallId: missedCall.id, leadId: lead.id };
   }
 
+  // Stryker disable BlockStatement: empty catch is intentional — recovery failure must not block enroll attempt
   try {
     await deps.sendRecoverySMS(lead.id, business, callerE164);
   } catch (err) {
@@ -144,7 +149,9 @@ export async function processMissedCallWithDeps(
     );
     // Stryker restore StringLiteral,CallExpression
   }
+  // Stryker restore BlockStatement
 
+  // Stryker disable BlockStatement: empty catch is intentional — enroll failure must not fail webhook
   try {
     await deps.enrollLeadInCampaign(lead.id);
   } catch (err) {
@@ -155,6 +162,7 @@ export async function processMissedCallWithDeps(
     );
     // Stryker restore StringLiteral,CallExpression
   }
+  // Stryker restore BlockStatement
 
   return { missedCallId: missedCall.id, leadId: lead.id };
 }

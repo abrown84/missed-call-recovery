@@ -17,6 +17,7 @@ import {
   KIND_CAMPAIGN,
   KIND_MANUAL,
   KIND_RECOVERY,
+  LEAD_SELECT_STAR,
   LEAD_SELECT_GATES,
   LEAD_SELECT_OPTED_OUT,
   LEAD_SELECT_OUTBOUND,
@@ -36,6 +37,12 @@ import {
   SMS_STATUS,
   STEP_SELECT_STAR,
   TABLE,
+  DIRECTION_INBOUND,
+  ENV_BRWN_DEFAULT_BUSINESS_PHONE,
+  INBOUND_MESSAGE_ID_PREFIX,
+  LEAD_STATUS,
+  LEGACY_LEAD_STATUSES,
+  OPEN_LEAD_STATUSES,
   reconcileOrFilter,
 } from './db-strings';
 
@@ -44,6 +51,7 @@ describe('db-strings constants (kill StringLiteral mutants)', () => {
     expect(TABLE.leads).toBe('leads');
     expect(TABLE.businesses).toBe('businesses');
     expect(TABLE.smsMessages).toBe('sms_messages');
+    expect(TABLE.missedCalls).toBe('missed_calls');
     expect(TABLE.campaigns).toBe('campaigns');
     expect(TABLE.campaignSteps).toBe('campaign_steps');
     expect(TABLE.campaignEnrollments).toBe('campaign_enrollments');
@@ -65,6 +73,21 @@ describe('db-strings constants (kill StringLiteral mutants)', () => {
     expect(COL.sentAt).toBe('sent_at');
     expect(COL.smsOutboundSid).toBe('sms_outbound_sid');
     expect(COL.optedOut).toBe('opted_out');
+    expect(COL.phone).toBe('phone');
+    expect(COL.businessId).toBe('business_id');
+    expect(COL.callerPhone).toBe('caller_phone');
+    expect(COL.createdAt).toBe('created_at');
+    expect(COL.direction).toBe('direction');
+    expect(COL.callSid).toBe('call_sid');
+    expect(COL.ringDuration).toBe('ring_duration');
+    expect(COL.missedCallId).toBe('missed_call_id');
+    expect(DIRECTION_INBOUND).toBe('inbound');
+    expect(LEAD_STATUS.pending).toBe('pending');
+    expect(OPEN_LEAD_STATUSES).toEqual(['qualified', 'escalated']);
+    expect(LEGACY_LEAD_STATUSES).toEqual(['pending', 'qualified', 'escalated']);
+    expect(SMS_STATUS.received).toBe('received');
+    expect(INBOUND_MESSAGE_ID_PREFIX).toBe('brwn-in-');
+    expect(ENV_BRWN_DEFAULT_BUSINESS_PHONE).toBe('BRWN_DEFAULT_BUSINESS_PHONE');
   });
 
   it('sms / enrollment statuses', () => {
@@ -81,6 +104,7 @@ describe('db-strings constants (kill StringLiteral mutants)', () => {
     expect(SMS_STATUS.active).toBe('active');
     expect(SMS_STATUS.paused).toBe('paused');
     expect(SMS_STATUS.completed).toBe('completed');
+    expect(SMS_STATUS.received).toBe('received');
     expect(ENROLLMENT_STATUS.active).toBe('active');
     expect(ENROLLMENT_STATUS.paused).toBe('paused');
     expect(ENROLLMENT_STATUS.completed).toBe('completed');
@@ -90,6 +114,7 @@ describe('db-strings constants (kill StringLiteral mutants)', () => {
   it('select lists and misc', () => {
     expect(DIRECTION_OUTBOUND).toBe('outbound');
     expect(LEAD_SELECT_GATES).toBe('opted_out, timezone, sms_outbound_sid');
+    expect(LEAD_SELECT_STAR).toBe('*');
     expect(SMS_SELECT_STATUS).toBe('status');
     expect(SMS_SELECT_ID_STATUS).toBe('id, status');
     expect(SMS_SELECT_DEFERRED).toBe(

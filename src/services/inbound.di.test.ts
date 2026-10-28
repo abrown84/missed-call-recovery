@@ -11,6 +11,7 @@ import {
 import type { InboundDeps } from './inbound-deps';
 import { LEAD_LOOKUP_MAX_AGE_DAYS } from './campaign-logic';
 import type { ClassificationResult } from '@/types';
+import { ENV_BRWN_DEFAULT_BUSINESS_PHONE } from '@/services/db-strings';
 import type { SupabaseClient } from './inbound-deps';
 
 const FIXED = new Date('2026-10-28T12:00:00.000Z');
@@ -53,8 +54,13 @@ function createDb(handlers: {
   let leadPass = 0;
   const inserts: unknown[] = [];
   const updates: unknown[] = [];
+  const eqLog: Array<{ table: string; col: string; val: unknown }> = [];
+  const inLog: Array<{ table: string; col: string; vals: unknown }> = [];
+  const gteLog: Array<{ table: string; col: string; val: unknown }> = [];
+  const fromLog: string[] = [];
 
   const from = vi.fn((table: string) => {
+    fromLog.push(table);
     if (table === 'businesses') {
       return chain(handlers.businesses ?? { data: BIZ, error: null });
     }
@@ -72,6 +78,18 @@ function createDb(handlers: {
       const res =
         handlers.leads?.({ pass }) ?? { data: null, error: null };
       const c = chain(res);
+      c.eq = vi.fn((col: string, val: unknown) => {
+        eqLog.push({ table, col, val });
+        return c;
+      });
+      c.in = vi.fn((col: string, vals: unknown) => {
+        inLog.push({ table, col, vals });
+        return c;
+      });
+      c.gte = vi.fn((col: string, val: unknown) => {
+        gteLog.push({ table, col, val });
+        return c;
+      });
       c.update = vi.fn((payload: unknown) => {
         updates.push(payload);
         return c;
@@ -81,9 +99,18 @@ function createDb(handlers: {
     return chain({ data: null, error: null });
   });
 
-  return { from, inserts, updates, resetPass: () => {
-    leadPass = 0;
-  } };
+  return {
+    from,
+    inserts,
+    updates,
+    eqLog,
+    inLog,
+    gteLog,
+    fromLog,
+    resetPass: () => {
+      leadPass = 0;
+    },
+  };
 }
 
 function baseEvent(over: Partial<InboundSmsEvent> = {}): InboundSmsEvent {
@@ -512,7 +539,7 @@ describe('processInboundSmsWithDeps', () => {
       return chain({ data: null, error: null });
     });
     const { deps } = buildDeps({
-      dbImpl: { from, inserts: [], updates: [], resetPass: () => undefined },
+      dbImpl: { from, inserts: [], updates: [], resetPass: () => undefined, eqLog: [], inLog: [], gteLog: [], fromLog: [] },
     });
 
     const result = await processInboundSmsWithDeps(deps, baseEvent());
@@ -543,8 +570,11 @@ describe('processInboundSmsWithDeps', () => {
     expect(result).toEqual({ status: 'opt_out_recorded', leadId: 'raw-lead' });
   });
 
-  it('generates message id when omitted', async () => {
-    const db = createDb({ leads: () => ({ data: null, error: null }) });
+  it('generated message sid uses brwn-in prefix', async () => {
+    const db = createDb({
+      leads: () => ({ data: null, error: null }),
+      businesses: { data: BIZ, error: null },
+    });
     const built = buildDeps({
       dbImpl: db,
       classifyOptOut: vi.fn(() => ({ kind: 'opt_out' as const })),
@@ -558,6 +588,40 @@ describe('processInboundSmsWithDeps', () => {
     expect(built.deps.randomSuffix).toHaveBeenCalled();
   });
 
+  it('skips legacy phone query when sender already E.164', async () => {
+    let leadQueries = 0;
+    const from = vi.fn((table: string) => {
+      if (table === 'businesses') {
+        return chain({ data: BIZ, error: null });
+      }
+      if (table === 'leads') {
+        leadQueries += 1;
+        return chain({ data: null, error: null });
+      }
+      return chain({ data: null, error: null });
+    });
+    const { deps } = buildDeps({
+      dbImpl: {
+        from,
+        inserts: [],
+        updates: [],
+        eqLog: [],
+        inLog: [],
+        gteLog: [],
+        fromLog: [],
+        resetPass: () => undefined,
+      },
+      tryNormalizeToE164: vi.fn((p: string) => p),
+    });
+
+    await processInboundSmsWithDeps(
+      deps,
+      baseEvent({ from: '+15551234567', body: 'hello' })
+    );
+
+    expect(leadQueries).toBe(2);
+  });
+
   it('uses cutoff based on LEAD_LOOKUP_MAX_AGE_DAYS', async () => {
     const gteCalls: unknown[] = [];
     const from = vi.fn((table: string) => {
@@ -566,7 +630,7 @@ describe('processInboundSmsWithDeps', () => {
         return chain({ data: BIZ, error: null });
       }
       if (table === 'leads') {
-        c.gte = vi.fn((col: string, val: unknown) => {
+        c.gte = vi.fn((_col: string, val: unknown) => {
           gteCalls.push(val);
           return c;
         });
@@ -574,7 +638,16 @@ describe('processInboundSmsWithDeps', () => {
       return c;
     });
     const { deps } = buildDeps({
-      dbImpl: { from, inserts: [], updates: [], resetPass: () => undefined },
+      dbImpl: {
+        from,
+        inserts: [],
+        updates: [],
+        resetPass: () => undefined,
+        eqLog: [],
+        inLog: [],
+        gteLog: [],
+        fromLog: [],
+      },
     });
 
     await processInboundSmsWithDeps(deps, baseEvent());
@@ -584,15 +657,164 @@ describe('processInboundSmsWithDeps', () => {
     ).toISOString();
     expect(gteCalls).toContain(expectedCutoff);
   });
+
+  it('throws only when business row is missing (not on benign error flag)', async () => {
+    const db = createDb({
+      businesses: { data: null, error: null },
+      leads: () => ({ data: null, error: null }),
+    });
+    const { deps } = buildDeps({ dbImpl: db });
+
+    await expect(processInboundSmsWithDeps(deps, baseEvent())).rejects.toThrow(
+      InboundError
+    );
+  });
+
+  it('truncates inbound body to 1600 chars in sms insert', async () => {
+    const lead = {
+      id: 'lead-long',
+      created_at: FIXED.toISOString(),
+      status: 'pending',
+    };
+    const db = createDb({ leads: () => ({ data: lead, error: null }) });
+    const { deps } = buildDeps({ dbImpl: db });
+    const longBody = 'x'.repeat(2000);
+
+    await processInboundSmsWithDeps(deps, baseEvent({ body: longBody }));
+
+    expect((db.inserts[0] as { body: string }).body).toHaveLength(1600);
+  });
+
+  it('writes expected lead/sms fields on normal process path', async () => {
+    const lead = {
+      id: 'lead-fields',
+      created_at: FIXED.toISOString(),
+      status: 'pending',
+    };
+    const db = createDb({ leads: () => ({ data: lead, error: null }) });
+    const { deps } = buildDeps({ dbImpl: db });
+
+    await processInboundSmsWithDeps(
+      deps,
+      baseEvent({ messageId: 'sid-1', body: 'Water leak' })
+    );
+
+    expect(db.fromLog).toContain('businesses');
+    expect(db.fromLog).toContain('sms_messages');
+    expect(db.eqLog).toContainEqual({
+      table: 'leads',
+      col: 'status',
+      val: 'pending',
+    });
+    expect(db.eqLog).toContainEqual({
+      table: 'leads',
+      col: 'caller_phone',
+      val: '+15551234567',
+    });
+    expect(db.gteLog.some((g) => g.col === 'created_at')).toBe(true);
+    expect(db.inserts[0]).toMatchObject({
+      lead_id: 'lead-fields',
+      direction: 'inbound',
+      status: 'received',
+      message_sid: 'sid-1',
+      body: 'Water leak',
+    });
+    expect(db.updates[0]).toMatchObject({
+      status: 'qualified',
+      classified_at: FIXED.toISOString(),
+    });
+  });
+
+  it('queries qualified/escalated when pending lead missing', async () => {
+    const openLead = {
+      id: 'lead-q',
+      created_at: FIXED.toISOString(),
+      status: 'qualified',
+    };
+    let pass = 0;
+    const db = createDb({
+      leads: () => {
+        pass += 1;
+        return pass === 1
+          ? { data: null, error: null }
+          : { data: openLead, error: null };
+      },
+    });
+    const { deps } = buildDeps({ dbImpl: db });
+
+    await processInboundSmsWithDeps(deps, baseEvent());
+
+    expect(db.inLog).toContainEqual({
+      table: 'leads',
+      col: 'status',
+      vals: ['qualified', 'escalated'],
+    });
+  });
+
+  it('does not escalate normal urgency', async () => {
+    const lead = {
+      id: 'lead-n',
+      created_at: FIXED.toISOString(),
+      status: 'pending',
+    };
+    const db = createDb({ leads: () => ({ data: lead, error: null }) });
+    const { deps, spies } = buildDeps({ dbImpl: db });
+
+    await processInboundSmsWithDeps(deps, baseEvent());
+
+    expect(spies.escalateLead).not.toHaveBeenCalled();
+  });
+
+  it('uses trimmed sender for STOP lookup when not E.164', async () => {
+    const db = createDb({
+      leads: () => ({ data: { id: 'trim-lead' }, error: null }),
+    });
+    const { deps } = buildDeps({
+      dbImpl: db,
+      classifyOptOut: vi.fn(() => ({ kind: 'opt_out' as const })),
+      tryNormalizeToE164: vi.fn(() => null),
+    });
+
+    await processInboundSmsWithDeps(
+      deps,
+      baseEvent({ from: '  5551234567  ', body: 'STOP' })
+    );
+
+    expect(db.eqLog).toContainEqual({
+      table: 'leads',
+      col: 'caller_phone',
+      val: '5551234567',
+    });
+  });
+
+  it('stores ambiguous reason on lead flag', async () => {
+    const db = createDb({
+      leads: () => ({ data: { id: 'amb' }, error: null }),
+    });
+    const { deps } = buildDeps({
+      dbImpl: db,
+      classifyOptOut: vi.fn(() => ({
+        kind: 'ambiguous' as const,
+        reason: 'stop_in_sentence',
+      })),
+    });
+
+    await processInboundSmsWithDeps(deps, baseEvent({ body: 'maybe stop' }));
+
+    expect(db.updates[0]).toMatchObject({
+      needs_human_review_reason: 'stop_in_sentence',
+      needs_human_review_at: FIXED.toISOString(),
+    });
+  });
 });
 
 describe('resolveBusinessPhone', () => {
   it('prefers payload then env', () => {
     expect(resolveBusinessPhone('+15550001111')).toBe('+15550001111');
     expect(resolveBusinessPhone('  ')).toBe(null);
-    process.env.BRWN_DEFAULT_BUSINESS_PHONE = '+15550009999';
+    process.env[ENV_BRWN_DEFAULT_BUSINESS_PHONE] = '+15550009999';
     expect(resolveBusinessPhone(undefined)).toBe('+15550009999');
-    delete process.env.BRWN_DEFAULT_BUSINESS_PHONE;
+    delete process.env[ENV_BRWN_DEFAULT_BUSINESS_PHONE];
   });
 });
 
