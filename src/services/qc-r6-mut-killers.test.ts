@@ -384,11 +384,48 @@ describe('QC r6 mut.py killers', () => {
     );
     const mig = readSrc('supabase/migrations/003_campaign_idempotency.sql');
     if (!mig) return;
-    expect(mig).toContain('ON CONFLICT (business_id, phone) DO NOTHING;');
+    // Both rebuild + STOP backfill must keep ON CONFLICT / NFKC (mut.py #22/#25).
+    expect(mig.split('ON CONFLICT (business_id, phone) DO NOTHING;').length).toBeGreaterThan(
+      2
+    );
     expect(mig).toContain('enrolled_at DESC NULLS LAST');
     expect(mig).not.toContain('enrolled_at DESC NULLS FIRST');
-    expect(mig).toContain('normalize(btrim(m.body), NFKC)');
+    // mut.py #25 removes the first `normalize(btrim(m.body), NFKC),` — require all 6.
+    expect(
+      (mig.match(/normalize\(btrim\(m\.body\), NFKC\)/g) || []).length
+    ).toBeGreaterThanOrEqual(6);
     expect(mig).toContain("'PLEASE STOP', 'STOP PLEASE', 'STOP IT', 'STOP PLS'");
+    // STOP backfill section (after comment) must itself contain ON CONFLICT
+    const stopIdx = mig.indexOf('STOP backfill');
+    expect(stopIdx).toBeGreaterThan(-1);
+    expect(mig.slice(stopIdx)).toContain(
+      'ON CONFLICT (business_id, phone) DO NOTHING;'
+    );
+    expect(mig.slice(stopIdx)).toContain('normalize(btrim(m.body), NFKC)');
+  });
+
+  it('#41 park persists status unknown (not queued)', () => {
+    const src = readSrc('src/services/send/index.ts');
+    if (!src) return;
+    // Both send-path and reconcile-path parks must write status unknown
+    const unknownCount = src.split("status: 'unknown'").length - 1;
+    expect(unknownCount).toBeGreaterThanOrEqual(2);
+    expect(src).not.toContain("status: 'queued',\n        reconcile_attempts:");
+  });
+
+  it('#44 advanceEnrollment claim_token checks present on both branches', () => {
+    const src = readSrc('src/services/campaigns.ts');
+    if (!src) return;
+    // Exact mut.py #44 target — must remain (6-space indent before .eq)
+    expect(src).toContain(
+      "      .eq('claim_token', claimToken)\n      .select(ENROLLMENT_CLAIM_SELECT);"
+    );
+    const advIdx = src.indexOf('export async function advanceEnrollment');
+    expect(advIdx).toBeGreaterThan(-1);
+    const adv = src.slice(advIdx, advIdx + 3500);
+    expect(adv.split(".eq('claim_token', claimToken)").length - 1).toBeGreaterThanOrEqual(
+      2
+    );
   });
 });
 
