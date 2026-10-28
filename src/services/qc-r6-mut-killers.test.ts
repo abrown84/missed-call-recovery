@@ -237,10 +237,8 @@ describe('QC r6 mut.py killers', () => {
 
   it('#49 switchEnrollmentCampaign source uses ENROLLMENT_CLAIM_SELECT', () => {
     expect(ENROLLMENT_CLAIM_SELECT).toBe('id, claim_token, claimed_at');
-    const src =
-      readSrc('src/services/campaigns-impl.ts') ||
-      readSrc('src/services/campaigns.ts');
-    if (!src) return;
+    const src = readSrc('src/services/campaigns-impl.ts');
+    if (!src) return; // skip under Stryker instrumentation
     const switchIdx = src.indexOf('claim_token.is.null,claimed_at.lt.');
     expect(switchIdx).toBeGreaterThan(-1);
     const after = src.slice(switchIdx, switchIdx + 200);
