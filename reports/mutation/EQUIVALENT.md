@@ -350,3 +350,21 @@ values, DB writes, or control flow.
 - justification: callers only read `.data` / `.error`. `undefined` and `null`
   both fail `Boolean(error)` and both coalesce via `?? null` / `stepsForSendPlan`
   identically. Disabled in source.
+
+### absent-vs-empty
+
+- file: `src/services/campaign-runtime.ts` / mutator: StringLiteral /
+  recoveryState fallback `'absent'` when lead not found
+- original → replacement: `''`
+- justification: `planEnroll` / `decideEnrollmentPlan` only special-case
+  `recoveryState === 'pending'`; any other string (including `''`) takes the
+  same non-pending path as `'absent'`. Disabled in source.
+
+### process-due-empty-short-circuit
+
+- file: `src/services/campaign-runtime.ts` / mutator: ConditionalExpression,BlockStatement /
+  `if (ids.length === 0) return { processed:0, errors:0, skipped:0, … }`
+- original → replacement: force false / empty the early return
+- justification: `emptyDueCounts()` is `{ processed:0, errors:0, skipped:0 }`,
+  and an empty `ids` loop body is a no-op, so falling through produces the same
+  return shape (provider + reconcile fields unchanged). Disabled in source.
