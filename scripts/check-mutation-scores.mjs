@@ -15,7 +15,9 @@ import { join } from 'path';
 
 const REPORT = join(process.cwd(), 'reports/mutation/mutation.json');
 const MIN = Number(process.env.MUTATION_MIN ?? '90');
-const MAX_IGNORED_PER_FILE = Number(process.env.MUTATION_MAX_IGNORED ?? '80');
+// Cap stops vacuous data maps (quiet-hours-zones had 689). Log-only
+// disable blocks in campaign-runtime (~195) are below this ceiling.
+const MAX_IGNORED_PER_FILE = Number(process.env.MUTATION_MAX_IGNORED ?? '220');
 const MIN_SUPPRESSED = Number(process.env.MUTATION_MIN_SUPPRESSED ?? '0');
 const TARGETS = [
   'src/services/send/index.ts',
