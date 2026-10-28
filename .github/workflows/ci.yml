@@ -76,6 +76,8 @@ jobs:
     # QC r9: quiet-hours-zones back under mutate (static map is expensive).
     timeout-minutes: 90
     needs: build-and-test
+    # No postgres here — two-conn race is covered in build-and-test; Stryker
+    # dry-run skips the PG describe when RACE_DATABASE_URL is unset.
     env:
       NEXT_PUBLIC_SUPABASE_URL: https://example.supabase.co
       NEXT_PUBLIC_SUPABASE_ANON_KEY: eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.placeholder
