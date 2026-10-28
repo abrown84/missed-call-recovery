@@ -334,11 +334,19 @@ values, DB writes, or control flow.
 
 ### campaign-deps-default-factory-sleep
 
-- file: `src/services/campaign-deps.ts` / mutator: StringLiteral,NumberLiteral /
+- file: `src/services/campaign-deps.ts` / mutator: ArrowFunction /
   `sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms))`
-- original → replacement: alter delay literal / empty string in unused paths
+- original → replacement: `() => undefined`
 - justification: production cron spacing is not asserted by functional tests;
-  DI tests inject `sleep: async () => undefined`. NumberLiteral on the `200`
-  call site in `processDueCampaignsWithDeps` is covered by asserting
-  `deps.sleep` was invoked when ids are non-empty — keep that mutant live;
-  only the unused default factory arm is equivalent when tests always inject.
+  DI tests inject `sleep: async () => undefined`. The default factory arm is
+  observationally unused under the DI test graph. Disabled in source.
+
+### empty-query-result
+
+- file: `src/services/campaign-runtime.ts` / mutator: ObjectLiteral /
+  `{ data: null, error: null }` (enroll campaigns short-circuit; send steps
+  short-circuit when `campaign == null`)
+- original → replacement: `{}`
+- justification: callers only read `.data` / `.error`. `undefined` and `null`
+  both fail `Boolean(error)` and both coalesce via `?? null` / `stepsForSendPlan`
+  identically. Disabled in source.

@@ -149,7 +149,8 @@ export async function enrollLeadInCampaignWithDeps(
         .select(CAMPAIGN_SELECT_STAR_STEPS)
         .eq(COL.status, ENROLLMENT_STATUS.active)
         .eq(COL.autoEnroll, true)
-    : { data: null, error: null };
+    : // Stryker disable next-line ObjectLiteral: {} ≡ {data:null,error:null} for readers of .data/.error — EQUIVALENT.md empty-query-result
+      { data: null, error: null };
 
   const recoveryState = leadFound
     ? await getRecoverySendState(supabase, leadId)
@@ -327,10 +328,11 @@ export async function handleClassifiedReplyEnrollmentWithDeps(
   });
 
   if (plan.type === 'defer_switch') {
-    // Stryker disable next-line StringLiteral,CallExpression,LogicalOperator,OptionalChaining,ConditionalExpression: log-only (no control flow)
+    // Stryker disable StringLiteral,CallExpression,BlockStatement,LogicalOperator,OptionalChaining,ConditionalExpression,EqualityOperator,ObjectLiteral,BooleanLiteral: log-only (no control flow)
     console.log(
       `Deferring switch for lead ${leadId}; fresh claim held (mid-send)`
     );
+    // Stryker restore StringLiteral,CallExpression,BlockStatement,LogicalOperator,OptionalChaining,ConditionalExpression,EqualityOperator,ObjectLiteral,BooleanLiteral
     return { action: 'defer_switch', campaignName: plan.campaignName };
   }
 
@@ -456,7 +458,8 @@ export async function sendCampaignSMSWithDeps(
           .select(STEP_SELECT_STAR)
           .eq(COL.campaignId, campaign.id)
           .order(COL.stepNumber, { ascending: true })
-      : { data: null, error: null };
+      : // Stryker disable next-line ObjectLiteral: {} ≡ {data:null,error:null} for readers of .data/.error — EQUIVALENT.md empty-query-result
+        { data: null, error: null };
 
   const token = resolveClaimToken(claimToken, enrollment?.claim_token);
   const pre = planCampaignSendPre({
