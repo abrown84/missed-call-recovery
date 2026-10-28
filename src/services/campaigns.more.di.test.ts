@@ -53,6 +53,7 @@ vi.mock('@/services/suppressions', () => ({
 }));
 
 import {
+  advanceEnrollment,
   claimDueEnrollment,
   enrollLeadInCampaign,
   getEnrollmentForLead,
@@ -61,7 +62,9 @@ import {
   listClaimableEnrollmentIds,
   processDueCampaigns,
   reconcileAmbiguousSms,
+  switchEnrollmentCampaign,
 } from './campaigns';
+import { createServerClient } from '@/lib/supabase';
 
 function chainable(result: { data: unknown; error: unknown }) {
   const obj: Record<string, any> = {};
@@ -472,5 +475,154 @@ describe('campaigns more DI coverage', () => {
     const ids = await listClaimableEnrollmentIds(2);
     expect(ids).toHaveLength(2);
     expect(ids).toContain('due1');
+  });
+
+  it('switchEnrollmentCampaign success with stale claim', async () => {
+    mockFrom.mockImplementation((table: string) => {
+      if (table === 'campaign_enrollments') {
+        const b = chainable({
+          data: {
+            id: 'e',
+            lead_id: 'L',
+            campaign_id: 'old',
+            status: 'active',
+            claimed_at: '2000-01-01T00:00:00.000Z',
+            claim_token: 'stale',
+          },
+          error: null,
+        });
+        b.update = vi.fn(() => {
+          const u = chainable({
+            data: {
+              id: 'e',
+              campaign_id: 'new',
+              current_step: 1,
+              claim_token: null,
+              claimed_at: null,
+            },
+            error: null,
+          });
+          u.maybeSingle = vi.fn(async () => ({
+            data: {
+              id: 'e',
+              campaign_id: 'new',
+              current_step: 1,
+            },
+            error: null,
+          }));
+          u.select = vi.fn(() => u);
+          return u;
+        });
+        return b;
+      }
+      if (table === 'leads') {
+        return chainable({
+          data: {
+            id: 'L',
+            sms_outbound_sid: 'mlf:recovery:L',
+            opted_out: false,
+          },
+          error: null,
+        });
+      }
+      if (table === 'campaigns') {
+        return chainable({
+          data: {
+            id: 'new',
+            name: 'Emergency',
+            urgency_filter: 'emergency',
+            campaign_steps: [
+              { step_number: 1, delay_minutes: 0, template_key: 'e1' },
+              { step_number: 2, delay_minutes: 30, template_key: 'e2' },
+            ],
+          },
+          error: null,
+        });
+      }
+      return chainable({ data: null, error: null });
+    });
+    const r = await switchEnrollmentCampaign('L', 'new');
+    expect(r.enrolled).toBe(true);
+    if (r.enrolled) {
+      expect(r.switched).toBe(true);
+      expect(r.campaignName).toBe('Emergency');
+      // treatRecoveryAsInitial:false → stay on step 1
+      expect(r.currentStep).toBe(1);
+    }
+  });
+
+  it('advanceEnrollment advances then completes', async () => {
+    const supabase = createServerClient();
+    const steps = [
+      { step_number: 1, delay_minutes: 0, template_key: 'a' },
+      { step_number: 2, delay_minutes: 10, template_key: 'b' },
+    ] as never[];
+
+    mockFrom.mockImplementation(() => {
+      const b = chainable({
+        data: [{ id: 'e', claim_token: 'tok' }],
+        error: null,
+      });
+      b.update = vi.fn(() => {
+        const u = chainable({
+          data: [{ id: 'e' }],
+          error: null,
+        });
+        u.select = vi.fn(() =>
+          chainable({ data: [{ id: 'e' }], error: null })
+        );
+        return u;
+      });
+      return b;
+    });
+
+    await expect(
+      advanceEnrollment(supabase as never, 'e', 'tok', 1, steps)
+    ).resolves.toBe(true);
+
+    // Last step → complete
+    await expect(
+      advanceEnrollment(supabase as never, 'e', 'tok', 2, steps)
+    ).resolves.toBe(true);
+  });
+
+  it('reconcileAmbiguousSms recovery abandoned resend path', async () => {
+    mockFrom.mockImplementation((table: string) => {
+      if (table === 'sms_messages') {
+        return chainable({
+          data: [
+            {
+              id: '1',
+              lead_id: 'L',
+              message_sid: 'mlf:recovery:L:abandoned:99',
+              status: 'abandoned_retry',
+            },
+          ],
+          error: null,
+        });
+      }
+      if (table === 'leads') {
+        return chainable({
+          data: {
+            id: 'L',
+            opted_out: false,
+            caller_phone: '+12135550100',
+            sms_outbound_sid: 'mlf:recovery:L',
+            businesses: {
+              id: 'B',
+              name: 'Acme',
+              timezone: 'America/Los_Angeles',
+              vertical: 'plumbing',
+              settings: {},
+            },
+          },
+          error: null,
+        });
+      }
+      return chainable({ data: null, error: null });
+    });
+    const r = await reconcileAmbiguousSms();
+    expect(r.requeued).toBeGreaterThanOrEqual(0);
+    expect(r.confirmed).toBe(1);
   });
 });

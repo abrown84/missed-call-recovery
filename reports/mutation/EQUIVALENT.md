@@ -29,6 +29,21 @@ mutants here when no test can distinguish original from replacement.
   label still routes `type: 'error'` to the same `send_error` park decision.
   Disabled in source.
 
+### machine-case-unknown-vs-default
+
+- file: `src/services/send/machine.ts` / mutator: StringLiteral / ConditionalExpression / line: `case 'unknown'`
+- original → replacement: empty case label / remove case
+- justification: `case 'unknown'` shares its body with `default` (park / max-attempts).
+  Disabled in source.
+
+### machine-status-coalesce-empty-vs-filler
+
+- file: `src/services/send/machine.ts` / mutator: StringLiteral / `String(status ?? '')`
+- original → replacement: `''` → `'Stryker was here!'`
+- justification: neither the empty string nor the filler appears in
+  FAILED/CONFIRMED/ambiguous token sets after `toLowerCase()`, so nullish
+  inputs still return false / non-match. Disabled in source.
+
 ### machine-classify-recovery-redundant-pending
 
 - file: `src/services/send/machine.ts` / mutator: various / lines: 231–238 (pre-refactor)
