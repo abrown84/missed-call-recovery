@@ -87,7 +87,7 @@ function makeDb(state: {
           }).then(resolve, reject);
         },
       });
-      for (const m of ['eq', 'lte', 'limit']) {
+      for (const m of ['eq', 'lte', 'limit', 'order']) {
         api[m] = (...args: unknown[]) => {
           calls.push({ table, op: m, args });
           return asList();
@@ -387,6 +387,14 @@ describe('processDeferredRecoveriesWithDeps', () => {
         (c) => c.op === 'lte' && c.args[0] === COL.nextRetryAt
       )
     ).toBe(true);
+    expect(
+      db.calls.some(
+        (c) =>
+          c.op === 'order' &&
+          c.args[0] === COL.nextRetryAt &&
+          (c.args[1] as { ascending?: boolean })?.ascending === true
+      )
+    ).toBe(true);
   });
 
   it('sends / re-defers / abandons / parks / catches', async () => {
@@ -643,7 +651,56 @@ describe('processDeferredRecoveriesWithDeps', () => {
           (c.args[0] as { status?: string })?.status === SMS_STATUS.abandonedDone
       )
     ).toBe(false);
+    expect(
+      db.calls.some(
+        (c) =>
+          c.op === 'update' &&
+          (c.args[0] as { reconcile_attempts?: number })?.reconcile_attempts ===
+            1
+      )
+    ).toBe(true);
     expect(log.calls.some((c) => c.args[0] === 'deferred_ignored')).toBe(true);
+  });
+
+  it('ignore path caps retries then abandons', async () => {
+    const lead = {
+      id: 'L',
+      caller_phone: '+12135550100',
+      businesses: business,
+    };
+    const db = makeDb({
+      deferredRows: [
+        {
+          id: '1',
+          lead_id: 'L',
+          message_sid: 'x',
+          body: 'hi',
+          next_retry_at: 't',
+          reconcile_attempts: 4,
+        },
+      ],
+      lead,
+    });
+    const log = makeLogger();
+    await processDeferredRecoveriesWithDeps(
+      deps({
+        dbImpl: db,
+        logImpl: log,
+        sendMessage: async () =>
+          ({ kind: 'never_sent', sid: 's', requeued: true }) as SendOutcome,
+      })
+    );
+    expect(
+      db.calls.some(
+        (c) =>
+          c.op === 'update' &&
+          (c.args[0] as { status?: string })?.status ===
+            SMS_STATUS.abandonedDone
+      )
+    ).toBe(true);
+    expect(log.calls.some((c) => c.args[0] === 'deferred_ignore_capped')).toBe(
+      true
+    );
   });
 
   it('re_defer persists exact leadId/body/nextSendAt (not empty payload)', async () => {

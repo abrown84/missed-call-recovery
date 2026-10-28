@@ -171,9 +171,12 @@ describe('campaign-runtime DI send path', () => {
         leadId: 'L',
         businessId: 'B',
         body: expect.stringContaining('Acme Plumbing'),
+        // mut.py #16 — must pass lead timezone (not null)
+        leadTimezone: 'America/Los_Angeles',
       })
     );
     expect(sendMessage.mock.calls[0][0].body).toContain('flood');
+    expect(sendMessage.mock.calls[0][0].leadTimezone).not.toBeNull();
   });
 
   it('quiet_hours_deferred → release with nextSendAt', async () => {
@@ -211,7 +214,8 @@ describe('campaign-runtime DI send path', () => {
     await expect(
       run({
         kind: 'ambiguous',
-        status: 'unknown',
+        sid: 's',
+        reason: 'unknown',
         nextRetryAt: '2099-01-01T00:00:00.000Z',
       })
     ).resolves.toBe(false);

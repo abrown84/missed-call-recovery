@@ -23,6 +23,8 @@
  *   node scripts/staging-campaign-evidence.mjs
  */
 
+import { resolveStagingSsl } from './staging-ssl.mjs';
+
 const mode = (process.env.STAGING_EVIDENCE_MODE || 'http').trim().toLowerCase();
 
 function redact(phone) {
@@ -183,11 +185,7 @@ async function runDryRunDb() {
 
   // SSL: set STAGING_PG_SSL=0/false to disable; STAGING_PG_SSL_REJECT_UNAUTHORIZED=1
   // to verify certs (default: encrypt but allow self-signed for staging).
-  const sslEnv = (process.env.STAGING_PG_SSL ?? '1').trim().toLowerCase();
-  const sslDisabled = sslEnv === '0' || sslEnv === 'false' || sslEnv === 'off';
-  const rejectUnauthorized =
-    (process.env.STAGING_PG_SSL_REJECT_UNAUTHORIZED ?? '0').trim() === '1';
-  const ssl = sslDisabled ? false : { rejectUnauthorized };
+  const ssl = resolveStagingSsl(process.env);
   const client = new Client({ connectionString: url, ssl });
   await client.connect();
   try {

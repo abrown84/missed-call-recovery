@@ -4,7 +4,6 @@ import {
   compactOptOutText,
   foldConfusables,
   isDefiniteOptOut,
-  isServiceTalkWithStop,
   normalizeOptOutText,
   optOutBackfillTokens,
 } from './opt-out';
@@ -18,34 +17,24 @@ describe('opt-out edge killers', () => {
   it('service-talk STOP is ambiguous (needs review), never silent not_opt_out', () => {
     expect(classifyOptOut("won't stop leaking")).toEqual({
       kind: 'ambiguous',
-      reason: 'needs_human_review',
+      reason: 'keyword_in_sentence',
     });
     expect(classifyOptOut("doesn't stop dripping")).toEqual({
       kind: 'ambiguous',
-      reason: 'needs_human_review',
+      reason: 'keyword_in_sentence',
     });
     expect(classifyOptOut('stop by the office')).toEqual({
       kind: 'ambiguous',
-      reason: 'needs_human_review',
+      reason: 'keyword_in_sentence',
     });
     expect(isDefiniteOptOut('never stop trying')).toBe(false);
     expect(isDefiniteOptOut('cant stop the leak')).toBe(false);
-
-    // Direct helper asserts kill BlockStatement→{} emptying the function body.
-    expect(isServiceTalkWithStop("WON'T STOP LEAKING")).toBe(true);
-    expect(isServiceTalkWithStop("DOESN'T STOP DRIPPING")).toBe(true);
-    expect(isServiceTalkWithStop('STOP BY THE OFFICE')).toBe(true);
-    expect(isServiceTalkWithStop('NEVER STOP TRYING')).toBe(true);
-    expect(isServiceTalkWithStop('CANT STOP THE LEAK')).toBe(true);
-    expect(isServiceTalkWithStop('STOP')).toBe(false);
-    expect(isServiceTalkWithStop('HELLO THERE')).toBe(false);
-    // Has \bSTOP\b but is NOT service-talk — kills return→true on OR-chain.
-    expect(isServiceTalkWithStop('CAN YOU STOP TEXTING PLEASE')).toBe(false);
-    expect(isServiceTalkWithStop('STOP CALLING MY DOG')).toBe(false);
+    expect(classifyOptOut('CAN YOU STOP TEXTING PLEASE').kind).toBe(
+      'ambiguous'
+    );
   });
 
   it('plain service chatter falls through to not_opt_out object', () => {
-    // Kills ObjectLiteral→{} on the final classifyOptOut return.
     expect(classifyOptOut('My water heater is leaking')).toEqual({
       kind: 'not_opt_out',
     });

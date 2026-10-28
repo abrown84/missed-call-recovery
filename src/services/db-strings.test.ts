@@ -93,7 +93,7 @@ describe('db-strings constants (kill StringLiteral mutants)', () => {
     expect(SMS_SELECT_STATUS).toBe('status');
     expect(SMS_SELECT_ID_STATUS).toBe('id, status');
     expect(SMS_SELECT_DEFERRED).toBe(
-      'id, lead_id, message_sid, body, next_retry_at'
+      'id, lead_id, message_sid, body, next_retry_at, reconcile_attempts'
     );
     expect(SMS_SELECT_RECONCILE).toBe(
       'id, lead_id, message_sid, status, sent_at, reconcile_attempts, key_supported_at_send, next_retry_at'

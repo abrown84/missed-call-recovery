@@ -41,20 +41,22 @@ describe('opt-out whole-message NFKC + confusable', () => {
     expect(isDefiniteOptOut(fullWidth)).toBe(true);
   });
 
-  it('does not false-positive on service language', () => {
+  it('does not auto-suppress service language (ambiguous or not_opt_out)', () => {
     expect(isDefiniteOptOut("won't stop leaking HELP")).toBe(false);
     expect(isDefiniteOptOut('stop by today')).toBe(false);
     expect(isDefiniteOptOut('My water heater is leaking')).toBe(false);
+    expect(classifyOptOut("won't stop leaking HELP").kind).toBe('ambiguous');
+    expect(classifyOptOut('stop by today').kind).toBe('ambiguous');
   });
 
-  it('routes ambiguous phrases to human review', () => {
-    expect(classifyOptOut('wrong number')).toEqual({
+  it('keyword-in-sentence routes to human review', () => {
+    expect(classifyOptOut('cancel my appointment')).toEqual({
       kind: 'ambiguous',
-      reason: 'needs_human_review',
+      reason: 'keyword_in_sentence',
     });
-    expect(classifyOptOut('remove me')).toEqual({
+    expect(classifyOptOut('end of day is fine')).toEqual({
       kind: 'ambiguous',
-      reason: 'needs_human_review',
+      reason: 'keyword_in_sentence',
     });
   });
 
@@ -69,27 +71,14 @@ describe('opt-out whole-message NFKC + confusable', () => {
     expect(isDefiniteOptOut('please stop texting me')).toBe(true);
   });
 
-  it('QC r6: contains-keyword opt-out (FCC any reasonable means)', () => {
+  it('QC r7: longer messages with keywords are ambiguous, not opt_out', () => {
     for (const t of [
-      'stop texting',
-      'stop pls',
-      'dont text me',
-      'Unsubscribe me please',
       'STOP\nSent from my iPhone',
       'Stop.  Thanks',
-      'Stop all texts',
-      'Stop sending',
-      'take me off your list',
-      'do not contact me',
-      'STOP STOP STOP',
-      'S T O P please',
+      'I want to unsubscribe from these',
+      'please cancel the appointment',
     ]) {
-      const v = classifyOptOut(t);
-      expect(
-        v.kind === 'opt_out' || v.kind === 'ambiguous',
-        `${t} → ${JSON.stringify(v)}`
-      ).toBe(true);
+      expect(classifyOptOut(t).kind, t).toBe('ambiguous');
     }
   });
 });
-

@@ -35,7 +35,7 @@ muts=[
 ('16','r4#5 leadTimezone not passed (campaign)',CI,"    leadTimezone: pre.leadTimezone,","    leadTimezone: null,",1),
 ('17','r4#5 leadTimezone ignored (module)',I,"        leadTimezone: leadTz,","        leadTimezone: null,",1),
 ('18','r4#6 confusable fold removed','src/services/opt-out.ts',"out += CONFUSABLES[ch] ?? ch;","out += ch;",1),
-('19','r4#6 compact form removed','src/services/opt-out.ts',"if (OPT_OUT_COMPACT.has(compact)) return { kind: 'opt_out' };","",1),
+('19','r4#6 compact form removed','src/services/opt-out.ts',"  if (WHOLE_MESSAGE_SET.has(normalized) || WHOLE_COMPACT_SET.has(compact)) {\n    return { kind: 'opt_out' };\n  }","  if (WHOLE_MESSAGE_SET.has(normalized)) {\n    return { kind: 'opt_out' };\n  }",1),
 ('20','r4#6 opted_out gate in module',D,"  if (input.optedOut) {\n    return { kind: 'blocked', reason: 'opted_out' };\n  }","  if (false) {\n    return { kind: 'blocked', reason: 'opted_out' };\n  }",1),
 ('21','r4#6 suppression gate in module',D,"  if (input.suppressed) {\n    return { kind: 'blocked', reason: 'suppressed' };\n  }","  if (false) {\n    return { kind: 'blocked', reason: 'suppressed' };\n  }",1),
 ('22','r4#7 backfill ON CONFLICT dropped',G,"ON CONFLICT (business_id, phone) DO NOTHING;",";",1),
@@ -67,7 +67,7 @@ muts=[
 ('47','(b) urgency gate removed',CI,"if (lead.urgency == null || String(lead.urgency).trim() === '') {","if (false) {",1),  # intentional NOMATCH — urgency gate removed for Standard enroll
 ('48','(c) ENROLLMENT_CLAIM_SELECT -> id','src/lib/postgrest-select.ts',"export const ENROLLMENT_CLAIM_SELECT = 'id, claim_token, claimed_at';","export const ENROLLMENT_CLAIM_SELECT = 'id';",1),
 ('49','(c) switch uses select(id)',CI,"    .or(`claim_token.is.null,claimed_at.lt.${staleBefore}`)\n    .select(ENROLLMENT_CLAIM_SELECT)","    .or(`claim_token.is.null,claimed_at.lt.${staleBefore}`)\n    .select('id')",1),
-('50','SSL rejectUnauthorized forced false','scripts/staging-campaign-evidence.mjs',"const ssl = sslDisabled ? false : { rejectUnauthorized };","const ssl = { rejectUnauthorized: false };",1),
+('50','SSL rejectUnauthorized forced false','src/lib/staging-ssl.ts',"  return sslDisabled ? false : { rejectUnauthorized };","  return { rejectUnauthorized: false };",1),
 ('51','dry-run redaction removed','src/lib/messaging/dry-run.ts',"const bodyPreview = redactPhonesInText(input.body).slice(0, 120);","const bodyPreview = input.body.slice(0, 120);",1),
 ('52','dry-run to redaction removed','src/lib/messaging/dry-run.ts',"queue SMS to ${redactPhone(input.to)}","queue SMS to ${input.to}",1),
 ('53','ONE_GATEWAY_URL unset non-prod uses default','src/lib/gemini.ts',"    throw new Error(\n      'ONE_GATEWAY_URL is unset — refusing","    return PRODUCTION_DEFAULT_GATEWAY_URL; throw new Error(\n      'ONE_GATEWAY_URL is unset — refusing",1),

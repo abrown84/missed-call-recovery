@@ -54,7 +54,44 @@ ALTER TABLE sms_messages
   ADD COLUMN IF NOT EXISTS next_retry_at TIMESTAMPTZ;
 
 -- ---------------------------------------------------------------------------
--- 1) Normalize phones to E.164 FIRST (before STOP backfill)
+-- 1) Collision listing FIRST on *would-be* E.164 phones (friendly abort
+--    reachable before businesses_phone_key fires on UPDATE).
+-- ---------------------------------------------------------------------------
+DO $$
+DECLARE
+  biz_list TEXT;
+  biz_n INTEGER;
+BEGIN
+  SELECT COUNT(*), string_agg(norm_phone || ' (n=' || cnt || ')', ', ')
+    INTO biz_n, biz_list
+  FROM (
+    SELECT
+      CASE
+        WHEN phone ~ '^\+1[0-9]{10}$' THEN phone
+        WHEN regexp_replace(phone, '[^0-9]', '', 'g') ~ '^[0-9]{10}$'
+          THEN '+1' || regexp_replace(phone, '[^0-9]', '', 'g')
+        WHEN regexp_replace(phone, '[^0-9]', '', 'g') ~ '^1[0-9]{10}$'
+          THEN '+' || regexp_replace(phone, '[^0-9]', '', 'g')
+        ELSE phone
+      END AS norm_phone,
+      COUNT(*)::text AS cnt
+    FROM businesses
+    WHERE phone IS NOT NULL
+    GROUP BY 1
+    HAVING COUNT(*) > 1
+  ) d;
+
+  IF biz_n > 0 THEN
+    RAISE EXCEPTION
+      'Phone collisions after E.164 normalize — refuse to continue. '
+      'Business phones: %. '
+      'Run supabase/scripts/phone_collision_abort.sql for the full listing; resolve manually (no auto-merge).',
+      COALESCE(biz_list, '(none)');
+  END IF;
+END $$;
+
+-- ---------------------------------------------------------------------------
+-- 2) Normalize phones to E.164 (after collision listing)
 -- ---------------------------------------------------------------------------
 UPDATE leads
 SET caller_phone = CASE
@@ -114,32 +151,8 @@ ON CONFLICT (business_id, phone) DO NOTHING;
 DROP TABLE sms_suppressions_norm;
 
 -- ---------------------------------------------------------------------------
--- 2) Collision listing BEFORE further writes (friendly abort reachable)
--- ---------------------------------------------------------------------------
-DO $$
-DECLARE
-  biz_list TEXT;
-  biz_n INTEGER;
-BEGIN
-  SELECT COUNT(*), string_agg(phone || ' (n=' || cnt || ')', ', ')
-    INTO biz_n, biz_list
-  FROM (
-    SELECT phone, COUNT(*)::text AS cnt FROM businesses
-    GROUP BY phone HAVING COUNT(*) > 1
-  ) d;
-
-  IF biz_n > 0 THEN
-    RAISE EXCEPTION
-      'Phone collisions after E.164 normalize — refuse to continue. '
-      'Business phones: %. '
-      'Run supabase/scripts/phone_collision_abort.sql for the full listing; resolve manually (no auto-merge).',
-      COALESCE(biz_list, '(none)');
-  END IF;
-END $$;
-
--- ---------------------------------------------------------------------------
--- 3) STOP backfill AFTER normalize — shared list with src/services/opt-out-data.ts
---    Exact + compact + contains (STOP TEXTING, TAKE ME OFF, …)
+-- 3) STOP backfill AFTER normalize — whole-message only (shared list with
+--    src/services/opt-out-data.ts). NO mid-sentence keyword retro-suppress.
 -- ---------------------------------------------------------------------------
 INSERT INTO sms_suppressions (business_id, phone, reason)
 SELECT DISTINCT ON (l.business_id, l.caller_phone)
@@ -172,7 +185,8 @@ WHERE m.direction = 'inbound'
       'PLEASE STOP', 'STOP PLEASE', 'STOP IT', 'STOP PLS',
       'STOP TEXTING', 'STOP TEXTING ME', 'STOP MESSAGING ME', 'STOP SENDING',
       'STOP ALL TEXTS', 'PLEASE STOP TEXTING ME',
-      'UNSUBSCRIBE ME', 'UNSUBSCRIBE ME PLEASE', 'CANCEL PLEASE',
+      'UNSUBSCRIBE ME', 'UNSUBSCRIBE ME PLEASE', 'PLEASE UNSUBSCRIBE ME',
+      'CANCEL PLEASE',
       'LEAVE ME ALONE', 'TAKE ME OFF YOUR LIST', 'TAKE ME OFF THE LIST',
       'DONT TEXT ME', 'DON''T TEXT ME'
     )
@@ -198,24 +212,6 @@ WHERE m.direction = 'inbound'
       'STOP', 'STOPALL', 'STOPSTOP', 'STOPSTOPSTOP',
       'UNSUBSCRIBE', 'QUIT', 'END', 'CANCEL', 'OPTOUT', 'REVOKE'
     )
-    OR
-    -- Contains per-se keyword / phrase (FCC any reasonable means)
-    upper(
-      btrim(
-        regexp_replace(
-          regexp_replace(normalize(btrim(m.body), NFKC), E'[\\r\\n]+', ' ', 'g'),
-          '\s+',
-          ' ',
-          'g'
-        )
-      )
-    ) ~ '(^|[^A-Z0-9])(STOP|QUIT|END|REVOKE|CANCEL|UNSUBSCRIBE|OPTOUT)([^A-Z0-9]|$)'
-    OR
-    upper(normalize(btrim(m.body), NFKC)) LIKE '%TAKE ME OFF%'
-    OR
-    upper(normalize(btrim(m.body), NFKC)) LIKE '%DO NOT CONTACT%'
-    OR
-    upper(normalize(btrim(m.body), NFKC)) LIKE '%STOP TEXTING%'
   )
 ON CONFLICT (business_id, phone) DO NOTHING;
 

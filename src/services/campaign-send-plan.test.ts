@@ -214,7 +214,7 @@ describe('campaign-send-plan coalescers + effects', () => {
     ).toEqual([{ op: 'advance', stepNumber: 2 }]);
     expect(
       planCampaignSendEffects(
-        { type: 'release', success: false, nextSendAt: 't' },
+        { type: 'release', success: false, nextSendAt: 't', ok: false },
         1
       ).effects
     ).toEqual([{ op: 'release', nextSendAt: 't' }]);
@@ -226,7 +226,7 @@ describe('campaign-send-plan coalescers + effects', () => {
     ).toBe('flag_unresolved_tz');
     expect(
       planCampaignSendEffects(
-        { type: 'park', success: false, nextSendAt: 't', reason: 'r' },
+        { type: 'park', success: false, nextSendAt: 't' },
         1
       ).effects[0].op
     ).toBe('park');

@@ -135,7 +135,8 @@ export async function processInboundSms(
   }
 
   if (optOutVerdict.kind === 'ambiguous') {
-    // Persist human-review flag and pause — do not auto-suppress.
+    // Flag for human review only — do NOT auto-suppress or pause the campaign
+    // (QC r7: keyword-in-sentence must not silently drop a hot lead).
     console.warn(
       `Ambiguous opt-out language from ${redactPhone(event.from)}: needs_human_review`
     );
@@ -165,7 +166,6 @@ export async function processInboundSms(
         message_sid: messageId,
         status: 'received',
       });
-      await pauseCampaignForLead(anyLead.id).catch(() => undefined);
       return { status: 'ambiguous_opt_out', leadId: anyLead.id };
     }
     return { status: 'ambiguous_opt_out' };

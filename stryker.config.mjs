@@ -6,8 +6,10 @@ const config = {
   // Default related:true drops DI suites; run the full vitest graph.
   vitest: { related: false },
   coverageAnalysis: 'perTest',
-  // QC r6 P0: mutate the real I/O layer + opt-out. No StringLiteral/Regex
-  // exclusions; no-coverage mutants count in the gate denominator.
+  // QC r7: widen mutate list (opt-out-data, campaign-logic, inbound,
+  // quiet-hours-zones, missed-call). No StringLiteral/Regex exclusions;
+  // no-coverage mutants count in the gate denominator. Ignored mutants
+  // are disclosed as not-killed in check-mutation-scores.mjs.
   mutate: [
     'src/services/send/index.ts',
     'src/services/send/decisions.ts',
@@ -28,11 +30,16 @@ const config = {
     'src/services/campaigns.ts',
     'src/services/campaigns-impl.ts',
     'src/services/campaign-runtime.ts',
+    'src/services/campaign-logic.ts',
     'src/services/db-strings.ts',
     'src/services/sms.ts',
     'src/services/opt-out.ts',
+    'src/services/opt-out-data.ts',
+    'src/services/inbound.ts',
+    'src/services/missed-call.ts',
     'src/services/reconcile-logic.ts',
     'src/services/quiet-hours.ts',
+    'src/services/quiet-hours-zones.ts',
   ],
   ignoreStatic: true,
   thresholds: {

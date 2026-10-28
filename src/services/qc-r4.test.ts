@@ -191,7 +191,11 @@ describe('QC r4 #6 — opt-out attack surface', () => {
   it('no false positives; ambiguous → human review', () => {
     expect(isDefiniteOptOut("won't stop leaking HELP")).toBe(false);
     expect(isDefiniteOptOut('stop by today')).toBe(false);
-    expect(classifyOptOut('wrong number').kind).toBe('ambiguous');
+    // No carrier keyword → not_opt_out (r7: only whole-word keywords flag)
+    expect(classifyOptOut('wrong number').kind).toBe('not_opt_out');
+    expect(classifyOptOut('please cancel my appointment').kind).toBe(
+      'ambiguous'
+    );
   });
 });
 

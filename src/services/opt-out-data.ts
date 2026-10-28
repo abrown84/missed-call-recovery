@@ -1,10 +1,15 @@
 /**
- * Opt-out token / confusable tables — single shared list for runtime + 003 backfill.
- * Per-se FCC keywords: stop, quit, end, revoke, opt out, cancel, unsubscribe.
+ * Shared carrier opt-out keyword lists — single source of truth for
+ * runtime classifyOptOut AND migration 003 STOP backfill.
+ *
+ * Policy (QC r7):
+ * - Whole message (after normalize) equals a keyword → auto opt_out.
+ * - Keyword as a whole word inside a longer message → ambiguous (human review).
+ * - Never substring / compact-includes matching.
  */
 
-/** Exact whole-message matches (after normalize). */
-export const OPT_OUT_EXACT = [
+/** Whole-message auto-suppress tokens (normalized uppercase). */
+export const OPT_OUT_WHOLE_MESSAGE = [
   'STOP',
   'STOPALL',
   'STOP ALL',
@@ -36,6 +41,7 @@ export const OPT_OUT_EXACT = [
   'PLEASE STOP TEXTING ME',
   'UNSUBSCRIBE ME',
   'UNSUBSCRIBE ME PLEASE',
+  'PLEASE UNSUBSCRIBE ME',
   'CANCEL PLEASE',
   'LEAVE ME ALONE',
   'TAKE ME OFF YOUR LIST',
@@ -44,8 +50,11 @@ export const OPT_OUT_EXACT = [
   "DON'T TEXT ME",
 ] as const;
 
-/** Spaceless compact forms (S T O P → STOP, STOP STOP → STOPSTOP). */
-export const OPT_OUT_COMPACT = new Set([
+/**
+ * Compact (spaceless) whole-message forms.
+ * S T O P → STOP, STOP STOP → STOPSTOP.
+ */
+export const OPT_OUT_WHOLE_MESSAGE_COMPACT = [
   'STOP',
   'STOPALL',
   'STOPSTOP',
@@ -56,46 +65,30 @@ export const OPT_OUT_COMPACT = new Set([
   'CANCEL',
   'OPTOUT',
   'REVOKE',
-]);
+] as const;
 
 /**
- * Per-se keyword stems — if the normalized message CONTAINS one as a word
- * (or compact contains the stem), treat as opt-out (FCC "any reasonable means").
+ * Stems that, as a whole word inside a longer message, flag human review
+ * (ambiguous) — never silent auto-suppress.
  */
-export const OPT_OUT_CONTAINS_KEYWORDS = [
+export const OPT_OUT_WORD_STEMS = [
   'STOP',
+  'STOPALL',
+  'UNSUBSCRIBE',
   'QUIT',
   'END',
-  'REVOKE',
   'CANCEL',
-  'UNSUBSCRIBE',
+  'REVOKE',
   'OPTOUT',
-  'OPT OUT',
   'OPT-OUT',
 ] as const;
 
-/** Phrase contains-matches (normalized uppercase). */
-export const OPT_OUT_CONTAINS_PHRASES = [
-  'STOP TEXTING',
-  'STOP SENDING',
-  'STOP ALL',
-  'TAKE ME OFF',
-  'DO NOT CONTACT',
-  'DONT CONTACT',
-  "DON'T CONTACT",
-  'DO NOT TEXT',
-  'DONT TEXT',
-  "DON'T TEXT",
-  'REMOVE ME FROM',
-  'OFF YOUR LIST',
-] as const;
+/** Multi-word stems checked with word-boundary style on normalized text. */
+export const OPT_OUT_MULTIWORD_STEMS = ['OPT OUT', 'STOP ALL'] as const;
 
-/** Service-talk → ambiguous (needs review), never silent not_opt_out. */
-export const AMBIGUOUS = [
-  /^no\s+more\s+(texts?|messages?)/i,
-  /^remove\s+me\b/i,
-  /^wrong\s+number$/i,
-];
+/** Legacy aliases kept for callers / tests that imported old names. */
+export const OPT_OUT_EXACT = OPT_OUT_WHOLE_MESSAGE;
+export const OPT_OUT_COMPACT = new Set(OPT_OUT_WHOLE_MESSAGE_COMPACT);
 
 export const CONFUSABLES: Record<string, string> = {
   '\u0391': 'A',
@@ -137,11 +130,19 @@ export const CONFUSABLES: Record<string, string> = {
   '\u0455': 's',
 };
 
-/** Shared list for SQL backfill IN (...). */
+/** Exact list for SQL `IN (...)` — same tokens as OPT_OUT_WHOLE_MESSAGE. */
 export function optOutBackfillExactList(): string[] {
-  return [...OPT_OUT_EXACT];
+  return [...OPT_OUT_WHOLE_MESSAGE];
 }
 
+/** Compact list for SQL spaceless `IN (...)`. */
 export function optOutBackfillCompactList(): string[] {
-  return [...OPT_OUT_COMPACT];
+  return [...OPT_OUT_WHOLE_MESSAGE_COMPACT];
+}
+
+/** SQL-escaped single-quoted literals for embedding in migrations. */
+export function sqlQuotedList(tokens: readonly string[]): string {
+  return tokens
+    .map((t) => `'${t.replace(/'/g, "''")}'`)
+    .join(', ');
 }

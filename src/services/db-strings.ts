@@ -64,7 +64,10 @@ export const LEAD_SELECT_GATES = 'opted_out, timezone, sms_outbound_sid';
 export const SMS_SELECT_STATUS = 'status';
 export const SMS_SELECT_ID_STATUS = 'id, status';
 export const SMS_SELECT_DEFERRED =
-  'id, lead_id, message_sid, body, next_retry_at';
+  'id, lead_id, message_sid, body, next_retry_at, reconcile_attempts';
+
+/** Cap for never_sent / unexpected ignore-path retries on deferred drain. */
+export const DEFERRED_IGNORE_MAX_ATTEMPTS = 5;
 export const SMS_SELECT_RECONCILE =
   'id, lead_id, message_sid, status, sent_at, reconcile_attempts, key_supported_at_send, next_retry_at';
 export const SMS_SELECT_ABANDONED = 'id, lead_id, message_sid, status';

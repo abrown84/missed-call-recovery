@@ -221,7 +221,8 @@ export async function sendMessageWithDeps(
         return { kind: 'needs_review', sid, reason: dup.reason };
       }
       if (dup.action === 'claim_deferred') {
-        await supabase
+        // Compare-and-swap: only the winner of status=deferred → sending dispatches.
+        const { data: claimed } = await supabase
           .from(TABLE.smsMessages)
           .update(
             smsClaimDeferredPayload({
@@ -229,7 +230,17 @@ export async function sendMessageWithDeps(
               body: req.body,
             })
           )
-          .eq(COL.messageSid, sid);
+          .eq(COL.messageSid, sid)
+          .eq(COL.status, SMS_STATUS.deferred)
+          .select(SMS_SELECT_STATUS)
+          .maybeSingle();
+        if (!claimed) {
+          return {
+            kind: 'blocked',
+            reason: SEND_REASON.duplicateInFlight,
+            detail: 'deferred_claim_lost',
+          };
+        }
         return dispatchToRelay(deps, supabase, req, sid, toE164);
       }
       return {
@@ -353,7 +364,6 @@ export async function resolveRecoveryOutcome(
   supabase: SupabaseClient,
   leadId: string
 ): Promise<ReturnType<typeof classifyRecoveryStatus>> {
-  // Stryker disable next-line BlockStatement: thin default wrapper — EQUIVALENT.md send-resolveRecovery-default-wrapper
   return resolveRecoveryOutcomeWithDeps(defaultSendDeps(), supabase, leadId);
 }
 
@@ -518,7 +528,6 @@ export async function reconcileAmbiguousSms(): Promise<{
   needsReview: number;
   alert: boolean;
 }> {
-  // Stryker disable next-line BlockStatement: thin default wrapper — same as resolveRecoveryOutcome
   return reconcileAmbiguousSmsWithDeps(defaultSendDeps());
 }
 

@@ -70,7 +70,7 @@ export function lookupStatusOr(
 
 export function signalFromLookupOutcome(
   outcome: string,
-  lookup: { status?: unknown }
+  lookup: { status?: unknown; outcome?: string; found?: boolean }
 ): RelayLookupSignal {
   if (outcome === 'sent') {
     return {

@@ -75,12 +75,13 @@ mutants here when no test can distinguish original from replacement.
 - justification: both the empty string and the filler fail `isValidTimeZone`, so
   resolution falls through identically. Disabled in source.
 
-### quiet-hours-filter-identity
+### quiet-hours-filter-identity (conditional)
 
 - file: `src/services/quiet-hours.ts` / mutator: MethodExpression / line: 72
 - original → replacement: `mapped.filter(isValidTimeZone)` → `mapped`
-- justification: `AREA_CODE_ZONES` only contains real IANA zone ids, so the
-  filter is an identity on production data. Disabled in source.
+- justification: **conditional** — equivalent only while `AREA_CODE_ZONES`
+  lists real IANA ids. A bad zone id in the map would go untested. Disabled
+  in source with that caveat.
 
 ### quiet-hours-zones-length-one
 
@@ -91,13 +92,11 @@ mutants here when no test can distinguish original from replacement.
   handled above — so forcing the `=== 1` branch true does not change outcomes.
   Disabled in source.
 
-### opt-out-compact-set-redundant-with-contains
+### opt-out-compact-set-redundant-with-contains — REMOVED (QC r7)
 
-- file: `src/services/opt-out.ts` / mutator: ConditionalExpression / line: OPT_OUT_COMPACT.has
-- original → replacement: skip compact-set short-circuit
-- justification: every `OPT_OUT_COMPACT` entry is also recognized by
-  `containsOptOutKeyword` (exact stem or the STOP|QUIT|… compact regex), so
-  dropping the short-circuit still yields `opt_out`. Disabled in source.
+- Was incorrectly claimed equivalent under the old over-broad substring matcher.
+- r7 rewrite uses whole-message / whole-word only; compact short-circuit is
+  load-bearing (`S T O P`). Disable dropped; covered by behavioural tests.
 
 ### opt-out-ambiguous-stop-guard
 
@@ -256,15 +255,10 @@ for the argument expressions that feed log text only (e.g.
 passed only to `console.log`). Mutating those expressions cannot change return
 values, DB writes, or control flow.
 
-### opt-out-spaced-keyword-branch-covered-by-compact
+### opt-out-spaced-keyword-branch-covered-by-compact (conditional / obsolete)
 
-- file: `src/services/opt-out.ts` / mutator: ConditionalExpression,BlockStatement /
-  spaced `kw.includes(' ')` branch
-- original → replacement: skip spaced-includes short-circuit / empty block
-- justification: for the current keyword set (`OPT OUT`), every input that the
-  spaced `includes` arm would accept is also accepted by the later `OPTOUT`
-  compact stem (`compact.includes('OPTOUT')` + stem regex). Dropping the
-  short-circuit still yields `true`. Disabled in source.
+- Pre-r7 justification depended on over-broad compact substring match.
+- After the whole-message rewrite this branch no longer exists in that form.
 
 ### opt-out-spaced-kw-includes-space-guard
 
@@ -310,36 +304,20 @@ values, DB writes, or control flow.
   before any read on the success path; failure path returns before the flag is
   read. Disabled in source.
 
-### send-resolveRecovery-default-wrapper
+### send-resolveRecovery-default-wrapper — REMOVED (QC r7)
 
-- file: `src/services/send/index.ts` / mutator: BlockStatement /
-  `resolveRecoveryOutcome` default wrapper body
-- original → replacement: empty block
-- justification: wrapper only `return resolveRecoveryOutcomeWithDeps(defaultSendDeps(), …)`;
-  emptying breaks the export but production callers use WithDeps via DI tests.
-  Prefer keeping the one-line delegate; ignore BlockStatement on the wrapper.
+- Disable dropped. Behavioural test calls `resolveRecoveryOutcome` (default
+  wrapper) and asserts classified status — see `qc-r7-equivalent-killers.test.ts`.
 
-### campaign-runtime-default-wrappers
+### campaign-runtime-default-wrappers — REMOVED (QC r7)
 
-- file: `src/services/campaign-runtime.ts` / mutator: BlockStatement /
-  one-line `*WithDeps(defaultCampaignDeps(), …)` wrappers
-  (`enrollLeadInCampaign`, `switchEnrollmentCampaign`,
-  `handleClassifiedReplyEnrollment`, `getEnrollmentForLead`,
-  `sendCampaignSMS`, `pauseCampaignForLead`, `claimDueEnrollment`,
-  `listClaimableEnrollmentIds`, `reconcileAmbiguousSms`, `processDueCampaigns`)
-- original → replacement: empty block
-- justification: wrappers only delegate to the WithDeps implementations that DI
-  tests exercise. Emptying a wrapper breaks the public export the same way as
-  the send-module default wrappers. Disabled per-wrapper BlockStatement.
+- Disables dropped. Public wrapper exports are exercised by DI / integration
+  suites that import the non-WithDeps names; emptying is killed.
 
-### campaign-deps-default-factory-sleep
+### campaign-deps-default-factory-sleep — REMOVED (QC r7)
 
-- file: `src/services/campaign-deps.ts` / mutator: ArrowFunction /
-  `sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms))`
-- original → replacement: `() => undefined`
-- justification: production cron spacing is not asserted by functional tests;
-  DI tests inject `sleep: async () => undefined`. The default factory arm is
-  observationally unused under the DI test graph. Disabled in source.
+- Disable dropped. Fake-timer test asserts `defaultCampaignDeps().sleep(ms)`
+  resolves after the delay — see `qc-r7-equivalent-killers.test.ts`.
 
 ### empty-query-result
 
@@ -368,3 +346,11 @@ values, DB writes, or control flow.
 - justification: `emptyDueCounts()` is `{ processed:0, errors:0, skipped:0 }`,
   and an empty `ids` loop body is a no-op, so falling through produces the same
   return shape (provider + reconcile fields unchanged). Disabled in source.
+
+
+### quiet-hours nextLocalHour / multi-zone search — REMOVED disable-all (QC r7)
+
+- Undocumented `Stryker disable all` blocks on `nextLocalHour` and the
+  multi-zone deferral loop were **not** equivalents. Removed.
+- Behavioural coverage: DST spring/fall, 850 dual-zone `Math.max` (not min),
+  HI/AK area codes — see `quiet-hours.r7.test.ts`.

@@ -3,7 +3,11 @@
  * handleClassifiedReplyEnrollment I/O shell only executes the plan.
  */
 
-import { decideReplyEnrollmentAction, getCampaignReplyMode } from '@/services/campaign-logic';
+import {
+  decideReplyEnrollmentAction,
+  getCampaignReplyMode,
+  type CampaignReplyMode,
+} from '@/services/campaign-logic';
 import { REPLY_ACTION } from '@/services/campaign-io-plans';
 import { selectCampaignForUrgency } from '@/services/campaign-logic';
 
@@ -24,9 +28,10 @@ export function planReplyEnrollment(input: {
   } | null;
   campaigns: Array<{ id: string; name: string; urgency_filter: string | null }>;
   urgency: string | null;
-  replyMode?: string;
+  replyMode?: CampaignReplyMode;
 }): ReplyEnrollmentPlan {
-  const replyMode = input.replyMode ?? getCampaignReplyMode();
+  const replyMode: CampaignReplyMode =
+    input.replyMode ?? getCampaignReplyMode();
   const target = selectCampaignForUrgency(input.campaigns, input.urgency);
   const decision = decideReplyEnrollmentAction(
     input.enrollment,

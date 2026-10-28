@@ -1,16 +1,22 @@
 /**
- * TCPA / carrier opt-out detection.
- * Contains-keyword match after NFKC + confusable folding + zero-width strip.
- * Shared token list is the source of truth for migration 003 STOP backfill.
+ * TCPA / carrier opt-out detection (QC r7 first-principles rewrite).
+ *
+ * 1. Normalize (NFKC, confusables, zero-width, punctuation trim, upper).
+ * 2. Whole message equals a carrier keyword → opt_out (auto-suppress).
+ * 3. Keyword as a whole word inside a longer message → ambiguous (flag only).
+ * 4. Never substring / compact-includes matching.
+ *
+ * Shared token list: opt-out-data.ts (also used by migration 003 backfill).
  */
 
 import {
-  AMBIGUOUS,
   CONFUSABLES,
   OPT_OUT_COMPACT,
-  OPT_OUT_CONTAINS_KEYWORDS,
-  OPT_OUT_CONTAINS_PHRASES,
   OPT_OUT_EXACT,
+  OPT_OUT_MULTIWORD_STEMS,
+  OPT_OUT_WHOLE_MESSAGE,
+  OPT_OUT_WHOLE_MESSAGE_COMPACT,
+  OPT_OUT_WORD_STEMS,
   optOutBackfillCompactList,
   optOutBackfillExactList,
 } from './opt-out-data';
@@ -23,14 +29,19 @@ export type OptOutVerdict =
 export {
   OPT_OUT_EXACT,
   OPT_OUT_COMPACT,
-  OPT_OUT_CONTAINS_KEYWORDS,
-  OPT_OUT_CONTAINS_PHRASES,
+  OPT_OUT_WHOLE_MESSAGE,
+  OPT_OUT_WHOLE_MESSAGE_COMPACT,
+  OPT_OUT_WORD_STEMS,
+  OPT_OUT_MULTIWORD_STEMS,
 };
 
 const ZERO_WIDTH_RE =
   /[\u200B-\u200D\uFEFF\u2060\u180E\u00AD\u034F\u061C\u115F\u1160\u17B4\u17B5\u3164\uFFA0]/g;
 
 const QUOTE_EDGE_RE = /^["'`“”‘’]+|["'`“”‘’]+$/g;
+
+const WHOLE_MESSAGE_SET = new Set<string>(OPT_OUT_WHOLE_MESSAGE);
+const WHOLE_COMPACT_SET = new Set<string>(OPT_OUT_WHOLE_MESSAGE_COMPACT);
 
 /** Replace NBSP with a real space so token boundaries survive collapse. */
 export function replaceNbspWithSpace(s: string): string {
@@ -58,9 +69,7 @@ export function normalizeOptOutText(raw: string): string {
     .normalize('NFKC')
     .replace(ZERO_WIDTH_RE, '')
     .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, '');
-  // nbsp must become a real space (not deleted) so token boundaries survive
   const spaced = replaceNbspWithSpace(folded);
-  // Stryker disable next-line Regex -- /[\r\n]/g ≡ /[\r\n]+/g before \s+ collapse
   const lined = spaced.replace(/[\r\n]+/g, ' ').trim();
   return stripEdgeQuotes(lined)
     .replace(/[?!.,…]+$/g, '')
@@ -68,93 +77,71 @@ export function normalizeOptOutText(raw: string): string {
     .toUpperCase();
 }
 
-/** Spaceless form so 'S T O P' and 'STOP STOP' compact to STOP / STOPSTOP. */
+/** Spaceless form so 'S T O P' compact to STOP. */
 export function compactOptOutText(normalized: string): string {
   return normalized.replace(/[^A-Z0-9]/g, '');
 }
 
+/** True when `stem` appears as a whole word/token in normalized text. */
+export function hasWholeWordStem(normalized: string, stem: string): boolean {
+  if (stem.includes(' ') || stem.includes('-')) {
+    const escaped = stem.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    return new RegExp(`(?:^|[^A-Z0-9])${escaped}(?:[^A-Z0-9]|$)`).test(
+      normalized
+    );
+  }
+  return new RegExp(`(?:^|[^A-Z0-9])${stem}(?:[^A-Z0-9]|$)`).test(normalized);
+}
+
 /**
  * Classify an inbound body for opt-out.
- * Any message containing a per-se keyword → opt_out (or ambiguous for service talk).
+ * Whole-message keyword → opt_out; keyword inside longer text → ambiguous.
  */
 export function classifyOptOut(raw: string): OptOutVerdict {
   const normalized = normalizeOptOutText(raw);
-  // Stryker disable next-line ConditionalExpression -- empty ≡ fallthrough to not_opt_out
   if (!normalized) return { kind: 'not_opt_out' };
 
-  for (const token of OPT_OUT_EXACT) {
-    if (normalized === token) return { kind: 'opt_out' };
-  }
-
   const compact = compactOptOutText(normalized);
-  // Stryker disable next-line ConditionalExpression -- COMPACT ⊂ containsOptOutKeyword
-  if (OPT_OUT_COMPACT.has(compact)) return { kind: 'opt_out' };
 
-  // Service talk with STOP → needs human review (never silent not_opt_out)
-  if (isServiceTalkWithStop(normalized)) {
-    return { kind: 'ambiguous', reason: 'needs_human_review' };
-  }
+  // Collapse spaced single letters ("S T O P PLEASE" → "STOP PLEASE") then
+  // re-check whole-message sets — still whole-message, never substring.
+  const collapsed = collapseSpacedLetterTokens(normalized);
+  const collapsedCompact = compactOptOutText(collapsed);
 
-  // Contains per-se keyword / phrase (FCC any reasonable means)
-  if (containsOptOutKeyword(normalized, compact)) {
+  if (
+    WHOLE_MESSAGE_SET.has(normalized) ||
+    WHOLE_COMPACT_SET.has(compact) ||
+    WHOLE_MESSAGE_SET.has(collapsed) ||
+    WHOLE_COMPACT_SET.has(collapsedCompact)
+  ) {
     return { kind: 'opt_out' };
   }
 
-  const cleanedRaw = foldConfusables(raw)
-    .normalize('NFKC')
-    .replace(ZERO_WIDTH_RE, '')
-    .trim();
-  for (const re of AMBIGUOUS) {
-    // Stryker disable next-line ConditionalExpression,StringLiteral -- STOP already returned via EXACT
-    if (re.test(cleanedRaw) && normalized !== 'STOP') {
-      return { kind: 'ambiguous', reason: 'needs_human_review' };
+  // Keyword as a whole word inside a longer message → human review only
+  for (const stem of OPT_OUT_WORD_STEMS) {
+    if (
+      hasWholeWordStem(normalized, stem) ||
+      hasWholeWordStem(collapsed, stem)
+    ) {
+      return { kind: 'ambiguous', reason: 'keyword_in_sentence' };
+    }
+  }
+  for (const stem of OPT_OUT_MULTIWORD_STEMS) {
+    if (
+      hasWholeWordStem(normalized, stem) ||
+      hasWholeWordStem(collapsed, stem)
+    ) {
+      return { kind: 'ambiguous', reason: 'keyword_in_sentence' };
     }
   }
 
   return { kind: 'not_opt_out' };
 }
 
-/** True when a per-se keyword or phrase appears in the message. */
-export function containsOptOutKeyword(
-  normalized: string,
-  compact: string = compactOptOutText(normalized)
-): boolean {
-  for (const phrase of OPT_OUT_CONTAINS_PHRASES) {
-    if (normalized.includes(phrase)) return true;
-  }
-  for (const kw of OPT_OUT_CONTAINS_KEYWORDS) {
-    // Stryker disable next-line ConditionalExpression -- spaced kw also matches via OPTOUT compact
-    if (kw.includes(' ')) {
-      // Spaced stems (OPT OUT) — includes match; do not fall into word-boundary regex.
-      // Stryker disable next-line ConditionalExpression,BlockStatement -- OPTOUT compact covers same inputs
-      if (normalized.includes(kw)) return true;
-      continue;
-    }
-    // Word-boundary style: keyword as whole token
-    const re = new RegExp(`(?:^|[^A-Z0-9])${kw}(?:[^A-Z0-9]|$)`);
-    if (re.test(normalized)) return true;
-    // Compact path requires both stem presence AND length≥3 (END is len 3).
-    if (compact.includes(kw) && kw.length >= 3) {
-      // Stryker disable next-line ConditionalExpression -- kw∈stems ⇒ regex always matches
-      if (/STOP|QUIT|END|CANCEL|REVOKE|UNSUBSCRIBE|OPTOUT/.test(compact)) {
-        return true;
-      }
-    }
-  }
-  return false;
-}
-
-/** True when STOP appears inside service language (not an auto opt-out). */
-export function isServiceTalkWithStop(normalized: string): boolean {
-  // Stryker disable next-line ConditionalExpression,StringLiteral -- STOP ≡ fallthrough (no service-talk alt matches)
-  if (normalized === 'STOP') return false;
-  // Stryker disable next-line ConditionalExpression -- no \bSTOP\b ⇒ all alts fail anyway
-  if (!/\bSTOP\b/.test(normalized)) return false;
-  // Apostrophe-optional contractions must keep both forms (WONT and WON'T).
-  return (
-    /^(WON'?T|CANT|CAN'T|DOESN'?T|DIDN'?T|NEVER)\b/.test(normalized) ||
-    /\bSTOP\s+(BY|IN|AT|THE|LEAKING|DRIPPING|COMING)\b/.test(normalized) ||
-    /\b(WON'?T|DOESN'?T)\s+STOP\b/.test(normalized)
+/** Join runs of single-letter tokens: "S T O P PLEASE" → "STOP PLEASE". */
+export function collapseSpacedLetterTokens(normalized: string): string {
+  return normalized.replace(/\b(?:[A-Z]\s+){1,}[A-Z]\b/g, (m) =>
+    m.replace(/\s+/g, '')
   );
 }
 
@@ -164,7 +151,7 @@ export function isDefiniteOptOut(raw: string): boolean {
 }
 
 /**
- * Tokens for migration 003 STOP backfill — same list as runtime.
+ * Tokens for migration 003 STOP backfill — whole-message only (no mid-sentence).
  */
 export function optOutBackfillTokens(): string[] {
   const set = new Set<string>([
@@ -172,6 +159,24 @@ export function optOutBackfillTokens(): string[] {
     ...optOutBackfillCompactList(),
   ]);
   return [...set];
+}
+
+/**
+ * Pure predicate mirroring migration 003 whole-message backfill.
+ * Used by the parity test so app + SQL share one corpus.
+ */
+export function wouldBackfillSuppress(raw: string): boolean {
+  const normalized = normalizeOptOutText(raw);
+  if (!normalized) return false;
+  const compact = compactOptOutText(normalized);
+  const collapsed = collapseSpacedLetterTokens(normalized);
+  const collapsedCompact = compactOptOutText(collapsed);
+  return (
+    WHOLE_MESSAGE_SET.has(normalized) ||
+    WHOLE_COMPACT_SET.has(compact) ||
+    WHOLE_MESSAGE_SET.has(collapsed) ||
+    WHOLE_COMPACT_SET.has(collapsedCompact)
+  );
 }
 
 export const OPT_OUT_FOOTER = 'Reply STOP to opt out.';

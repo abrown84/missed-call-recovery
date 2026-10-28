@@ -159,11 +159,9 @@ export function nextLocalHour(
   timeZone: string,
   hour: number
 ): Date {
-  // Stryker disable all: exact-hour short-circuit + minute-walk (covered by nextLocalHour tests).
   const p0 = localParts(from, timeZone);
   if (p0.hour === hour && p0.minute === 0 && p0.second === 0) return from;
 
-  // Align minute-walk:
   // Align to the next whole UTC minute (avoids landing on :59 forever).
   let t = Math.ceil((from.getTime() + 1) / 60_000) * 60_000;
   for (let i = 0; i < 60 * 50; i++) {
@@ -172,7 +170,6 @@ export function nextLocalHour(
     t += 60_000;
   }
   return new Date(from.getTime() + 24 * 60 * 60 * 1000);
-  // Stryker restore all
 }
 
 export type QuietHoursDecision =
@@ -218,7 +215,6 @@ export function deferUntilQuietHoursOpen(
   }
 
   // Next send = latest next-open across all zones (when all are open together).
-  // Stryker disable all: multi-zone search loop — covered by deferUntilQuietHoursOpen tests.
   let next = now;
   for (let guard = 0; guard < 48; guard++) {
     const candidates = resolution.zones.map((tz) =>
@@ -241,7 +237,6 @@ export function deferUntilQuietHoursOpen(
     // Nudge forward 1 minute past latest and retry
     next = new Date(latest.getTime() + 60_000);
   }
-  // Stryker restore all
 
   return {
     allowed: false,

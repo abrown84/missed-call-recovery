@@ -19,7 +19,8 @@ vi.mock('@/services/send', async () => {
   );
   return {
     ...actual,
-    reconcileAmbiguousSms: (...a: unknown[]) => mockReconcileViaSend(...a),
+    reconcileAmbiguousSms: ((...a: unknown[]) =>
+      mockReconcileViaSend(...(a as []))) as typeof mockReconcileViaSend,
     resolveRecoveryOutcome: vi.fn(async () => 'absent'),
   };
 });

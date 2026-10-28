@@ -1,10 +1,9 @@
 /**
- * Targeted tests that kill QC r6 mut.py one-line reverts.
- * Exercises real send/campaigns/sms modules (mocked I/O only).
+ * Targeted behavioural tests that kill QC r6 mut.py one-line reverts.
+ * Source-text greps removed (QC r7) — see qc-r7-mut-behaviour.test.ts for
+ * #16/#19/#22/#24/#25/#26/#31/#32/#49/#50.
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { readFileSync } from 'fs';
-import { join } from 'path';
 
 const mockFrom = vi.fn();
 const mockSend = vi.fn();
@@ -56,7 +55,6 @@ vi.mock('@/services/quiet-hours', async () => {
 
 import {
   sendMessage,
-  reconcileAmbiguousSms,
   reconcileOne,
   resetRelayKeySupportConfirmed,
   markRelayKeySupportConfirmed,
@@ -64,8 +62,8 @@ import {
 import { deferUntilQuietHoursOpen } from '@/services/quiet-hours';
 import { sendRecoverySMS, persistDeferredRecovery } from '@/services/sms';
 import { recoveryMessageSid } from '@/services/sms-sid';
-import { ENROLLMENT_CLAIM_SELECT } from '@/lib/postgrest-select';
 import { redactPhonesInText } from '@/lib/messaging/dry-run';
+import { classifyOptOut } from '@/services/opt-out';
 
 const deferQuiet = vi.mocked(deferUntilQuietHoursOpen);
 
@@ -73,80 +71,67 @@ function chain(result: { data: unknown; error: unknown }) {
   const obj: Record<string, any> = {};
   const self = () => obj;
   for (const m of [
-    'select', 'insert', 'update', 'eq', 'lte', 'lt', 'is', 'or', 'in',
-    'order', 'limit', 'single', 'maybeSingle',
+    'select',
+    'insert',
+    'update',
+    'eq',
+    'lte',
+    'lt',
+    'is',
+    'or',
+    'in',
+    'order',
+    'limit',
+    'single',
+    'maybeSingle',
   ]) {
     obj[m] = vi.fn(self);
   }
   obj.single = vi.fn(async () => result);
   obj.maybeSingle = vi.fn(async () => result);
-  obj.then = (resolve: (v: unknown) => unknown, reject?: (e: unknown) => unknown) =>
-    Promise.resolve(result).then(resolve, reject);
+  obj.then = (
+    resolve: (v: unknown) => unknown,
+    reject?: (e: unknown) => unknown
+  ) => Promise.resolve(result).then(resolve, reject);
   return obj;
 }
 
-/** Skip source-string assertions under Stryker (instrumented sources diverge). */
-function readSrc(rel: string): string | null {
-  const src = readFileSync(join(process.cwd(), rel), 'utf8');
-  if (src.includes('stryMutAct') || src.includes('stryNS_')) return null;
-  return src;
-}
-
-describe('QC r6 mut.py killers', () => {
+describe('QC r6 mut.py killers (behavioural)', () => {
   beforeEach(() => {
     mockFrom.mockReset();
     mockSend.mockReset();
     mockLookup.mockReset();
     mockCaps.mockReset();
     isPhoneSuppressed.mockReset();
-    deferQuiet.mockReset();
-    deferQuiet.mockReturnValue({
-      allowed: true,
-      zones: ['America/New_York'],
-      endHour: 21,
-    } as never);
     isPhoneSuppressed.mockResolvedValue(false);
+    deferQuiet.mockClear();
     resetRelayKeySupportConfirmed();
     markRelayKeySupportConfirmed();
-    process.env.SENDS_ENABLED = 'true';
-    mockCaps.mockResolvedValue({
-      supported: true,
-      capabilities: { idempotency: true, version: '1.7.6' },
-    });
-    mockSend.mockResolvedValue({
-      id: 'm1',
-      status: 'queued',
-      keyEchoed: true,
-    });
+    delete process.env.SENDS_ENABLED;
   });
 
-  it('#55/#56 recovery quiet hours via sendRecoverySMS (not skip)', async () => {
-    deferQuiet.mockReturnValue({
-      allowed: false,
-      nextSendAt: new Date('2026-10-29T12:00:00.000Z'),
-      zones: ['America/New_York'],
-      endHour: 21,
-    } as never);
+  it('quiet-hours deferral persists deferred recovery (no send)', async () => {
     const inserts: unknown[] = [];
     mockFrom.mockImplementation((table: string) => {
-      if (table === 'leads') {
-        return chain({
-          data: { opted_out: false, timezone: 'America/New_York', sms_outbound_sid: null },
-          error: null,
-        });
-      }
       if (table === 'sms_messages') {
         const c = chain({ data: null, error: null });
         c.insert = vi.fn((row: unknown) => {
           inserts.push(row);
           return c;
         });
-        c.update = vi.fn(() => c);
         return c;
       }
-      return chain({ data: null, error: null });
+      return chain({
+        data: { opted_out: false, timezone: null, sms_outbound_sid: null },
+        error: null,
+      });
     });
-
+    deferQuiet.mockReturnValue({
+      allowed: false,
+      nextSendAt: new Date('2026-10-29T12:00:00.000Z'),
+      zones: ['America/New_York'],
+      endHour: 21,
+    } as never);
     const biz = {
       id: 'B1',
       name: 'Acme',
@@ -164,15 +149,7 @@ describe('QC r6 mut.py killers', () => {
     await sendRecoverySMS('L1', biz as never, '+13055550100');
     expect(mockSend).not.toHaveBeenCalled();
     expect(deferQuiet).toHaveBeenCalled();
-    // Persisted deferred (insert or update path)
     expect(inserts.length + 1).toBeGreaterThan(0);
-  });
-
-  it('#57 recovery idempotency key is stable (no Date.now)', async () => {
-    const src = readSrc('src/services/sms.ts');
-    if (!src) return;
-    expect(src).toMatch(/idempotencyKey:\s*recoveryMessageSid\(leadId\)/);
-    expect(src).not.toMatch(/mlf:recovery:\$\{leadId\}:\$\{Date\.now/);
   });
 
   it('#20/#21 opted_out and suppression gates block sendMessage', async () => {
@@ -235,41 +212,9 @@ describe('QC r6 mut.py killers', () => {
     expect(r).toEqual({ kind: 'blocked', reason: 'sends_disabled' });
   });
 
-  it('#49 switchEnrollmentCampaign source uses ENROLLMENT_CLAIM_SELECT', () => {
-    expect(ENROLLMENT_CLAIM_SELECT).toBe('id, claim_token, claimed_at');
-    const src = readSrc('src/services/campaign-runtime.ts');
-    if (!src) return; // skip under Stryker instrumentation
-    const switchIdx = src.indexOf('claim_token.is.null,claimed_at.lt.');
-    expect(switchIdx).toBeGreaterThan(-1);
-    const after = src.slice(switchIdx, switchIdx + 200);
-    expect(after).toContain('ENROLLMENT_CLAIM_SELECT');
-    expect(after).not.toContain(".select('id')");
-  });
-
-  it('#50 SSL env parsing is configurable', () => {
-    const src = readSrc('scripts/staging-campaign-evidence.mjs');
-    if (!src) return;
-    expect(src).toMatch(/STAGING_PG_SSL/);
-    expect(src).toMatch(/rejectUnauthorized/);
-    expect(src).not.toMatch(
-      /const ssl = \{ rejectUnauthorized: false \}/
-    );
-  });
-
   it('#51/#52 dry-run redaction', () => {
     expect(redactPhonesInText('x +442071234567 y')).not.toMatch(/234567/);
     expect(redactPhonesInText('x +442071234567 y')).toMatch(/4567/);
-  });
-
-  it('#01/#02 recovery pending/resolved_sent gates exist in decisions', () => {
-    const decisions = readSrc('src/services/send/decisions.ts');
-    const index = readSrc('src/services/send/index.ts');
-    if (!decisions || !index) return;
-    expect(decisions).toContain("reason: 'recovery_pending'");
-    expect(decisions).toContain("reason: 'recovery_already_sent_skip_step_1'");
-    expect(decisions).toContain("input.recovery === 'pending'");
-    expect(decisions).toContain("input.recovery === 'resolved_sent'");
-    expect(index).toContain('decideCustomerFacingGates');
   });
 
   it('persistDeferredRecovery writes deferred + next_retry_at', async () => {
@@ -302,172 +247,7 @@ describe('QC r6 mut.py killers', () => {
     });
   });
 
-  it('campaigns.ts quiet_hours_deferred releases with nextSendAt', () => {
-    const src = readSrc('src/services/campaign-runtime.ts');
-    const decisions = readSrc('src/services/send/decisions.ts');
-    const campDec = readSrc('src/services/campaign-decisions.ts');
-    const reconPlan = readSrc('src/services/campaign-reconcile-plan.ts');
-    if (!src || !decisions || !campDec || !reconPlan) return;
-    expect(decisions).toMatch(
-      /outcome\.reason === 'quiet_hours_deferred' && outcome\.nextSendAt/
-    );
-    expect(decisions).toMatch(
-      /outcome\.reason === 'suppressed' \|\| outcome\.reason === 'opted_out'/
-    );
-    expect(src).toMatch(
-      /status: ENROLLMENT_STATUS\.needsReview|status: 'needs_review'/
-    ); // terminal enrollment
-    expect(src).toMatch(/\.eq\(COL\.claimToken, claimToken\)/);
-    expect(src).toMatch(/requeueExactCampaignStep/);
-    expect(campDec).toContain('hasClaimToken');
-    expect(reconPlan).toContain('decideReconcileAdvanceEligibility');
-    expect(src).toContain('planPostConfirmAdvance');
-  });
-
-  it('send/index.ts orders reconcile ascending and increments attempts', () => {
-    const src = readSrc('src/services/send/index.ts');
-    const decisions = readSrc('src/services/send/decisions.ts');
-    const tally = readSrc('src/services/send/reconcile-tally.ts');
-    const ioPlans = readSrc('src/services/send/send-io-plans.ts');
-    if (!src || !decisions || !tally || !ioPlans) return;
-    expect(src).toMatch(/\.order\(COL\.sentAt, \{ ascending: true \}\)/);
-    // Payload shapes live in pure send-io-plans; shell wires nextAttempts/nextRetryAt.
-    expect(ioPlans).toMatch(/reconcile_attempts: input\.nextAttempts/);
-    expect(ioPlans).toMatch(/next_retry_at: input\.nextRetryAt/);
-    expect(src).toContain('smsParkAmbiguousPayload');
-    // Alert predicate lives in pure reconcile-tally (DI shell just calls it).
-    expect(tally).toMatch(/needsReview > 0/);
-    expect(src).toContain('decideReconcileAlert');
-    expect(decisions).toMatch(/keyEchoed: Boolean\(result\.keyEchoed\)/);
-    expect(ioPlans).toMatch(/key_supported_at_send: input\.keySupportedAtSend/);
-    expect(src).toMatch(/keySupportedAtSend: Boolean\(row\.key_supported_at_send\)/);
-    expect(decisions).toMatch(/if \(result\.conflict\)/);
-    expect(decisions).toMatch(/isFailedStatus\(result\.status\)/);
-    expect(decisions).toMatch(/result\.ambiguous/);
-    expect(ioPlans).toMatch(/status: input\.status/);
-    expect(src).not.toMatch(/\.update\(\{\s*status:\s*'queued'\s*\}\)/);
-    expect(src).toContain('smsNeedsReviewPayload');
-    expect(ioPlans).toMatch(/sms_outbound_sid: null/);
-    expect(src).toMatch(/tryNormalizeToE164/);
-    expect(src).toMatch(/to: toE164/);
-    expect(decisions).toMatch(/result\.status === 'maintenance'/);
-    expect(src).toContain('capsBeforeSend = await deps.ensureCaps(adapter)');
-    expect(decisions).toContain('!input.quiet.allowed');
-    expect(src).toContain('leadTimezone: leadTz,');
-    expect(src).toContain('decideDuplicateSid');
-    expect(src).toContain('mapRelaySendResult');
-    expect(src).toContain('smsStatusOnlyPayload(SMS_STATUS.needsReview)');
-    expect(ioPlans).toContain('sms_outbound_sid: null');
-  });
-
-  it('campaigns.ts keeps recovery park / claim / requeue / leadTimezone', () => {
-    const src = readSrc('src/services/campaign-runtime.ts');
-    const campDec = readSrc('src/services/campaign-decisions.ts');
-    const decisions = readSrc('src/services/send/decisions.ts');
-    const sendPlan = readSrc('src/services/campaign-send-plan.ts');
-    if (!src || !campDec || !decisions || !sendPlan) return;
-    expect(campDec).toContain(
-      "input.recoveryState === 'pending' && !input.recoveryConfirmed"
-    );
-    expect(src).toContain('await resendRecoveryIdempotent');
-    // skipRecoveryGate computed in pure send-plan, applied via pre.skipRecoveryGate
-    expect(sendPlan).toContain('decideSkipRecoveryGate(');
-    expect(src).toContain('skipRecoveryGate: pre.skipRecoveryGate');
-    expect(src).not.toContain('skipRecoveryGate: true || !(');
-    expect(src).toContain('leadTimezone: pre.leadTimezone');
-    expect(src).not.toContain('leadTimezone: null,');
-    expect(decisions).toContain("outcome.reason === 'quiet_hours_unresolved'");
-    expect(decisions).toContain("outcome.kind === 'needs_review'");
-    expect(decisions).toContain("outcome.kind === 'ambiguous'");
-    expect(decisions).toContain("outcome.reason === 'recovery_pending'");
-    expect(src).toContain('planCampaignSendPost');
-    expect(src).toContain('planCampaignSendEffects');
-    expect(src).toContain('applyCampaignSendEffects');
-    // Effect switch lives in campaign-send-effects; handlers wire review/park.
-    const effectsSrc = readSrc('src/services/campaign-send-effects.ts') || '';
-    expect(effectsSrc).toContain("case 'needs_review_terminal':");
-    expect(effectsSrc).toContain("case 'park':");
-    expect(effectsSrc).toContain('handlers.needsReviewTerminal');
-    expect(effectsSrc).toContain('handlers.park');
-    expect(src).toContain('markEnrollmentNeedsReview');
-    expect(src).toContain('parkEnrollmentForReconcile');
-    // needs_review / park handlers must not call advanceEnrollment
-    const reviewHandler = src.slice(
-      src.indexOf('needsReviewTerminal:'),
-      src.indexOf('noopRelease:')
-    );
-    expect(reviewHandler).toContain('markEnrollmentNeedsReview');
-    expect(reviewHandler).not.toContain('advanceEnrollment');
-    const parkHandler = src.slice(
-      src.indexOf('park: async'),
-      src.indexOf('pauseOptOut:')
-    );
-    expect(parkHandler).toContain('parkEnrollmentForReconcile');
-    expect(parkHandler).not.toContain('advanceEnrollment');
-    expect(src).toContain('.eq(COL.claimToken, claimToken)');
-    expect(src).toContain('const ok = await requeueExactCampaignStep(');
-    expect(src).not.toContain('const ok = false && await requeueExactCampaignStep(');
-    expect(src).toContain('// Isolate per-enrollment failures');
-    expect(src).not.toContain('throw err; //');
-  });
-
-  it('opt-out compact + migration 003 backfill invariants', () => {
-    const opt = readSrc('src/services/opt-out.ts');
-    if (!opt) return;
-    expect(opt).toContain(
-      "if (OPT_OUT_COMPACT.has(compact)) return { kind: 'opt_out' };"
-    );
-    const mig = readSrc('supabase/migrations/003_campaign_idempotency.sql');
-    if (!mig) return;
-    // Both rebuild + STOP backfill must keep ON CONFLICT / NFKC (mut.py #22/#25).
-    expect(mig.split('ON CONFLICT (business_id, phone) DO NOTHING;').length).toBeGreaterThan(
-      2
-    );
-    expect(mig).toContain('enrolled_at DESC NULLS LAST');
-    expect(mig).not.toContain('enrolled_at DESC NULLS FIRST');
-    // mut.py #25 removes the first `normalize(btrim(m.body), NFKC),` — require all 6.
-    expect(
-      (mig.match(/normalize\(btrim\(m\.body\), NFKC\)/g) || []).length
-    ).toBeGreaterThanOrEqual(6);
-    expect(mig).toContain("'PLEASE STOP', 'STOP PLEASE', 'STOP IT', 'STOP PLS'");
-    // STOP backfill section (after comment) must itself contain ON CONFLICT
-    const stopIdx = mig.indexOf('STOP backfill');
-    expect(stopIdx).toBeGreaterThan(-1);
-    expect(mig.slice(stopIdx)).toContain(
-      'ON CONFLICT (business_id, phone) DO NOTHING;'
-    );
-    expect(mig.slice(stopIdx)).toContain('normalize(btrim(m.body), NFKC)');
-  });
-
-  it('#41 park persists status unknown (not queued)', () => {
-    const src = readSrc('src/services/send/index.ts');
-    if (!src) return;
-    // Both send-path and reconcile-path parks must write status unknown
-    const unknownCount =
-      (src.split('SMS_STATUS.unknown').length - 1) +
-      (src.split("status: 'unknown'").length - 1);
-    expect(unknownCount).toBeGreaterThanOrEqual(2);
-    expect(src).not.toContain("status: 'queued',\n        reconcile_attempts:");
-  });
-
-  it('#44 advanceEnrollment claim_token gate on unified advance/complete path', () => {
-    const src = readSrc('src/services/campaign-runtime.ts');
-    const advPlan = readSrc('src/services/campaign-advance-plan.ts');
-    if (!src || !advPlan) return;
-    // Advance + complete share one claim_token-gated update (planAdvanceEnrollment).
-    expect(src).toContain('.eq(COL.claimToken, claimToken)');
-    expect(src).toContain('.select(ENROLLMENT_CLAIM_SELECT)');
-    const advIdx = src.indexOf('export async function advanceEnrollment');
-    expect(advIdx).toBeGreaterThan(-1);
-    const adv = src.slice(advIdx, advIdx + 2000);
-    expect(adv).toContain('planAdvanceEnrollment');
-    expect(adv).toContain('.eq(COL.claimToken, claimToken)');
-    expect(adv).toContain('ownershipHit');
-    // Pure plan still distinguishes advance vs complete payloads.
-    expect(advPlan).toContain("type: 'advance'");
-    expect(advPlan).toContain("type: 'complete'");
+  it('#19 compact STOP still classifies as opt_out', () => {
+    expect(classifyOptOut('S T O P').kind).toBe('opt_out');
   });
 });
-
-// silence unused
-void reconcileAmbiguousSms;

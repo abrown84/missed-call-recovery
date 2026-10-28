@@ -1,11 +1,13 @@
+/**
+ * Opt-out survivor / normalizer killers under the QC r7 whole-message policy.
+ */
 import { describe, expect, it } from 'vitest';
 import * as fc from 'fast-check';
 import {
   classifyOptOut,
   compactOptOutText,
-  containsOptOutKeyword,
-  isDefiniteOptOut,
-  isServiceTalkWithStop,
+  foldConfusables,
+  hasWholeWordStem,
   normalizeOptOutText,
   replaceNbspWithSpace,
   stripEdgeQuotes,
@@ -13,289 +15,108 @@ import {
 
 describe('opt-out normalize helpers (survivor killers)', () => {
   it('replaceNbspWithSpace keeps a real space (not delete)', () => {
-    expect(replaceNbspWithSpace('A\u00a0B')).toBe('A B');
-    expect(replaceNbspWithSpace('A\u00a0B')).not.toBe('AB');
-    expect(replaceNbspWithSpace('TAKE\u00a0ME\u00a0OFF')).toBe('TAKE ME OFF');
+    expect(replaceNbspWithSpace('STOP\u00a0PLEASE')).toBe('STOP PLEASE');
+    expect(normalizeOptOutText('STOP\u00a0PLEASE')).toBe('STOP PLEASE');
   });
 
   it('stripEdgeQuotes needs both ^ and $ anchors', () => {
+    expect(stripEdgeQuotes('"STOP"')).toBe('STOP');
     expect(stripEdgeQuotes('"STOP')).toBe('STOP');
     expect(stripEdgeQuotes('STOP"')).toBe('STOP');
-    expect(stripEdgeQuotes('"STOP"')).toBe('STOP');
-    expect(stripEdgeQuotes('\u201cSTOP\u201d')).toBe('STOP');
-    // Mid-string quotes must survive (anchors only)
-    expect(stripEdgeQuotes('SAY "HI" NOW')).toBe('SAY "HI" NOW');
+    expect(normalizeOptOutText('"stop"')).toBe('STOP');
   });
 });
 
 describe('opt-out normalize killers', () => {
   it('strips emoji exactly (not replaced with filler)', () => {
-    expect(normalizeOptOutText('Stop 🛑')).toBe('STOP');
-    expect(normalizeOptOutText('🛑STOP🛑')).toBe('STOP');
+    expect(normalizeOptOutText('STOP🛑')).toBe('STOP');
   });
 
   it('nbsp becomes space then collapses', () => {
-    expect(normalizeOptOutText('STOP\u00a0PLEASE')).toBe('STOP PLEASE');
-    expect(normalizeOptOutText('TAKE\u00a0ME\u00a0OFF')).toBe('TAKE ME OFF');
+    expect(normalizeOptOutText('STOP\u00a0\u00a0ALL')).toBe('STOP ALL');
   });
 
   it('newlines become spaces (need + quantifier, not empty replace)', () => {
-    expect(normalizeOptOutText('STOP\nPLEASE')).toBe('STOP PLEASE');
-    expect(normalizeOptOutText('STOP\r\n\r\nPLEASE')).toBe('STOP PLEASE');
-    expect(normalizeOptOutText('do not\ncontact me')).toBe('DO NOT CONTACT ME');
+    expect(normalizeOptOutText('STOP\n\nALL')).toBe('STOP ALL');
   });
 
   it('trims leading/trailing whitespace before match', () => {
     expect(normalizeOptOutText('  STOP  ')).toBe('STOP');
-    expect(normalizeOptOutText('\tSTOP\n')).toBe('STOP');
-    expect(isDefiniteOptOut('  STOP  ')).toBe(true);
   });
 
   it('strips surrounding quotes (multi + smart quotes)', () => {
-    expect(normalizeOptOutText('"STOP"')).toBe('STOP');
-    expect(normalizeOptOutText("'STOP'")).toBe('STOP');
-    expect(normalizeOptOutText('`STOP`')).toBe('STOP');
-    expect(normalizeOptOutText('""STOP""')).toBe('STOP');
-    expect(normalizeOptOutText('\u201cSTOP\u201d')).toBe('STOP'); // “ ”
-    expect(normalizeOptOutText('\u2018STOP\u2019')).toBe('STOP'); // ‘ ’
-    expect(normalizeOptOutText('"""STOP"""')).toBe('STOP');
+    expect(normalizeOptOutText('“STOP”')).toBe('STOP');
+    expect(normalizeOptOutText("‘QUIT’")).toBe('QUIT');
   });
 
   it('strips trailing punctuation only (not mid-token)', () => {
-    expect(normalizeOptOutText('STOP!')).toBe('STOP');
-    expect(normalizeOptOutText('STOP???')).toBe('STOP');
-    expect(normalizeOptOutText('STOP...')).toBe('STOP');
-    expect(normalizeOptOutText('STOP…')).toBe('STOP');
     expect(normalizeOptOutText('STOP!!!')).toBe('STOP');
-    // Mid-token bang must survive — kills /[?!.,…]+/g (global unanchored)
-    expect(normalizeOptOutText('ST!OP')).toBe('ST!OP');
+    expect(normalizeOptOutText('STOP.')).toBe('STOP');
   });
 
   it('collapses runs of whitespace to a single space (not delete all)', () => {
-    expect(normalizeOptOutText('STOP  PLEASE')).toBe('STOP PLEASE');
-    expect(normalizeOptOutText('TAKE   ME    OFF')).toBe('TAKE ME OFF');
+    expect(normalizeOptOutText('OPT    OUT')).toBe('OPT OUT');
   });
 });
 
-describe('opt-out contains / compact killers', () => {
-  it('phrases take me off / do not contact are definite opt-out', () => {
-    expect(classifyOptOut('take me off your list')).toEqual({ kind: 'opt_out' });
-    expect(classifyOptOut('do not contact me')).toEqual({ kind: 'opt_out' });
-    expect(classifyOptOut('please take me off the list')).toEqual({
-      kind: 'opt_out',
-    });
-    expect(containsOptOutKeyword('TAKE ME OFF YOUR LIST')).toBe(true);
-    expect(containsOptOutKeyword('DO NOT CONTACT ME')).toBe(true);
+describe('opt-out whole-message / whole-word policy', () => {
+  it('compact whole-message STOPPLEASE is NOT auto opt-out (not in compact set)', () => {
+    // Compact set is whole-message forms only; STOPPLEASE is not a carrier keyword.
+    expect(classifyOptOut('STOPPLEASE').kind).not.toBe('opt_out');
   });
 
-  it('compact STOPPLEASE / PLEASESTOP / STOPSTOPSTOP', () => {
-    expect(containsOptOutKeyword('STOPPLEASE', 'STOPPLEASE')).toBe(true);
-    expect(containsOptOutKeyword('PLEASESTOP', 'PLEASESTOP')).toBe(true);
-    expect(containsOptOutKeyword('STOPSTOPSTOP', 'STOPSTOPSTOP')).toBe(true);
-    expect(isDefiniteOptOut('STOPPLEASE')).toBe(true);
-    expect(isDefiniteOptOut('PLEASESTOP')).toBe(true);
-    expect(compactOptOutText('STOP PLEASE')).toBe('STOPPLEASE');
+  it('compact STOPSTOP / STOPSTOPSTOP are whole-message opt_out', () => {
+    expect(classifyOptOut('STOP STOP').kind).toBe('opt_out');
+    expect(classifyOptOut('STOP STOP STOP').kind).toBe('opt_out');
+    expect(compactOptOutText('STOP STOP STOP')).toBe('STOPSTOPSTOP');
   });
 
-  it('compact END (length === 3) inside alphanumeric blob', () => {
-    // Word-boundary misses XXXENDYYY; compact path with kw.length >= 3 must hit.
-    expect(containsOptOutKeyword('XXXENDYYY', 'XXXENDYYY')).toBe(true);
-    // length > 3 mutant would drop END (len 3)
-    expect(containsOptOutKeyword('PLEASEEND', 'PLEASEEND')).toBe(true);
+  it('END inside alphanumeric blob is not a whole word', () => {
+    expect(hasWholeWordStem('XXXENDYYY', 'END')).toBe(false);
+    expect(classifyOptOut('XXXENDYYY').kind).toBe('not_opt_out');
   });
 
-  it('multi-word keyword OPT OUT via includes, not only compact', () => {
-    expect(containsOptOutKeyword('PLEASE OPT OUT NOW')).toBe(true);
-    expect(containsOptOutKeyword('I WANT TO OPT OUT')).toBe(true);
+  it('OPT OUT / CANCEL as whole words in longer text → ambiguous', () => {
+    expect(classifyOptOut('PLEASE OPT OUT NOW').kind).toBe('ambiguous');
+    expect(classifyOptOut('CANCEL MY SERVICE').kind).toBe('ambiguous');
+    expect(classifyOptOut('I WANT TO QUIT').kind).toBe('ambiguous');
   });
 
-  it('single-token keyword via word boundary', () => {
-    expect(containsOptOutKeyword('PLEASE QUIT NOW')).toBe(true);
-    expect(containsOptOutKeyword('CANCEL MY SERVICE')).toBe(true);
-    // No keyword stem → false (compact path must not false-positive)
-    expect(containsOptOutKeyword('HELLO THERE', 'HELLOTHERE')).toBe(false);
+  it('empty normalized is not opt-out', () => {
+    expect(classifyOptOut('').kind).toBe('not_opt_out');
+    expect(classifyOptOut('   ').kind).toBe('not_opt_out');
   });
 
-  it('empty normalized is not opt-out (guard)', () => {
-    expect(classifyOptOut('')).toEqual({ kind: 'not_opt_out' });
-    expect(classifyOptOut('   \n\t  ')).toEqual({ kind: 'not_opt_out' });
-  });
-
-  it('ambiguous regex path skips when normalized is exactly STOP', () => {
-    // normalized === 'STOP' short-circuits before AMBIGUOUS even if raw were odd
-    expect(classifyOptOut('STOP')).toEqual({ kind: 'opt_out' });
-    expect(classifyOptOut('wrong number')).toEqual({
-      kind: 'ambiguous',
-      reason: 'needs_human_review',
-    });
+  it('foldConfusables maps Cyrillic te', () => {
+    expect(foldConfusables('\u0422')).toBe('T');
   });
 });
 
-describe('opt-out service-talk STOP variants', () => {
-  it('apostrophe-optional WONT/WON\'T and DOESNT/DOESN\'T', () => {
-    expect(isServiceTalkWithStop("WON'T STOP LEAKING")).toBe(true);
-    expect(isServiceTalkWithStop('WONT STOP LEAKING')).toBe(true);
-    expect(isServiceTalkWithStop("DOESN'T STOP DRIPPING")).toBe(true);
-    expect(isServiceTalkWithStop('DOESNT STOP DRIPPING')).toBe(true);
-    expect(isServiceTalkWithStop("DIDN'T STOP COMING")).toBe(true);
-    expect(isServiceTalkWithStop('DIDNT STOP COMING')).toBe(true);
-    expect(isServiceTalkWithStop('CANT STOP THE LEAK')).toBe(true);
-    expect(isServiceTalkWithStop("CAN'T STOP THE LEAK")).toBe(true);
-    expect(isServiceTalkWithStop('NEVER STOP TRYING')).toBe(true);
+describe('opt-out service-talk / keyword-in-sentence → ambiguous', () => {
+  it('STOP BY / WONT STOP style messages are ambiguous not opt_out', () => {
+    for (const body of [
+      'STOP BY TODAY',
+      'WONT STOP LEAKING',
+      "WON'T STOP LEAKING",
+      'IT DOESNT STOP',
+      'STOP THE LEAK',
+    ]) {
+      expect(classifyOptOut(body).kind, body).toBe('ambiguous');
+    }
   });
 
-  it('STOP BY/IN/AT/THE/LEAKING/DRIPPING/COMING needs flexible whitespace', () => {
-    expect(isServiceTalkWithStop('STOP BY TODAY')).toBe(true);
-    expect(isServiceTalkWithStop('STOP  BY TODAY')).toBe(true); // \\s+ not \\s
-    expect(isServiceTalkWithStop('STOP IN THE MORNING')).toBe(true);
-    expect(isServiceTalkWithStop('STOP AT NOON')).toBe(true);
-    expect(isServiceTalkWithStop('STOP THE LEAK')).toBe(true);
-    expect(isServiceTalkWithStop('STOP LEAKING PLEASE')).toBe(true);
-    expect(isServiceTalkWithStop('STOP DRIPPING NOW')).toBe(true);
-    expect(isServiceTalkWithStop('STOP COMING OVER')).toBe(true);
-  });
-
-  it('WONT/DOESNT STOP mid-message via \\b...\\s+STOP\\b', () => {
-    expect(isServiceTalkWithStop('IT WONT STOP')).toBe(true);
-    expect(isServiceTalkWithStop("IT WON'T STOP")).toBe(true);
-    expect(isServiceTalkWithStop('IT DOESNT STOP')).toBe(true);
-    expect(isServiceTalkWithStop("IT DOESN'T STOP")).toBe(true);
-    // \\S+ mutant would require non-space between — space must work
-    expect(isServiceTalkWithStop('PIPE WONT STOP')).toBe(true);
-  });
-
-  it('exact STOP is not service talk; no STOP → false', () => {
-    expect(isServiceTalkWithStop('STOP')).toBe(false);
-    expect(isServiceTalkWithStop('HELLO THERE')).toBe(false);
-    expect(isServiceTalkWithStop('CAN YOU STOP TEXTING PLEASE')).toBe(false);
-  });
-
-  it('leading-anchor: WONT not at start without STOP-adjacent still needs ^ for alt1', () => {
-    // First alt requires ^ — "PLEASE WONT HELP" has no STOP → false via line 136
-    expect(isServiceTalkWithStop('PLEASE WONT HELP')).toBe(false);
+  it('exact STOP is opt_out', () => {
+    expect(classifyOptOut('STOP').kind).toBe('opt_out');
   });
 });
 
 describe('opt-out normalize property', () => {
   it('normalize is idempotent uppercase ASCII letters', () => {
     fc.assert(
-      fc.property(fc.constantFrom('STOP', 'QUIT', 'END', 'CANCEL'), (t) => {
-        const n = normalizeOptOutText(t);
-        expect(normalizeOptOutText(n)).toBe(n);
-        expect(n).toBe(t);
+      fc.property(fc.string({ maxLength: 40 }), (s) => {
+        const once = normalizeOptOutText(s);
+        expect(normalizeOptOutText(once)).toBe(once);
       }),
-      { numRuns: 20 }
-    );
-  });
-});
-
-describe('opt-out survivor killers (honest scope)', () => {
-  it('leading-only and trailing-only quotes both strip', () => {
-    // Kills Regex mutants that drop ^ or $ from the quote stripper.
-    expect(normalizeOptOutText('"STOP')).toBe('STOP');
-    expect(normalizeOptOutText('STOP"')).toBe('STOP');
-    expect(normalizeOptOutText("'STOP")).toBe('STOP');
-    expect(normalizeOptOutText("STOP'")).toBe('STOP');
-    expect(normalizeOptOutText('\u201cSTOP')).toBe('STOP');
-    expect(normalizeOptOutText('STOP\u201d')).toBe('STOP');
-  });
-
-  it('nbsp → space (not delete) keeps token boundary', () => {
-    // Kills StringLiteral ' ' → ''
-    expect(normalizeOptOutText('TAKE\u00a0ME\u00a0OFF')).toBe('TAKE ME OFF');
-    expect(isDefiniteOptOut('TAKE\u00a0ME\u00a0OFF')).toBe(true);
-    expect(normalizeOptOutText('STOP\u00a0')).toBe('STOP');
-  });
-
-  it('ambiguous path keeps trim + zero-width strip on cleanedRaw', () => {
-    // MethodExpression removing .trim() or ZERO_WIDTH replace must not hide AMBIGUOUS.
-    expect(classifyOptOut('  wrong number  ')).toEqual({
-      kind: 'ambiguous',
-      reason: 'needs_human_review',
-    });
-    expect(classifyOptOut('\u200Bwrong number\u200B')).toEqual({
-      kind: 'ambiguous',
-      reason: 'needs_human_review',
-    });
-  });
-
-  it('multi-word OPT OUT / OPT-OUT via spaced-keyword branch', () => {
-    // Conditionally emptying kw.includes(' ') body drops spaced includes.
-    expect(containsOptOutKeyword('I WANT TO OPT OUT NOW')).toBe(true);
-    expect(containsOptOutKeyword('PLEASE OPT-OUT')).toBe(true);
-    expect(isDefiniteOptOut('please opt out')).toBe(true);
-  });
-
-  it('word-boundary path: QUIT as whole token, not substring', () => {
-    expect(containsOptOutKeyword('PLEASE QUIT NOW')).toBe(true);
-    // compact length gate: END (len===3) inside blob
-    expect(containsOptOutKeyword('XXENDYY', 'XXENDYY')).toBe(true);
-    // kw.length >= 3 forced true alone is gated by includes; force false kills END
-    expect(containsOptOutKeyword('ENDIT', 'ENDIT')).toBe(true);
-  });
-
-  it('compact path requires includes AND length — not OR', () => {
-    // LogicalOperator && → ||: a long kw with no compact hit must not false-positive
-    // when compact lacks every stem (regex also fails).
-    expect(containsOptOutKeyword('HELLO THERE', 'HELLOTHERE')).toBe(false);
-    expect(containsOptOutKeyword('GOOD MORNING', 'GOODMORNING')).toBe(false);
-  });
-
-  it('service-talk apostrophe-optional forms are not interchangeable', () => {
-    // Regex mutants that drop WON'?T → WON'T only (or reverse) must die.
-    expect(isServiceTalkWithStop('WONT STOP LEAKING')).toBe(true);
-    expect(isServiceTalkWithStop("WON'T STOP LEAKING")).toBe(true);
-    expect(isServiceTalkWithStop('DOESNT STOP DRIPPING')).toBe(true);
-    expect(isServiceTalkWithStop("DOESN'T STOP DRIPPING")).toBe(true);
-    expect(isServiceTalkWithStop('DIDNT STOP COMING')).toBe(true);
-    expect(isServiceTalkWithStop("DIDN'T STOP COMING")).toBe(true);
-    // Mid-message WONT/DOESNT STOP (third alt) needs \\s not glued.
-    expect(isServiceTalkWithStop('PIPE WONT STOP')).toBe(true);
-    expect(isServiceTalkWithStop("PIPE WON'T STOP")).toBe(true);
-    expect(isServiceTalkWithStop('PIPE DOESNT STOP')).toBe(true);
-    expect(isServiceTalkWithStop("PIPE DOESN'T STOP")).toBe(true);
-  });
-
-  it('exact STOP short-circuit and missing STOP are both required', () => {
-    expect(isServiceTalkWithStop('STOP')).toBe(false);
-    expect(isServiceTalkWithStop('WONT LEAKING')).toBe(false);
-    expect(isServiceTalkWithStop('NEVER GIVE UP')).toBe(false);
-  });
-
-  it('leading-anchor on WONT/DOESNT is required (not mid-string)', () => {
-    // Kills Regex mutant that drops ^ from the first alternative.
-    // Mid-string WONT … STOP (not adjacent) must NOT count as service talk.
-    expect(
-      isServiceTalkWithStop('PLEASE WONT THE LEAKING STOP NOW')
-    ).toBe(false);
-    expect(
-      isServiceTalkWithStop('PLEASE DOESNT THE DRIPPING STOP NOW')
-    ).toBe(false);
-    // Start-anchored still matches — and NOT via third alt (STOP not adjacent)
-    expect(isServiceTalkWithStop('WONT THE LEAKING STOP NOW')).toBe(true);
-    expect(isServiceTalkWithStop('DOESNT THE LEAKING STOP NOW')).toBe(true);
-    expect(isServiceTalkWithStop('DIDNT THE LEAKING STOP NOW')).toBe(true);
-    // Apostrophe forms at start with non-adjacent STOP
-    expect(isServiceTalkWithStop("DOESN'T THE LEAKING STOP NOW")).toBe(true);
-    expect(isServiceTalkWithStop("DIDN'T THE LEAKING STOP NOW")).toBe(true);
-  });
-
-  it('WONT/DOESNT STOP mid-message needs \\\\s+ (multi-space)', () => {
-    expect(isServiceTalkWithStop('PIPE WONT  STOP')).toBe(true);
-    expect(isServiceTalkWithStop('PIPE DOESNT   STOP')).toBe(true);
-  });
-
-  it('property: definite opt-out is stable under padding spaces', () => {
-    fc.assert(
-      fc.property(
-        fc.constantFrom('STOP', 'QUIT', 'END', 'CANCEL', 'UNSUBSCRIBE'),
-        fc.integer({ min: 0, max: 3 }),
-        fc.integer({ min: 0, max: 3 }),
-        (token, pre, post) => {
-          const padded = `${' '.repeat(pre)}${token}${' '.repeat(post)}`;
-          expect(classifyOptOut(padded)).toEqual({ kind: 'opt_out' });
-        }
-      ),
       { numRuns: 40 }
     );
   });

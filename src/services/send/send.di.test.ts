@@ -96,6 +96,9 @@ function makeDb(state: {
         if (m === 'eq' && args[0] === COL.id) {
           ctx.filters.id = args[1];
         }
+        if (m === 'eq' && args[0] === COL.status) {
+          ctx.filters.status = args[1];
+        }
         if (m === 'in') ctx.filters.in = args;
         return asList();
       };
@@ -132,10 +135,16 @@ function makeDb(state: {
       }
       if (name === 'sms_messages') {
         const sid = ctx.filters.message_sid as string | undefined;
-        return {
-          data: sid ? smsBySid.get(sid) ?? null : null,
-          error: null,
-        };
+        const row = sid ? smsBySid.get(sid) ?? null : null;
+        // Compare-and-swap: status filter must match current row status.
+        if (
+          row &&
+          ctx.filters.status !== undefined &&
+          String(row.status) !== String(ctx.filters.status)
+        ) {
+          return { data: null, error: null };
+        }
+        return { data: row, error: null };
       }
       return { data: null, error: null };
     };
@@ -1068,7 +1077,7 @@ describe('send/index gate + dispatch survivor killers', () => {
 
   it('skipQuietHours true skips quietHours call', async () => {
     const quiet = vi.fn(() => ({
-      allowed: false,
+      allowed: false as const,
       nextSendAt: new Date('2099-01-01T00:00:00Z'),
       zones: ['America/New_York'],
       endHour: 21,
@@ -1093,7 +1102,7 @@ describe('send/index gate + dispatch survivor killers', () => {
 
   it('leadTimezone preference over lead row timezone', async () => {
     const quiet = vi.fn(() => ({
-      allowed: true,
+      allowed: true as const,
       zones: ['America/Chicago'],
       endHour: 21,
     }));
@@ -1115,8 +1124,10 @@ describe('send/index gate + dispatch survivor killers', () => {
       }
     );
     expect(quiet).toHaveBeenCalled();
-    const arg = quiet.mock.calls[0]?.[1] as { leadTimezone?: string };
-    expect(arg.leadTimezone).toBe('America/Chicago');
+    const calls = quiet.mock.calls as unknown as Array<
+      [Date, { leadTimezone?: string }]
+    >;
+    expect(calls[0]?.[1]?.leadTimezone).toBe('America/Chicago');
   });
 
   it('caps probe only when not already confirmed', async () => {
@@ -1393,7 +1404,7 @@ describe('send/index payload + hook survivor killers (r12)', () => {
     });
   });
 
-  it('claim_deferred writes smsClaimDeferredPayload before relay', async () => {
+  it('claim_deferred CAS: eq status=deferred then dispatch', async () => {
     const sid = 'mlf:recovery:Ldef2';
     const send = vi.fn(async () => ({
       id: 'm',
@@ -1431,7 +1442,65 @@ describe('send/index payload + hook survivor killers (r12)', () => {
       body: 'body-x',
       next_retry_at: null,
     });
+    expect(
+      db.calls.some(
+        (c) =>
+          c.op === 'eq' &&
+          c.args[0] === COL.status &&
+          c.args[1] === SMS_STATUS.deferred
+      )
+    ).toBe(true);
     expect(send).toHaveBeenCalled();
+  });
+
+  it('claim_deferred CAS lost → duplicate_in_flight, no relay', async () => {
+    const sid = 'mlf:recovery:LdefLost';
+    const send = vi.fn(async () => ({
+      id: 'm',
+      status: 'queued',
+      keyEchoed: true,
+    }));
+    // First status lookup sees deferred; after update filter, map is already sending
+    // (simulates a racing cron that claimed first).
+    const smsBySid = new Map<string, Row>([[sid, { status: 'deferred' }]]);
+    const db = makeDb({
+      leads: { opted_out: false },
+      insertError: { code: '23505', message: 'dup' },
+      smsBySid,
+    });
+    // Flip to sending before the CAS select runs: intercept update to mutate map.
+    const origFrom = db.from;
+    db.from = (name: string) => {
+      const api = origFrom(name) as Record<string, unknown>;
+      const origUpdate = api.update as (p: unknown) => unknown;
+      api.update = (payload: unknown) => {
+        const chain = origUpdate(payload) as Record<string, unknown>;
+        smsBySid.set(sid, { status: 'sending' });
+        return chain;
+      };
+      return api;
+    };
+    const o = await sendMessageWithDeps(
+      baseDeps({
+        dbImpl: db,
+        adapter: () => ({ name: 'm', sendMessage: send }) as never,
+      }),
+      {
+        kind: KIND_RECOVERY,
+        leadId: 'LdefLost',
+        businessId: 'B',
+        to: '+12135550100',
+        body: 'body-x',
+        idempotencyKey: sid,
+        skipQuietHours: true,
+      }
+    );
+    expect(o).toMatchObject({
+      kind: 'blocked',
+      reason: SEND_REASON.duplicateInFlight,
+      detail: 'deferred_claim_lost',
+    });
+    expect(send).not.toHaveBeenCalled();
   });
 
   it('suppression non-SuppressionLookupError rethrows', async () => {

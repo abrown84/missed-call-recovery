@@ -18,6 +18,7 @@ import {
 } from '@/services/suppressions';
 import {
   COL,
+  DEFERRED_IGNORE_MAX_ATTEMPTS,
   DIRECTION_OUTBOUND,
   KIND_MANUAL,
   KIND_RECOVERY,
@@ -231,6 +232,7 @@ export async function processDeferredRecoveriesWithDeps(
     .select(SMS_SELECT_DEFERRED)
     .eq(COL.status, SMS_STATUS.deferred)
     .lte(COL.nextRetryAt, nowIso)
+    .order(COL.nextRetryAt, { ascending: true })
     .limit(50);
 
   if (error) {
@@ -295,10 +297,31 @@ export async function processDeferredRecoveriesWithDeps(
         case 'count_parked':
           deferred += 1;
           break;
-        case 'ignore':
-          // never_sent / unexpected — leave deferred row for a later pass
-          deps.log.log('deferred_ignored', row.id);
+        case 'ignore': {
+          // Bound never_sent / unexpected retries so a stuck row cannot loop forever.
+          const attempts =
+            Number(
+              (row as { reconcile_attempts?: number }).reconcile_attempts ?? 0
+            ) + 1;
+          if (attempts >= DEFERRED_IGNORE_MAX_ATTEMPTS) {
+            await supabase
+              .from(TABLE.smsMessages)
+              .update({
+                status: SMS_STATUS.abandonedDone,
+                next_retry_at: null,
+                reconcile_attempts: attempts,
+              })
+              .eq(COL.id, row.id);
+            deps.log.log('deferred_ignore_capped', row.id, attempts);
+          } else {
+            await supabase
+              .from(TABLE.smsMessages)
+              .update({ reconcile_attempts: attempts })
+              .eq(COL.id, row.id);
+            deps.log.log('deferred_ignored', row.id, attempts);
+          }
           break;
+        }
       }
     } catch (err) {
       deps.log.error(
