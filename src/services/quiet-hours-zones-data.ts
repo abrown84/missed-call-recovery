@@ -340,3 +340,10 @@ export const AREA_CODE_ZONES: Record<string, string[]> = {
   '939': ['America/Puerto_Rico'],
   '671': ['Pacific/Guam'],
 };
+
+export const FL_AREA = new Set([
+  '239', '305', '321', '352', '386', '407', '448', '561', '645', '656', '689',
+  '727', '728', '754', '772', '786', '813', '850', '863', '904', '941', '954',
+]);
+export const OK_AREA = new Set(['405', '539', '572', '580', '918']);
+
