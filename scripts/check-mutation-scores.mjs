@@ -37,9 +37,11 @@ const TARGETS = [
   'src/services/opt-out-data.ts',
   'src/services/campaign-logic.ts',
   'src/services/inbound.ts',
+  'src/services/inbound-io-plans.ts',
   'src/services/quiet-hours.ts',
   'src/services/quiet-hours-zones.ts',
   'src/services/missed-call.ts',
+  'src/services/missed-call-io-plans.ts',
   'src/services/reconcile-logic.ts',
 ];
 
