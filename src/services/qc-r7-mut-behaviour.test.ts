@@ -123,30 +123,28 @@ describe('mut.py #32 reconcile uses stored key_supported_at_send', () => {
       api[m] = vi.fn(self);
     }
     api.maybeSingle = vi.fn(async () => ({ data: null, error: null }));
-    return {
-      api,
-      deps: {
-        db: () => ({ from: () => api }) as never,
-        adapter: () =>
-          ({
-            name: 'm',
-            lookupByIdempotencyKey: lookup,
-            checkLookupSupport: async () => ({ supported: true }),
-          }) as never,
-        clock: () => new Date('2026-06-15T15:00:00.000Z'),
-        sendsEnabled: () => true,
-        isPhoneSuppressed: async () => false,
-        SuppressionLookupError,
-        quietHours: () => ({
-          allowed: true,
-          zones: ['America/New_York'],
-          endHour: 21,
-        }),
-        capsConfirmed: () => true,
-        ensureCaps: async () => true,
-        warnLookupUnsupported: async () => ({ supported: true }),
-      },
+    const deps = {
+      db: () => ({ from: () => api }) as never,
+      adapter: () =>
+        ({
+          name: 'm',
+          lookupByIdempotencyKey: lookup,
+          checkLookupSupport: async () => ({ supported: true }),
+        }) as never,
+      clock: () => new Date('2026-06-15T15:00:00.000Z'),
+      sendsEnabled: () => true,
+      isPhoneSuppressed: async () => false,
+      SuppressionLookupError,
+      quietHours: () => ({
+        allowed: true as const,
+        zones: ['America/New_York'] as string[],
+        endHour: 21,
+      }),
+      capsConfirmed: () => true,
+      ensureCaps: async () => true,
+      warnLookupUnsupported: async () => ({ supported: true }),
     };
+    return { api, deps };
   }
 
   it('never_sent + key_supported false → needs_review (not requeue)', async () => {
