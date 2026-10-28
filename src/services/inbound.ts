@@ -1,12 +1,16 @@
 import { createServerClient } from '@/lib/supabase';
 import { redactPhone } from '@/lib/pii';
+import { normalizeToE164 } from '@/lib/phone';
 import { classifyUrgency, isOptOutMessage } from '@/services/classification';
 import { escalateLead } from '@/services/escalation';
 import {
   handleClassifiedReplyEnrollment,
   pauseCampaignForLead,
 } from '@/services/campaigns';
-import { markLeadOptedOut } from '@/services/suppressions';
+import {
+  markLeadOptedOut,
+  suppressPhoneForBusiness,
+} from '@/services/suppressions';
 import {
   isLeadWithinLookupAge,
   LEAD_LOOKUP_MAX_AGE_DAYS,
@@ -18,7 +22,6 @@ type Lead = Database['public']['Tables']['leads']['Row'];
 export interface InboundSmsEvent {
   from: string;
   body: string;
-  /** Business line that received the reply (device SIM). */
   businessPhone: string;
   messageId?: string;
 }
@@ -31,13 +34,13 @@ export type InboundResult =
       enrollmentAction?: string;
       enrolledCampaign?: string;
     }
+  | { status: 'opt_out_recorded'; leadId?: string }
   | { status: 'no_lead_found' };
 
 /**
  * Handle an inbound customer SMS (forwarded from the BRWN relay webhook).
- *
- * After classification: switch Standard → Emergency/High when urgency warrants,
- * pause when already on the right campaign, never re-enroll a paused lead.
+ * STOP is handled before the age-limited lead lookup so a late opt-out
+ * still suppresses the number.
  */
 export async function processInboundSms(
   event: InboundSmsEvent
@@ -62,6 +65,68 @@ export async function processInboundSms(
     throw new InboundError('Business not found', 404);
   }
 
+  const fromE164 = normalizeToE164(event.from);
+
+  // Opt-out FIRST — before age-limited lead lookup — so STOP after 7 days
+  // still suppresses the number for this business.
+  if (isOptOutMessage(body)) {
+    const cutoff = new Date(
+      Date.now() - LEAD_LOOKUP_MAX_AGE_DAYS * 24 * 60 * 60 * 1000
+    ).toISOString();
+
+    // Try any lead for this phone (including old ones) just to mark opted_out.
+    const { data: anyLead } = await supabase
+      .from('leads')
+      .select('id')
+      .eq('business_id', business.id)
+      .eq('caller_phone', fromE164)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+
+    // Also try raw from in case older rows weren't normalized.
+    const { data: rawLead } =
+      anyLead || fromE164 === event.from
+        ? { data: anyLead }
+        : await supabase
+            .from('leads')
+            .select('id')
+            .eq('business_id', business.id)
+            .eq('caller_phone', event.from)
+            .order('created_at', { ascending: false })
+            .limit(1)
+            .maybeSingle();
+
+    const leadId = anyLead?.id || rawLead?.id;
+
+    await suppressPhoneForBusiness(business.id, fromE164, 'opt_out');
+
+    if (leadId) {
+      await markLeadOptedOut(leadId).catch((err) => {
+        console.error(
+          'Failed to mark lead opted out:',
+          err instanceof Error ? err.message : 'unknown'
+        );
+      });
+      await pauseCampaignForLead(leadId).catch(() => undefined);
+      // Record inbound against the lead when we have one (even if older than cutoff).
+      await supabase.from('sms_messages').insert({
+        lead_id: leadId,
+        direction: 'inbound',
+        body,
+        message_sid: messageId,
+        status: 'received',
+      });
+      void cutoff;
+      return {
+        status: 'opt_out_recorded',
+        leadId,
+      };
+    }
+
+    return { status: 'opt_out_recorded' };
+  }
+
   const cutoff = new Date(
     Date.now() - LEAD_LOOKUP_MAX_AGE_DAYS * 24 * 60 * 60 * 1000
   ).toISOString();
@@ -70,7 +135,7 @@ export async function processInboundSms(
     .from('leads')
     .select('*')
     .eq('business_id', business.id)
-    .eq('caller_phone', event.from)
+    .eq('caller_phone', fromE164)
     .eq('status', 'pending')
     .gte('created_at', cutoff)
     .order('created_at', { ascending: false })
@@ -84,13 +149,28 @@ export async function processInboundSms(
       .from('leads')
       .select('*')
       .eq('business_id', business.id)
-      .eq('caller_phone', event.from)
+      .eq('caller_phone', fromE164)
       .in('status', ['qualified', 'escalated'])
       .gte('created_at', cutoff)
       .order('created_at', { ascending: false })
       .limit(1)
       .maybeSingle();
     lead = openLead;
+  }
+
+  // Fallback: un-normalized stored phone
+  if (!lead && fromE164 !== event.from) {
+    const { data: legacy } = await supabase
+      .from('leads')
+      .select('*')
+      .eq('business_id', business.id)
+      .eq('caller_phone', event.from)
+      .in('status', ['pending', 'qualified', 'escalated'])
+      .gte('created_at', cutoff)
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .maybeSingle();
+    lead = legacy;
   }
 
   if (!lead || !isLeadWithinLookupAge(lead.created_at)) {
@@ -123,27 +203,6 @@ export async function processInboundSms(
     console.error('Failed to update lead:', updateError.message);
   }
 
-  if (isOptOutMessage(body)) {
-    await markLeadOptedOut(lead.id).catch((err) => {
-      console.error(
-        'Failed to persist opt-out:',
-        err instanceof Error ? err.message : 'unknown'
-      );
-    });
-    await pauseCampaignForLead(lead.id).catch((err) => {
-      console.error(
-        'Failed to pause campaign on opt-out:',
-        err instanceof Error ? err.message : 'unknown'
-      );
-    });
-    return {
-      status: 'processed',
-      leadId: lead.id,
-      urgency: classification.urgency,
-      enrollmentAction: 'opt_out',
-    };
-  }
-
   const enrollment = await handleClassifiedReplyEnrollment(
     lead.id,
     classification.urgency
@@ -171,10 +230,6 @@ export async function processInboundSms(
   };
 }
 
-/**
- * Resolve which business phone an inbound webhook applies to.
- * Prefers explicit payload field, then BRWN_DEFAULT_BUSINESS_PHONE.
- */
 export function resolveBusinessPhone(
   payloadTo: string | undefined | null
 ): string | null {

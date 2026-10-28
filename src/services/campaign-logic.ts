@@ -1,7 +1,5 @@
 /**
  * Pure campaign enrollment / send planning helpers (no I/O).
- * Kept separate so unit tests can cover urgency routing and idempotency
- * without mocking Supabase.
  */
 
 export interface CampaignLike {
@@ -26,6 +24,8 @@ export interface EnrollmentLike {
   id: string;
   campaign_id: string;
   status: string;
+  claimed_at?: string | null;
+  claim_token?: string | null;
 }
 
 /** Max age for matching an inbound SMS to a prior lead (days). */
@@ -34,10 +34,26 @@ export const LEAD_LOOKUP_MAX_AGE_DAYS = 7;
 /** Stale claim reclaim window. */
 export const CLAIM_STALE_MS = 10 * 60 * 1000;
 
+/** How long a 'sending' row may sit before reconcile. */
+export const STUCK_SENDING_MS = 10 * 60 * 1000;
+
+/** Default alert threshold for unknown/stuck rows in a cron run. */
+export const UNKNOWN_SMS_ALERT_THRESHOLD = 5;
+
 /**
- * Pick the campaign whose urgency_filter matches the lead, else the
- * catch-all (urgency_filter === null).
+ * Reply handling after classification when already on the matching campaign.
+ * - pause (default): stop follow-ups when the customer replies
+ * - continue: keep the sequence running (open design question for Alex)
  */
+export type CampaignReplyMode = 'pause' | 'continue';
+
+export function getCampaignReplyMode(
+  env: Record<string, string | undefined> = process.env
+): CampaignReplyMode {
+  const v = (env.CAMPAIGN_REPLY_MODE || 'pause').trim().toLowerCase();
+  return v === 'continue' ? 'continue' : 'pause';
+}
+
 export function selectCampaignForUrgency<T extends CampaignLike>(
   campaigns: T[],
   urgency: string | null | undefined
@@ -49,12 +65,6 @@ export function selectCampaignForUrgency<T extends CampaignLike>(
   return campaigns.find((c) => c.urgency_filter === null);
 }
 
-/**
- * Decide which step to start on and when the next send is due.
- *
- * When the missed-call recovery SMS already went out, skip a delay-0
- * "initial" step so the cron does not duplicate the first text.
- */
 export function planEnrollmentStart(
   steps: StepLike[],
   options: { recoveryAlreadySent: boolean; now?: Date }
@@ -89,59 +99,89 @@ export function planEnrollmentStart(
   };
 }
 
-/** Stable sid so the same enrollment step is never sent twice. */
+/**
+ * Stable sid scoped by enrollment + campaign + step so a Standard→Emergency
+ * switch does not collide with a prior Standard step sid.
+ */
 export function campaignStepMessageSid(
   enrollmentId: string,
+  campaignId: string,
   stepNumber: number
 ): string {
-  return `campaign:${enrollmentId}:step:${stepNumber}`;
+  return `campaign:${enrollmentId}:${campaignId}:step:${stepNumber}`;
 }
 
-/**
- * Whether a due enrollment should still send for this step, given any
- * prior outbound sids recorded for the lead.
- */
 export function shouldSendCampaignStep(
   enrollmentId: string,
+  campaignId: string,
   stepNumber: number,
   existingOutboundSids: Array<string | null | undefined>
 ): boolean {
-  const sid = campaignStepMessageSid(enrollmentId, stepNumber);
+  const sid = campaignStepMessageSid(enrollmentId, campaignId, stepNumber);
   return !existingOutboundSids.some((existing) => existing === sid);
 }
 
-/**
- * Decide what to do with an existing enrollment when a classified reply arrives.
- * - switch: urgency points at a different campaign (e.g. Standard → Emergency)
- * - pause: already on the right campaign (or no better match) and still active
- * - noop: already paused/completed — never re-enroll (anti ping-pong)
- */
 export type ReplyEnrollmentAction =
   | { action: 'switch'; targetCampaignId: string }
   | { action: 'pause' }
-  | { action: 'noop' };
+  | { action: 'noop' }
+  | { action: 'defer_switch'; targetCampaignId: string };
 
+/**
+ * Decide enrollment action for a classified reply.
+ * When a fresh claim is held, switches are deferred (mid-send race).
+ */
 export function decideReplyEnrollmentAction(
   enrollment: EnrollmentLike | null | undefined,
-  targetCampaign: CampaignLike | undefined
+  targetCampaign: CampaignLike | undefined,
+  options: {
+    replyMode?: CampaignReplyMode;
+    now?: Date;
+    claimStaleMs?: number;
+  } = {}
 ): ReplyEnrollmentAction {
+  const replyMode = options.replyMode ?? 'pause';
+  const now = options.now ?? new Date();
+  const staleMs = options.claimStaleMs ?? CLAIM_STALE_MS;
+
   if (!enrollment) {
-    // Caller should enroll fresh; not used when missed-call always enrolls.
     return { action: 'noop' };
   }
   if (!targetCampaign) {
-    return enrollment.status === 'active' ? { action: 'pause' } : { action: 'noop' };
+    if (enrollment.status === 'active' && replyMode === 'pause') {
+      return { action: 'pause' };
+    }
+    return { action: 'noop' };
   }
+
   if (enrollment.campaign_id !== targetCampaign.id) {
+    if (hasFreshClaim(enrollment, now, staleMs)) {
+      return {
+        action: 'defer_switch',
+        targetCampaignId: targetCampaign.id,
+      };
+    }
     return { action: 'switch', targetCampaignId: targetCampaign.id };
   }
-  if (enrollment.status === 'active') {
+
+  if (enrollment.status === 'active' && replyMode === 'pause') {
     return { action: 'pause' };
   }
   return { action: 'noop' };
 }
 
-/** True when a lead createdAt is within the inbound lookup window. */
+/** True when claimed_at is set and younger than the stale window. */
+export function hasFreshClaim(
+  enrollment: { claimed_at?: string | null },
+  now: Date = new Date(),
+  staleMs: number = CLAIM_STALE_MS
+): boolean {
+  if (!enrollment.claimed_at) return false;
+  const claimedAt = new Date(enrollment.claimed_at).getTime();
+  if (Number.isNaN(claimedAt)) return false;
+  return now.getTime() - claimedAt < staleMs;
+}
+
 export function isLeadWithinLookupAge(
   createdAt: string | Date,
   now: Date = new Date(),
@@ -154,11 +194,6 @@ export function isLeadWithinLookupAge(
   return ageMs >= 0 && ageMs <= maxAgeDays * 24 * 60 * 60 * 1000;
 }
 
-/**
- * Claim eligibility for an active enrollment.
- * Due: next_send_at <= now and not currently claimed (or claim is stale).
- * Stale reclaim: claimed_at older than CLAIM_STALE_MS with next_send_at null.
- */
 export function isEnrollmentClaimable(
   row: {
     status: string;
@@ -180,21 +215,24 @@ export function isEnrollmentClaimable(
     return new Date(row.next_send_at).getTime() <= now.getTime();
   }
 
-  // Stuck after crash: claimed, next_send_at cleared, claim went stale.
   return claimedAt != null && now.getTime() - claimedAt >= staleMs;
 }
 
-/** Postgres unique-violation SQLSTATE. */
 export const PG_UNIQUE_VIOLATION = '23505';
 
-/**
- * Classify an insert error for the insert-before-send path.
- * duplicate → treat as already sent; other → real failure.
- */
 export function classifyMessageInsertError(
   error: { code?: string } | null | undefined
 ): 'ok' | 'duplicate' | 'failed' {
   if (!error) return 'ok';
   if (error.code === PG_UNIQUE_VIOLATION) return 'duplicate';
   return 'failed';
+}
+
+/** True when dry-run must be rejected (production runtime). */
+export function isProductionRuntime(
+  env: Record<string, string | undefined> = process.env
+): boolean {
+  return (
+    env.VERCEL_ENV === 'production' || env.NODE_ENV === 'production'
+  );
 }

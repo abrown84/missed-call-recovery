@@ -1,6 +1,7 @@
 import type { MessagingAdapter } from './types';
 import { BrwnRelayAdapter } from './brwn-relay';
 import { DryRunAdapter } from './dry-run';
+import { isProductionRuntime } from '@/services/campaign-logic';
 
 let cached: MessagingAdapter | null = null;
 
@@ -17,10 +18,9 @@ export function getMessagingAdapter(): MessagingAdapter {
     .toLowerCase();
 
   if (provider === 'dry-run') {
-    // Never silently no-op live traffic in production.
-    if (process.env.VERCEL_ENV === 'production') {
+    if (isProductionRuntime()) {
       throw new Error(
-        'MESSAGING_PROVIDER=dry-run is forbidden when VERCEL_ENV=production'
+        'MESSAGING_PROVIDER=dry-run is forbidden when VERCEL_ENV or NODE_ENV is production'
       );
     }
     cached = new DryRunAdapter();
@@ -42,7 +42,12 @@ export function resetMessagingAdapterCache(): void {
   cached = null;
 }
 
-export type { MessagingAdapter, SendMessageInput, SendMessageResult } from './types';
+export type {
+  MessagingAdapter,
+  SendMessageInput,
+  SendMessageResult,
+  IdempotencyLookupResult,
+} from './types';
 export { BrwnRelayAdapter } from './brwn-relay';
 export { DryRunAdapter } from './dry-run';
 export { authorizeBrwnWebhook, bearerMatches } from './auth';

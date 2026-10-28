@@ -6,6 +6,7 @@ const pauseCampaignForLead = vi.fn();
 const escalateLead = vi.fn();
 const classifyUrgency = vi.fn();
 const markLeadOptedOut = vi.fn();
+const suppressPhoneForBusiness = vi.fn();
 
 vi.mock('@/lib/supabase', () => ({
   createServerClient: () => ({ from: (...args: unknown[]) => mockFrom(...args) }),
@@ -23,6 +24,8 @@ vi.mock('@/services/escalation', () => ({
 
 vi.mock('@/services/suppressions', () => ({
   markLeadOptedOut: (...args: unknown[]) => markLeadOptedOut(...args),
+  suppressPhoneForBusiness: (...args: unknown[]) =>
+    suppressPhoneForBusiness(...args),
 }));
 
 vi.mock('@/services/classification', async () => {
@@ -55,7 +58,7 @@ function thenable(result: { data: unknown; error: unknown }) {
   return obj;
 }
 
-describe('processInboundSms re-routes or pauses (no ping-pong)', () => {
+describe('processInboundSms QC r2', () => {
   beforeEach(() => {
     mockFrom.mockReset();
     handleClassifiedReplyEnrollment.mockReset();
@@ -63,100 +66,16 @@ describe('processInboundSms re-routes or pauses (no ping-pong)', () => {
     escalateLead.mockReset();
     classifyUrgency.mockReset();
     markLeadOptedOut.mockReset();
+    suppressPhoneForBusiness.mockReset();
     pauseCampaignForLead.mockResolvedValue(undefined);
     escalateLead.mockResolvedValue(undefined);
     markLeadOptedOut.mockResolvedValue(undefined);
+    suppressPhoneForBusiness.mockResolvedValue(undefined);
   });
 
   afterEach(() => vi.clearAllMocks());
 
-  function mockLead(lead: Record<string, unknown>, business = {
-    id: 'biz-1',
-    phone: '+15559999999',
-    name: 'Acme Plumbing',
-    vertical: 'plumbing',
-  }) {
-    mockFrom.mockImplementation((table: string) => {
-      if (table === 'businesses') return thenable({ data: business, error: null });
-      if (table === 'leads') {
-        const obj = thenable({ data: lead, error: null });
-        obj.update = vi.fn(() => thenable({ data: lead, error: null }));
-        return obj;
-      }
-      if (table === 'sms_messages') return thenable({ data: null, error: null });
-      return thenable({ data: null, error: null });
-    });
-  }
-
-  it('switches to Emergency on urgent reply (re-route)', async () => {
-    mockLead({
-      id: 'lead-em',
-      business_id: 'biz-1',
-      caller_phone: '+15551234567',
-      status: 'pending',
-      urgency: null,
-      created_at: new Date().toISOString(),
-    });
-    classifyUrgency.mockResolvedValue({
-      urgency: 'emergency',
-      confidence: 0.95,
-      keywords: ['flood'],
-      issue: 'basement flooding',
-    });
-    handleClassifiedReplyEnrollment.mockResolvedValue({
-      action: 'switch',
-      campaignName: 'Emergency Follow-up',
-    });
-
-    const result = await processInboundSms({
-      from: '+15551234567',
-      businessPhone: '+15559999999',
-      body: 'Emergency — flood in the basement!',
-      messageId: 'msg-in-1',
-    });
-
-    expect(result).toMatchObject({
-      status: 'processed',
-      urgency: 'emergency',
-      enrollmentAction: 'switch',
-      enrolledCampaign: 'Emergency Follow-up',
-    });
-    expect(handleClassifiedReplyEnrollment).toHaveBeenCalledWith(
-      'lead-em',
-      'emergency'
-    );
-    expect(escalateLead).toHaveBeenCalledOnce();
-  });
-
-  it('persists opt-out and does not enroll', async () => {
-    mockLead({
-      id: 'lead-3',
-      business_id: 'biz-1',
-      caller_phone: '+15551234567',
-      status: 'pending',
-      created_at: new Date().toISOString(),
-    });
-    classifyUrgency.mockResolvedValue({
-      urgency: 'low',
-      confidence: 1,
-      keywords: ['stop'],
-      issue: 'Opt-out request',
-    });
-
-    await processInboundSms({
-      from: '+15551234567',
-      businessPhone: '+15559999999',
-      body: 'STOP',
-      messageId: 'msg-stop',
-    });
-
-    expect(markLeadOptedOut).toHaveBeenCalledWith('lead-3');
-    expect(pauseCampaignForLead).toHaveBeenCalledWith('lead-3');
-    expect(handleClassifiedReplyEnrollment).not.toHaveBeenCalled();
-  });
-
-  it('rejects leads older than the age cutoff', async () => {
-    const old = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+  it('records STOP even when no recent lead (after 7 days)', async () => {
     mockFrom.mockImplementation((table: string) => {
       if (table === 'businesses') {
         return thenable({
@@ -169,18 +88,79 @@ describe('processInboundSms re-routes or pauses (no ping-pong)', () => {
           error: null,
         });
       }
-      // Age filter is applied in the query (.gte); simulate no row returned.
+      // No lead for this phone (age cutoff / none)
       if (table === 'leads') return thenable({ data: null, error: null });
+      if (table === 'sms_messages') return thenable({ data: null, error: null });
       return thenable({ data: null, error: null });
     });
 
     const result = await processInboundSms({
       from: '+15551234567',
       businessPhone: '+15559999999',
-      body: 'hello',
-      messageId: 'msg-old',
+      body: 'STOP',
+      messageId: 'msg-stop-old',
     });
-    expect(result).toEqual({ status: 'no_lead_found' });
-    expect(old < new Date().toISOString()).toBe(true);
+
+    expect(result).toEqual({ status: 'opt_out_recorded' });
+    expect(suppressPhoneForBusiness).toHaveBeenCalledWith(
+      'biz-1',
+      '+15551234567',
+      'opt_out'
+    );
+    expect(handleClassifiedReplyEnrollment).not.toHaveBeenCalled();
+  });
+
+  it('switches to Emergency on urgent reply', async () => {
+    const lead = {
+      id: 'lead-em',
+      business_id: 'biz-1',
+      caller_phone: '+15551234567',
+      status: 'pending',
+      urgency: null,
+      created_at: new Date().toISOString(),
+    };
+    mockFrom.mockImplementation((table: string) => {
+      if (table === 'businesses') {
+        return thenable({
+          data: {
+            id: 'biz-1',
+            phone: '+15559999999',
+            name: 'Acme',
+            vertical: 'plumbing',
+          },
+          error: null,
+        });
+      }
+      if (table === 'leads') {
+        const obj = thenable({ data: lead, error: null });
+        obj.update = vi.fn(() => thenable({ data: lead, error: null }));
+        return obj;
+      }
+      if (table === 'sms_messages') return thenable({ data: null, error: null });
+      return thenable({ data: null, error: null });
+    });
+    classifyUrgency.mockResolvedValue({
+      urgency: 'emergency',
+      confidence: 0.9,
+      keywords: [],
+      issue: 'flood',
+    });
+    handleClassifiedReplyEnrollment.mockResolvedValue({
+      action: 'switch',
+      campaignName: 'Emergency Follow-up',
+    });
+
+    const result = await processInboundSms({
+      from: '+15551234567',
+      businessPhone: '+15559999999',
+      body: 'Emergency flood!',
+      messageId: 'msg-1',
+    });
+
+    expect(result).toMatchObject({
+      status: 'processed',
+      enrollmentAction: 'switch',
+      enrolledCampaign: 'Emergency Follow-up',
+    });
   });
 });

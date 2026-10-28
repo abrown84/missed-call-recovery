@@ -1,16 +1,24 @@
+import { randomUUID } from 'crypto';
 import { createServerClient } from '@/lib/supabase';
 import { getMessagingAdapter } from '@/lib/messaging';
 import { getTemplate } from '@/lib/templates';
 import type { Database } from '@/types/database';
 import {
   CLAIM_STALE_MS,
+  STUCK_SENDING_MS,
+  UNKNOWN_SMS_ALERT_THRESHOLD,
   campaignStepMessageSid,
   classifyMessageInsertError,
   decideReplyEnrollmentAction,
+  getCampaignReplyMode,
+  hasFreshClaim,
   planEnrollmentStart,
   selectCampaignForUrgency,
 } from '@/services/campaign-logic';
-import { isPhoneSuppressed } from '@/services/suppressions';
+import {
+  SuppressionLookupError,
+  isPhoneSuppressed,
+} from '@/services/suppressions';
 
 type Business = Database['public']['Tables']['businesses']['Row'];
 type Lead = Database['public']['Tables']['leads']['Row'];
@@ -33,11 +41,6 @@ export type EnrollmentResult =
 
 type Supabase = ReturnType<typeof createServerClient>;
 
-/**
- * Enroll a lead in the campaign matching its urgency (null → Standard).
- * Skips delay-0 initial when recovery SMS already covers that touch.
- * UNIQUE(lead_id) makes concurrent enrolls safe (23505 → already enrolled).
- */
 export async function enrollLeadInCampaign(
   leadId: string
 ): Promise<EnrollmentResult> {
@@ -58,7 +61,6 @@ export async function enrollLeadInCampaign(
     return { enrolled: false, reason: 'opted_out' };
   }
 
-  // Any prior enrollment (active/paused/completed) blocks a fresh insert.
   const existing = await getEnrollmentForLead(leadId);
   if (existing) {
     return {
@@ -121,11 +123,11 @@ export async function enrollLeadInCampaign(
       status: 'active',
       next_send_at: nextSendAt,
       claimed_at: null,
+      claim_token: null,
     });
 
   if (enrollError) {
     if (enrollError.code === '23505') {
-      console.log(`Lead ${leadId} already has an enrollment (unique lead_id)`);
       return { enrolled: false, reason: 'already_enrolled:unique' };
     }
     console.error('Failed to enroll lead:', enrollError);
@@ -149,14 +151,22 @@ export async function enrollLeadInCampaign(
 }
 
 /**
- * Switch an existing enrollment to a different urgency campaign (re-route).
- * Keeps UNIQUE(lead_id); updates in place and skips delay-0 initial.
+ * Switch enrollment to another campaign. Refuses while a fresh claim is held.
+ * Requires status='active' and no fresh claim (claim_token/claimed_at cleared or stale).
  */
 export async function switchEnrollmentCampaign(
   leadId: string,
   targetCampaignId: string
 ): Promise<EnrollmentResult> {
   const supabase = createServerClient();
+
+  const existing = await getEnrollmentForLead(leadId);
+  if (!existing) {
+    return { enrolled: false, reason: 'no_enrollment' };
+  }
+  if (hasFreshClaim(existing)) {
+    return { enrolled: false, reason: 'deferred_fresh_claim' };
+  }
 
   const { data: lead, error: leadError } = await supabase
     .from('leads')
@@ -192,7 +202,9 @@ export async function switchEnrollmentCampaign(
     recoveryAlreadySent: Boolean(lead.sms_outbound_sid),
   });
   const nextSendAt = plan.nextSendAt.toISOString();
+  const staleBefore = new Date(Date.now() - CLAIM_STALE_MS).toISOString();
 
+  // Only switch when not mid-send: claim_token null OR claim stale.
   const { data: updated, error: updateError } = await supabase
     .from('campaign_enrollments')
     .update({
@@ -201,17 +213,20 @@ export async function switchEnrollmentCampaign(
       status: 'active',
       next_send_at: nextSendAt,
       claimed_at: null,
+      claim_token: null,
       paused_at: null,
       completed_at: null,
       updated_at: new Date().toISOString(),
     })
     .eq('lead_id', leadId)
+    .eq('status', 'active')
+    .or(`claim_token.is.null,claimed_at.lt.${staleBefore}`)
     .select('id')
     .maybeSingle();
 
   if (updateError || !updated) {
-    console.error('Failed to switch enrollment:', updateError);
-    return { enrolled: false, reason: 'switch_failed' };
+    console.error('Failed to switch enrollment (maybe mid-send):', updateError);
+    return { enrolled: false, reason: 'deferred_or_switch_failed' };
   }
 
   console.log(
@@ -230,17 +245,13 @@ export async function switchEnrollmentCampaign(
   };
 }
 
-/**
- * After classification: switch to urgency campaign, pause, or noop.
- * Never inserts a second enrollment (anti ping-pong).
- */
 export async function handleClassifiedReplyEnrollment(
   leadId: string,
   urgency: string | null
 ): Promise<{ action: string; campaignName?: string }> {
   const supabase = createServerClient();
-
   const enrollment = await getEnrollmentForLead(leadId);
+  const replyMode = getCampaignReplyMode();
 
   const { data: campaigns } = await supabase
     .from('campaigns')
@@ -255,15 +266,28 @@ export async function handleClassifiedReplyEnrollment(
           id: enrollment.id,
           campaign_id: enrollment.campaign_id,
           status: enrollment.status,
+          claimed_at: enrollment.claimed_at,
+          claim_token: enrollment.claim_token,
         }
       : null,
-    target
+    target,
+    { replyMode }
   );
+
+  if (decision.action === 'defer_switch' && target) {
+    console.log(
+      `Deferring switch for lead ${leadId}; fresh claim held (mid-send)`
+    );
+    return { action: 'defer_switch', campaignName: target.name };
+  }
 
   if (decision.action === 'switch' && target) {
     const result = await switchEnrollmentCampaign(leadId, target.id);
+    if (!result.enrolled && result.reason.startsWith('deferred')) {
+      return { action: 'defer_switch', campaignName: target.name };
+    }
     return {
-      action: 'switch',
+      action: result.enrolled ? 'switch' : `skip:${result.reason}`,
       campaignName: result.enrolled ? result.campaignName : target.name,
     };
   }
@@ -273,7 +297,6 @@ export async function handleClassifiedReplyEnrollment(
     return { action: 'pause' };
   }
 
-  // No enrollment yet (shouldn't happen if missed-call enrolls) — enroll once.
   if (!enrollment) {
     const result = await enrollLeadInCampaign(leadId);
     return {
@@ -303,11 +326,12 @@ export async function getEnrollmentForLead(
 }
 
 /**
- * Send SMS for a campaign step.
- * Insert-before-send with UNIQUE(message_sid); never auto-resend on timeout.
+ * Send SMS for a campaign step. Requires an active claim_token on the row.
+ * Insert-before-send with campaign-scoped UNIQUE(message_sid).
  */
 export async function sendCampaignSMS(
-  enrollmentId: string
+  enrollmentId: string,
+  claimToken?: string
 ): Promise<boolean> {
   const supabase = createServerClient();
 
@@ -322,6 +346,12 @@ export async function sendCampaignSMS(
     return false;
   }
 
+  const token = claimToken || enrollment.claim_token;
+  if (!token) {
+    console.error(`No claim_token for enrollment ${enrollmentId}`);
+    return false;
+  }
+
   const lead = (enrollment as any).leads as Lead & { businesses: Business };
   const business = lead.businesses;
   const campaign = (enrollment as any).campaigns as Campaign;
@@ -331,10 +361,19 @@ export async function sendCampaignSMS(
     return true;
   }
 
-  if (await isPhoneSuppressed(business.id, lead.caller_phone)) {
-    console.log(`Suppressed phone for enrollment ${enrollmentId}; pausing`);
-    await pauseCampaignForLead(lead.id);
-    return true;
+  try {
+    if (await isPhoneSuppressed(business.id, lead.caller_phone)) {
+      console.log(`Suppressed phone for enrollment ${enrollmentId}; pausing`);
+      await pauseCampaignForLead(lead.id);
+      return true;
+    }
+  } catch (err) {
+    if (err instanceof SuppressionLookupError) {
+      console.error('Suppression check failed closed:', err.message);
+      await releaseClaim(supabase, enrollmentId, token);
+      return false;
+    }
+    throw err;
   }
 
   const { data: steps, error: stepsError } = await supabase
@@ -345,7 +384,7 @@ export async function sendCampaignSMS(
 
   if (stepsError || !steps || steps.length === 0) {
     console.error('Failed to fetch campaign steps:', stepsError);
-    await releaseClaimWithoutReschedule(supabase, enrollmentId);
+    await releaseClaim(supabase, enrollmentId, token);
     return false;
   }
 
@@ -355,11 +394,10 @@ export async function sendCampaignSMS(
 
   if (!currentStep) {
     console.error(`Step ${enrollment.current_step} not found`);
-    await releaseClaimWithoutReschedule(supabase, enrollmentId);
+    await releaseClaim(supabase, enrollmentId, token);
     return false;
   }
 
-  // Skip delay-0 initial when recovery already sent.
   if (
     currentStep.delay_minutes === 0 &&
     lead.sms_outbound_sid &&
@@ -371,6 +409,7 @@ export async function sendCampaignSMS(
     await advanceEnrollment(
       supabase,
       enrollmentId,
+      token,
       enrollment.current_step,
       steps
     );
@@ -379,6 +418,7 @@ export async function sendCampaignSMS(
 
   const stepSid = campaignStepMessageSid(
     enrollmentId,
+    campaign.id,
     enrollment.current_step
   );
 
@@ -388,7 +428,6 @@ export async function sendCampaignSMS(
     issue: lead.issue || '',
   });
 
-  // Insert-before-send: UNIQUE(message_sid) is the source of truth.
   const { error: insertError } = await supabase.from('sms_messages').insert({
     lead_id: lead.id,
     direction: 'outbound',
@@ -405,6 +444,7 @@ export async function sendCampaignSMS(
     await advanceEnrollment(
       supabase,
       enrollmentId,
+      token,
       enrollment.current_step,
       steps
     );
@@ -412,7 +452,7 @@ export async function sendCampaignSMS(
   }
   if (insertClass === 'failed') {
     console.error('Failed to insert sending sms_messages row:', insertError);
-    await releaseClaimWithoutReschedule(supabase, enrollmentId);
+    await releaseClaim(supabase, enrollmentId, token);
     return false;
   }
 
@@ -429,12 +469,18 @@ export async function sendCampaignSMS(
       .update({ status: message.status || 'queued' })
       .eq('message_sid', stepSid);
 
-    await advanceEnrollment(
+    const advanced = await advanceEnrollment(
       supabase,
       enrollmentId,
+      token,
       enrollment.current_step,
       steps
     );
+    if (!advanced) {
+      console.warn(
+        `Post-send advance lost claim ownership for ${enrollmentId} (paused/switched mid-send)`
+      );
+    }
 
     console.log(
       `Campaign SMS sent for ${enrollmentId} step ${enrollment.current_step} ` +
@@ -443,29 +489,32 @@ export async function sendCampaignSMS(
 
     return true;
   } catch (error) {
-    console.error('Failed to send campaign SMS (no auto-resend):', error);
-    // Ambiguous delivery — mark unknown and do NOT requeue this step.
+    console.error('Failed to send campaign SMS (mark unknown):', error);
     await supabase
       .from('sms_messages')
       .update({ status: 'unknown' })
       .eq('message_sid', stepSid);
 
-    await advanceEnrollment(
-      supabase,
-      enrollmentId,
-      enrollment.current_step,
-      steps
-    );
+    // Do not advance past unknown — leave for reconcile to confirm or requeue.
+    await releaseClaim(supabase, enrollmentId, token, {
+      // Keep current step; retry after stale window once reconciled.
+      nextSendAt: new Date(Date.now() + CLAIM_STALE_MS).toISOString(),
+    });
     return false;
   }
 }
 
-async function advanceEnrollment(
+/**
+ * Advance only if we still own the claim (status=active AND claim_token matches).
+ * Returns false when ownership was lost (pause/switch mid-send).
+ */
+export async function advanceEnrollment(
   supabase: Supabase,
   enrollmentId: string,
+  claimToken: string,
   currentStepNumber: number,
   steps: CampaignStep[]
-): Promise<void> {
+): Promise<boolean> {
   const nextStepNumber = currentStepNumber + 1;
   const nextStep = steps.find((s) => s.step_number === nextStepNumber);
 
@@ -474,53 +523,86 @@ async function advanceEnrollment(
       Date.now() + nextStep.delay_minutes * 60 * 1000
     ).toISOString();
 
-    await supabase
+    const { data, error } = await supabase
       .from('campaign_enrollments')
       .update({
         current_step: nextStepNumber,
         next_send_at: nextSendAt,
         claimed_at: null,
+        claim_token: null,
         updated_at: new Date().toISOString(),
       })
-      .eq('id', enrollmentId);
+      .eq('id', enrollmentId)
+      .eq('status', 'active')
+      .eq('claim_token', claimToken)
+      .select('id');
+
+    if (error || !data?.length) {
+      console.warn(
+        `advanceEnrollment ownership miss for ${enrollmentId}:`,
+        error?.message
+      );
+      return false;
+    }
 
     console.log(
       `Campaign advanced to step ${nextStepNumber}, scheduled for ${nextSendAt}`
     );
-  } else {
-    await supabase
-      .from('campaign_enrollments')
-      .update({
-        status: 'completed',
-        completed_at: new Date().toISOString(),
-        next_send_at: null,
-        claimed_at: null,
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', enrollmentId);
-
-    console.log(`Campaign completed for enrollment ${enrollmentId}`);
+    return true;
   }
+
+  const { data, error } = await supabase
+    .from('campaign_enrollments')
+    .update({
+      status: 'completed',
+      completed_at: new Date().toISOString(),
+      next_send_at: null,
+      claimed_at: null,
+      claim_token: null,
+      updated_at: new Date().toISOString(),
+    })
+    .eq('id', enrollmentId)
+    .eq('status', 'active')
+    .eq('claim_token', claimToken)
+    .select('id');
+
+  if (error || !data?.length) {
+    console.warn(
+      `completeEnrollment ownership miss for ${enrollmentId}:`,
+      error?.message
+    );
+    return false;
+  }
+
+  console.log(`Campaign completed for enrollment ${enrollmentId}`);
+  return true;
 }
 
-/** Clear a stuck claim without scheduling a retry (used on hard failures). */
-async function releaseClaimWithoutReschedule(
+async function releaseClaim(
   supabase: Supabase,
-  enrollmentId: string
+  enrollmentId: string,
+  claimToken: string,
+  opts?: { nextSendAt?: string }
 ): Promise<void> {
-  const retryAt = new Date(Date.now() + CLAIM_STALE_MS).toISOString();
   await supabase
     .from('campaign_enrollments')
     .update({
       claimed_at: null,
-      // Far enough that a flapping failure does not tight-loop; not a 60s resend.
-      next_send_at: retryAt,
+      claim_token: null,
+      next_send_at:
+        opts?.nextSendAt ??
+        new Date(Date.now() + CLAIM_STALE_MS).toISOString(),
       updated_at: new Date().toISOString(),
     })
     .eq('id', enrollmentId)
-    .eq('status', 'active');
+    .eq('status', 'active')
+    .eq('claim_token', claimToken);
 }
 
+/**
+ * Pause active enrollments. Allowed mid-send: clears claim so the in-flight
+ * worker's advanceEnrollment ownership check fails (no accidental next step).
+ */
 export async function pauseCampaignForLead(leadId: string): Promise<void> {
   const supabase = createServerClient();
 
@@ -531,6 +613,7 @@ export async function pauseCampaignForLead(leadId: string): Promise<void> {
       paused_at: new Date().toISOString(),
       next_send_at: null,
       claimed_at: null,
+      claim_token: null,
       updated_at: new Date().toISOString(),
     })
     .eq('lead_id', leadId)
@@ -544,7 +627,6 @@ export async function pauseCampaignForLead(leadId: string): Promise<void> {
   console.log(`Campaign paused for lead ${leadId}`);
 }
 
-/** @deprecated Prefer getEnrollmentForLead — any status, not only active. */
 export async function leadHasActiveEnrollment(
   leadId: string
 ): Promise<boolean> {
@@ -553,58 +635,55 @@ export async function leadHasActiveEnrollment(
 }
 
 /**
- * Atomically claim a due (or stale-claimed) enrollment.
- * Sets claimed_at=now(), clears next_send_at.
+ * Atomically claim a due (or stale-claimed) enrollment with a fresh claim_token.
  */
 export async function claimDueEnrollment(
   enrollmentId: string
-): Promise<boolean> {
+): Promise<string | null> {
   const supabase = createServerClient();
   const now = new Date();
   const nowIso = now.toISOString();
   const staleBefore = new Date(now.getTime() - CLAIM_STALE_MS).toISOString();
+  const token = randomUUID();
 
-  // Path A: due and unclaimed (or claim already cleared).
   const due = await supabase
     .from('campaign_enrollments')
     .update({
       next_send_at: null,
       claimed_at: nowIso,
+      claim_token: token,
       updated_at: nowIso,
     })
     .eq('id', enrollmentId)
     .eq('status', 'active')
     .lte('next_send_at', nowIso)
-    .is('claimed_at', null)
-    .select('id');
+    .is('claim_token', null)
+    .select('id, claim_token');
 
   if (!due.error && (due.data?.length ?? 0) > 0) {
-    return true;
+    return token;
   }
 
-  // Path B: reclaim stale claim (crash left next_send_at null + old claimed_at).
   const stale = await supabase
     .from('campaign_enrollments')
     .update({
       claimed_at: nowIso,
+      claim_token: token,
       updated_at: nowIso,
     })
     .eq('id', enrollmentId)
     .eq('status', 'active')
     .is('next_send_at', null)
     .lt('claimed_at', staleBefore)
-    .select('id');
+    .select('id, claim_token');
 
   if (stale.error) {
     console.error('Failed to reclaim stale enrollment:', stale.error);
-    return false;
+    return null;
   }
-  return (stale.data?.length ?? 0) > 0;
+  return (stale.data?.length ?? 0) > 0 ? token : null;
 }
 
-/**
- * List enrollments that are due or have a reclaimable stale claim.
- */
 export async function listClaimableEnrollmentIds(
   limit = 100
 ): Promise<string[]> {
@@ -613,20 +692,16 @@ export async function listClaimableEnrollmentIds(
   const nowIso = now.toISOString();
   const staleBefore = new Date(now.getTime() - CLAIM_STALE_MS).toISOString();
 
-  const { data: due, error: dueError } = await supabase
+  const { data: due } = await supabase
     .from('campaign_enrollments')
     .select('id')
     .eq('status', 'active')
     .lte('next_send_at', nowIso)
-    .is('claimed_at', null)
+    .is('claim_token', null)
     .order('next_send_at', { ascending: true })
     .limit(limit);
 
-  if (dueError) {
-    console.error('Failed to fetch due enrollments:', dueError);
-  }
-
-  const { data: stale, error: staleError } = await supabase
+  const { data: stale } = await supabase
     .from('campaign_enrollments')
     .select('id')
     .eq('status', 'active')
@@ -634,14 +709,130 @@ export async function listClaimableEnrollmentIds(
     .lt('claimed_at', staleBefore)
     .limit(limit);
 
-  if (staleError) {
-    console.error('Failed to fetch stale claims:', staleError);
-  }
-
   const ids = new Set<string>();
   for (const row of due || []) ids.add(row.id);
   for (const row of stale || []) ids.add(row.id);
   return [...ids].slice(0, limit);
+}
+
+export type ReconcileResult = {
+  unknownCount: number;
+  stuckSendingCount: number;
+  requeued: number;
+  confirmed: number;
+  alert: boolean;
+};
+
+/**
+ * Reconcile unknown / stuck 'sending' rows against the relay by idempotency key.
+ * - Relay has it → mark queued/sent (confirmed)
+ * - Relay missing + stuck sending → free the sid and re-queue the enrollment step
+ * - Relay missing + unknown → same safe re-queue (crash before delivery)
+ */
+export async function reconcileAmbiguousSms(): Promise<ReconcileResult> {
+  const supabase = createServerClient();
+  const adapter = getMessagingAdapter();
+  const cutoff = new Date(Date.now() - STUCK_SENDING_MS).toISOString();
+
+  const { data: ambiguous, error } = await supabase
+    .from('sms_messages')
+    .select('id, lead_id, message_sid, status, sent_at')
+    .in('status', ['unknown', 'sending'])
+    .lte('sent_at', cutoff)
+    .limit(50);
+
+  if (error) {
+    console.error('Failed to list ambiguous sms_messages:', error);
+    return {
+      unknownCount: 0,
+      stuckSendingCount: 0,
+      requeued: 0,
+      confirmed: 0,
+      alert: false,
+    };
+  }
+
+  let unknownCount = 0;
+  let stuckSendingCount = 0;
+  let requeued = 0;
+  let confirmed = 0;
+
+  for (const row of ambiguous || []) {
+    if (row.status === 'unknown') unknownCount++;
+    if (row.status === 'sending') stuckSendingCount++;
+
+    const sid = row.message_sid;
+    let found = false;
+    let providerStatus = 'queued';
+
+    if (adapter.lookupByIdempotencyKey) {
+      try {
+        const lookup = await adapter.lookupByIdempotencyKey(sid);
+        found = lookup.found;
+        providerStatus = lookup.status || 'queued';
+      } catch (err) {
+        console.error(
+          'Relay lookup failed for',
+          sid,
+          err instanceof Error ? err.message : 'unknown'
+        );
+        continue;
+      }
+    }
+
+    if (found) {
+      await supabase
+        .from('sms_messages')
+        .update({ status: providerStatus })
+        .eq('id', row.id);
+      confirmed++;
+      continue;
+    }
+
+    // Not on relay — safe to re-queue: rename sid to free UNIQUE, reschedule enrollment.
+    const abandonedSid = `${sid}:abandoned:${Date.now()}`;
+    await supabase
+      .from('sms_messages')
+      .update({
+        message_sid: abandonedSid,
+        status: 'abandoned_retry',
+      })
+      .eq('id', row.id);
+
+    const { data: enrollment } = await supabase
+      .from('campaign_enrollments')
+      .select('id, status')
+      .eq('lead_id', row.lead_id)
+      .eq('status', 'active')
+      .maybeSingle();
+
+    if (enrollment) {
+      await supabase
+        .from('campaign_enrollments')
+        .update({
+          next_send_at: new Date().toISOString(),
+          claimed_at: null,
+          claim_token: null,
+          updated_at: new Date().toISOString(),
+        })
+        .eq('id', enrollment.id)
+        .eq('status', 'active');
+      requeued++;
+    }
+  }
+
+  const total = unknownCount + stuckSendingCount;
+  const threshold = Number(
+    process.env.UNKNOWN_SMS_ALERT_THRESHOLD || UNKNOWN_SMS_ALERT_THRESHOLD
+  );
+  const alert = total >= threshold;
+  if (alert) {
+    console.error(
+      `ALERT: ${total} ambiguous SMS rows (unknown=${unknownCount}, stuck_sending=${stuckSendingCount}) >= threshold ${threshold}`
+    );
+  }
+
+  return { unknownCount, stuckSendingCount, requeued, confirmed, alert };
 }
 
 export async function processDueCampaigns(): Promise<{
@@ -649,8 +840,15 @@ export async function processDueCampaigns(): Promise<{
   errors: number;
   skipped: number;
   messagingProvider: string;
+  unknownCount: number;
+  stuckSendingCount: number;
+  requeued: number;
+  confirmed: number;
+  alert: boolean;
 }> {
   const adapter = getMessagingAdapter();
+  const reconcile = await reconcileAmbiguousSms();
+
   const ids = await listClaimableEnrollmentIds(100);
 
   if (ids.length === 0) {
@@ -660,6 +858,7 @@ export async function processDueCampaigns(): Promise<{
       errors: 0,
       skipped: 0,
       messagingProvider: adapter.name,
+      ...reconcile,
     };
   }
 
@@ -668,13 +867,13 @@ export async function processDueCampaigns(): Promise<{
   let skipped = 0;
 
   for (const id of ids) {
-    const claimed = await claimDueEnrollment(id);
-    if (!claimed) {
+    const token = await claimDueEnrollment(id);
+    if (!token) {
       skipped++;
       continue;
     }
 
-    const success = await sendCampaignSMS(id);
+    const success = await sendCampaignSMS(id, token);
     if (success) {
       processed++;
     } else {
@@ -694,5 +893,6 @@ export async function processDueCampaigns(): Promise<{
     errors,
     skipped,
     messagingProvider: adapter.name,
+    ...reconcile,
   };
 }

@@ -266,6 +266,7 @@ export interface Database {
           status: string;
           next_send_at: string | null;
           claimed_at: string | null;
+          claim_token: string | null;
           enrolled_at: string;
           paused_at: string | null;
           completed_at: string | null;
@@ -280,6 +281,7 @@ export interface Database {
           status?: string;
           next_send_at?: string | null;
           claimed_at?: string | null;
+          claim_token?: string | null;
           enrolled_at?: string;
           paused_at?: string | null;
           completed_at?: string | null;
@@ -294,6 +296,7 @@ export interface Database {
           status?: string;
           next_send_at?: string | null;
           claimed_at?: string | null;
+          claim_token?: string | null;
           enrolled_at?: string;
           paused_at?: string | null;
           completed_at?: string | null;

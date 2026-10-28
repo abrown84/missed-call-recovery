@@ -24,7 +24,20 @@ export interface SendMessageResult {
   status: MessageDeliveryStatus | string;
 }
 
+export interface IdempotencyLookupResult {
+  found: boolean;
+  id?: string;
+  status?: string;
+}
+
 export interface MessagingAdapter {
   readonly name: string;
   sendMessage(input: SendMessageInput): Promise<SendMessageResult>;
+  /**
+   * Optional: look up a prior send by idempotency key (for stuck/unknown reconcile).
+   * Return { found: false } when the relay has no record.
+   */
+  lookupByIdempotencyKey?(
+    key: string
+  ): Promise<IdempotencyLookupResult>;
 }

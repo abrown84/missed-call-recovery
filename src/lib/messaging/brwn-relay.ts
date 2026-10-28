@@ -1,4 +1,9 @@
-import type { MessagingAdapter, SendMessageInput, SendMessageResult } from './types';
+import type {
+  IdempotencyLookupResult,
+  MessagingAdapter,
+  SendMessageInput,
+  SendMessageResult,
+} from './types';
 
 const DEFAULT_TIMEOUT_MS = 15_000;
 
@@ -105,6 +110,46 @@ export class BrwnRelayAdapter implements MessagingAdapter {
       }
 
       return { id, status };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
+   * Look up a prior queue by idempotency key.
+   * GET {BRWN_RELAY_URL}/api/messages?idempotencyKey=…
+   * 404 / empty → not found (safe to re-queue a stuck 'sending' row).
+   */
+  async lookupByIdempotencyKey(
+    key: string
+  ): Promise<IdempotencyLookupResult> {
+    const baseUrl = getRelayUrl();
+    const token = getSenderToken();
+    const timeoutMs = getTimeoutMs();
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      const url = new URL(`${baseUrl}/api/messages`);
+      url.searchParams.set('idempotencyKey', key);
+      const res = await fetch(url.toString(), {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${token}` },
+        signal: controller.signal,
+      });
+
+      if (res.status === 404) return { found: false };
+      if (!res.ok) {
+        throw new Error(`BRWN relay lookup HTTP ${res.status}`);
+      }
+
+      const json = (await res.json()) as {
+        id?: string;
+        status?: string;
+        found?: boolean;
+      };
+      if (json.found === false || !json.id) return { found: false };
+      return { found: true, id: json.id, status: json.status || 'queued' };
     } finally {
       clearTimeout(timer);
     }

@@ -58,6 +58,9 @@ CREATE TABLE leads (
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- NOTE: campaign_enrollments.claimed_at / claim_token and UNIQUE indexes
+-- are applied in supabase/migrations/003_campaign_idempotency.sql
+
 -- SMS messages table
 CREATE TABLE sms_messages (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),

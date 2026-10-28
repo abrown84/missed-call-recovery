@@ -1,5 +1,6 @@
 import { redactPhone } from '@/lib/pii';
 import type {
+  IdempotencyLookupResult,
   MessagingAdapter,
   SendMessageInput,
   SendMessageResult,
@@ -24,5 +25,13 @@ export class DryRunAdapter implements MessagingAdapter {
         `body=${JSON.stringify(input.body.slice(0, 120))}`
     );
     return { id, status: 'queued' };
+  }
+
+  async lookupByIdempotencyKey(
+    key: string
+  ): Promise<IdempotencyLookupResult> {
+    const hit = this.sent.find((s) => s.idempotencyKey === key);
+    if (!hit) return { found: false };
+    return { found: true, id: `dry-run-lookup`, status: 'queued' };
   }
 }

@@ -43,6 +43,11 @@ export async function GET(request: NextRequest) {
       errors: result.errors,
       skipped: result.skipped,
       messagingProvider: result.messagingProvider,
+      unknownCount: result.unknownCount,
+      stuckSendingCount: result.stuckSendingCount,
+      requeued: result.requeued,
+      confirmed: result.confirmed,
+      alert: result.alert,
     });
   } catch (error) {
     console.error(

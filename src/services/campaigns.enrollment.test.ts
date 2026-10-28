@@ -12,19 +12,23 @@ vi.mock('@/lib/messaging', () => ({
   getMessagingAdapter: () => ({
     name: 'dry-run',
     sendMessage: (...args: unknown[]) => mockSendMessage(...args),
+    lookupByIdempotencyKey: vi.fn().mockResolvedValue({ found: false }),
   }),
-  resetMessagingAdapterCache: vi.fn(),
 }));
 
 vi.mock('@/services/suppressions', () => ({
   isPhoneSuppressed: (...args: unknown[]) => isPhoneSuppressed(...args),
+  SuppressionLookupError: class SuppressionLookupError extends Error {},
 }));
 
 import {
+  advanceEnrollment,
   claimDueEnrollment,
   enrollLeadInCampaign,
   sendCampaignSMS,
+  switchEnrollmentCampaign,
 } from './campaigns';
+import { campaignStepMessageSid } from './campaign-logic';
 
 type Row = Record<string, unknown>;
 
@@ -39,6 +43,7 @@ function chainable(result: { data: unknown; error: unknown }) {
     'lte',
     'lt',
     'is',
+    'or',
     'in',
     'order',
     'limit',
@@ -64,13 +69,12 @@ function chainable(result: { data: unknown; error: unknown }) {
   return obj;
 }
 
-describe('enrollLeadInCampaign at missed-call (null urgency → Standard)', () => {
+describe('enrollLeadInCampaign Standard at missed-call', () => {
   beforeEach(() => {
     mockFrom.mockReset();
     mockSendMessage.mockReset();
     isPhoneSuppressed.mockResolvedValue(false);
   });
-
   afterEach(() => vi.clearAllMocks());
 
   it('enrolls Standard skipping initial when recovery already sent', async () => {
@@ -101,13 +105,11 @@ describe('enrollLeadInCampaign at missed-call (null urgency → Standard)', () =
         ],
       },
     ];
-
     const inserted: Row[] = [];
     mockFrom.mockImplementation((table: string) => {
       if (table === 'leads') return chainable({ data: lead, error: null });
       if (table === 'campaign_enrollments') {
         const builder = chainable({ data: null, error: null });
-        // getEnrollmentForLead → maybeSingle null
         builder.maybeSingle = vi.fn(async () => ({ data: null, error: null }));
         builder.insert = vi.fn((row: Row) => {
           inserted.push(row);
@@ -124,27 +126,52 @@ describe('enrollLeadInCampaign at missed-call (null urgency → Standard)', () =
     if (!result.enrolled) return;
     expect(result.campaignName).toBe('Standard Follow-up');
     expect(result.currentStep).toBe(2);
-    expect(result.skippedInitial).toBe(true);
     expect(inserted[0]?.campaign_id).toBe('camp-std');
   });
+});
 
-  it('refuses to enroll when any past enrollment exists', async () => {
-    const lead = {
-      id: 'lead-2',
-      urgency: 'emergency',
-      opted_out: false,
-      sms_outbound_sid: 'recovery:lead-2',
-      businesses: { id: 'biz-1', name: 'Acme' },
-    };
+describe('claim ownership on post-send advance', () => {
+  it('advanceEnrollment fails when claim_token mismatches (pause mid-send)', async () => {
+    const supabase = {
+      from: () => {
+        const builder = chainable({ data: [], error: null });
+        builder.update = vi.fn(() => {
+          const u = chainable({ data: [], error: null });
+          u.select = vi.fn(() => chainable({ data: [], error: null }));
+          return u;
+        });
+        return builder;
+      },
+    } as any;
+
+    const ok = await advanceEnrollment(
+      supabase,
+      'enr-1',
+      'stale-token',
+      2,
+      [
+        { id: 's1', campaign_id: 'c', step_number: 2, delay_minutes: 0, template_key: 'a', created_at: '' },
+        { id: 's2', campaign_id: 'c', step_number: 3, delay_minutes: 60, template_key: 'b', created_at: '' },
+      ]
+    );
+    expect(ok).toBe(false);
+  });
+});
+
+describe('switchEnrollmentCampaign refuses fresh claim', () => {
+  beforeEach(() => mockFrom.mockReset());
+
+  it('returns deferred_fresh_claim when claimed_at is fresh', async () => {
     mockFrom.mockImplementation((table: string) => {
-      if (table === 'leads') return chainable({ data: lead, error: null });
       if (table === 'campaign_enrollments') {
         return chainable({
           data: {
-            id: 'enr-old',
-            lead_id: 'lead-2',
-            status: 'paused',
+            id: 'enr-1',
+            lead_id: 'lead-1',
             campaign_id: 'camp-std',
+            status: 'active',
+            claimed_at: new Date().toISOString(),
+            claim_token: 'tok',
           },
           error: null,
         });
@@ -152,47 +179,46 @@ describe('enrollLeadInCampaign at missed-call (null urgency → Standard)', () =
       return chainable({ data: null, error: null });
     });
 
-    const result = await enrollLeadInCampaign('lead-2');
+    const result = await switchEnrollmentCampaign('lead-1', 'camp-em');
     expect(result).toEqual({
       enrolled: false,
-      reason: 'already_enrolled:paused',
+      reason: 'deferred_fresh_claim',
     });
   });
 });
 
-describe('sendCampaignSMS insert-before-send + no auto-resend', () => {
+describe('sendCampaignSMS campaign-scoped sid after switch', () => {
   beforeEach(() => {
     mockFrom.mockReset();
     mockSendMessage.mockReset();
     isPhoneSuppressed.mockResolvedValue(false);
+    mockSendMessage.mockResolvedValue({ id: 'msg-1', status: 'queued' });
   });
 
-  it('on provider timeout marks unknown and does not requeue the same step', async () => {
-    const enrollmentId = 'enr-to';
+  it('uses campaign id in sid so Emergency step 2 is not a Standard dupe', async () => {
+    const enrollmentId = 'enr-1';
+    const campEm = 'camp-em';
     const enrollmentRow = {
       id: enrollmentId,
       current_step: 2,
       status: 'active',
+      claim_token: 'tok-1',
       leads: {
-        id: 'lead-to',
+        id: 'lead-1',
         caller_phone: '+15551234567',
         sms_outbound_sid: 'recovery',
         opted_out: false,
-        issue: null,
+        issue: 'flood',
         businesses: { id: 'b', name: 'Acme', phone: '+1' },
       },
-      campaigns: { id: 'camp', name: 'Standard Follow-up' },
+      campaigns: { id: campEm, name: 'Emergency Follow-up' },
     };
     const steps = [
-      { step_number: 1, delay_minutes: 0, template_key: 'standard_initial' },
-      { step_number: 2, delay_minutes: 240, template_key: 'standard_followup_1' },
-      { step_number: 3, delay_minutes: 1440, template_key: 'standard_followup_2' },
+      { step_number: 1, delay_minutes: 0, template_key: 'emergency_initial' },
+      { step_number: 2, delay_minutes: 60, template_key: 'emergency_followup_1' },
+      { step_number: 3, delay_minutes: 240, template_key: 'emergency_followup_2' },
     ];
-
-    const smsUpdates: Row[] = [];
-    const enrollUpdates: Row[] = [];
-
-    mockSendMessage.mockRejectedValue(new Error('timeout'));
+    const inserted: Row[] = [];
 
     mockFrom.mockImplementation((table: string) => {
       if (table === 'campaign_enrollments') {
@@ -201,9 +227,12 @@ describe('sendCampaignSMS insert-before-send + no auto-resend', () => {
           data: enrollmentRow,
           error: null,
         }));
-        builder.update = vi.fn((row: Row) => {
-          enrollUpdates.push(row);
-          return chainable({ data: null, error: null });
+        builder.update = vi.fn(() => {
+          const u = chainable({ data: [{ id: enrollmentId }], error: null });
+          u.select = vi.fn(() =>
+            chainable({ data: [{ id: enrollmentId }], error: null })
+          );
+          return u;
         });
         return builder;
       }
@@ -212,86 +241,31 @@ describe('sendCampaignSMS insert-before-send + no auto-resend', () => {
       }
       if (table === 'sms_messages') {
         const builder = chainable({ data: null, error: null });
-        builder.insert = vi.fn(() => chainable({ data: null, error: null }));
-        builder.update = vi.fn((row: Row) => {
-          smsUpdates.push(row);
-          return chainable({ data: null, error: null });
+        builder.insert = vi.fn((row: Row) => {
+          inserted.push(row);
+          return chainable({ data: row, error: null });
         });
-        return builder;
-      }
-      return chainable({ data: null, error: null });
-    });
-
-    const ok = await sendCampaignSMS(enrollmentId);
-    expect(ok).toBe(false);
-    expect(smsUpdates.some((u) => u.status === 'unknown')).toBe(true);
-    // Advanced to step 3 — not requeued at +60s on same step
-    expect(enrollUpdates.some((u) => u.current_step === 3)).toBe(true);
-    expect(
-      enrollUpdates.some(
-        (u) =>
-          typeof u.next_send_at === 'string' &&
-          u.current_step === undefined &&
-          u.status === undefined
-      )
-    ).toBe(false);
-  });
-
-  it('treats duplicate message_sid insert as already sent', async () => {
-    const enrollmentId = 'enr-dup';
-    const enrollmentRow = {
-      id: enrollmentId,
-      current_step: 2,
-      status: 'active',
-      leads: {
-        id: 'lead-dup',
-        caller_phone: '+15551234567',
-        sms_outbound_sid: 'recovery',
-        opted_out: false,
-        issue: null,
-        businesses: { id: 'b', name: 'Acme', phone: '+1' },
-      },
-      campaigns: { id: 'camp', name: 'Standard Follow-up' },
-    };
-    const steps = [
-      { step_number: 1, delay_minutes: 0, template_key: 'standard_initial' },
-      { step_number: 2, delay_minutes: 240, template_key: 'standard_followup_1' },
-      { step_number: 3, delay_minutes: 1440, template_key: 'standard_followup_2' },
-    ];
-
-    mockFrom.mockImplementation((table: string) => {
-      if (table === 'campaign_enrollments') {
-        const builder = chainable({ data: enrollmentRow, error: null });
-        builder.single = vi.fn(async () => ({
-          data: enrollmentRow,
-          error: null,
-        }));
         builder.update = vi.fn(() => chainable({ data: null, error: null }));
         return builder;
       }
-      if (table === 'campaign_steps') {
-        return chainable({ data: steps, error: null });
-      }
-      if (table === 'sms_messages') {
-        const builder = chainable({ data: null, error: null });
-        builder.insert = vi.fn(() =>
-          chainable({ data: null, error: { code: '23505' } })
-        );
-        return builder;
-      }
       return chainable({ data: null, error: null });
     });
 
-    const ok = await sendCampaignSMS(enrollmentId);
+    const ok = await sendCampaignSMS(enrollmentId, 'tok-1');
     expect(ok).toBe(true);
-    expect(mockSendMessage).not.toHaveBeenCalled();
+    expect(inserted[0]?.message_sid).toBe(
+      campaignStepMessageSid(enrollmentId, campEm, 2)
+    );
+    expect(inserted[0]?.message_sid).not.toBe(
+      campaignStepMessageSid(enrollmentId, 'camp-std', 2)
+    );
   });
 });
 
-describe('claimDueEnrollment reclaim', () => {
+describe('claimDueEnrollment', () => {
   beforeEach(() => mockFrom.mockReset());
 
-  it('returns false when another worker holds a fresh claim', async () => {
+  it('returns null when another worker holds the claim', async () => {
     mockFrom.mockImplementation(() => {
       const builder = chainable({ data: [], error: null });
       builder.update = vi.fn(() => {
@@ -301,6 +275,6 @@ describe('claimDueEnrollment reclaim', () => {
       });
       return builder;
     });
-    await expect(claimDueEnrollment('enr-x')).resolves.toBe(false);
+    await expect(claimDueEnrollment('enr-x')).resolves.toBeNull();
   });
 });

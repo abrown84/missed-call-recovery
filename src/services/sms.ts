@@ -1,7 +1,10 @@
 import { createServerClient } from '@/lib/supabase';
 import { getMessagingAdapter } from '@/lib/messaging';
 import { redactPhone } from '@/lib/pii';
-import { isPhoneSuppressed } from '@/services/suppressions';
+import {
+  SuppressionLookupError,
+  isPhoneSuppressed,
+} from '@/services/suppressions';
 import type { Database } from '@/types/database';
 
 type Business = Database['public']['Tables']['businesses']['Row'];
@@ -29,11 +32,19 @@ export async function sendRecoverySMS(
 ): Promise<void> {
   const supabase = createServerClient();
 
-  if (await isPhoneSuppressed(business.id, callerPhone)) {
-    console.log(
-      `Skipping recovery SMS; suppressed ${redactPhone(callerPhone)}`
-    );
-    return;
+  try {
+    if (await isPhoneSuppressed(business.id, callerPhone)) {
+      console.log(
+        `Skipping recovery SMS; suppressed ${redactPhone(callerPhone)}`
+      );
+      return;
+    }
+  } catch (err) {
+    if (err instanceof SuppressionLookupError) {
+      console.error('Suppression check failed closed; skipping recovery SMS');
+      return;
+    }
+    throw err;
   }
 
   const { data: lead } = await supabase
@@ -113,11 +124,19 @@ export async function sendFollowUpSMS(
 ): Promise<void> {
   const supabase = createServerClient();
 
-  if (await isPhoneSuppressed(business.id, callerPhone)) {
-    console.log(
-      `Skipping follow-up SMS; suppressed ${redactPhone(callerPhone)}`
-    );
-    return;
+  try {
+    if (await isPhoneSuppressed(business.id, callerPhone)) {
+      console.log(
+        `Skipping follow-up SMS; suppressed ${redactPhone(callerPhone)}`
+      );
+      return;
+    }
+  } catch (err) {
+    if (err instanceof SuppressionLookupError) {
+      console.error('Suppression check failed closed; skipping follow-up SMS');
+      return;
+    }
+    throw err;
   }
 
   const messageBody =

@@ -2,18 +2,16 @@
 #
 # Why GitHub Actions (not vercel.json */5):
 # Vercel Hobby only allows once-daily cron; */5 in vercel.json fails deploy.
-# This workflow keeps send latency ≤ ~5 minutes on Hobby. If the project is
-# upgraded to Vercel Pro, vercel.json can also use */5 as a second trigger —
-# processDueCampaigns claims enrollments so double-runs are safe.
 #
 # Required repo secrets:
-#   CRON_APP_URL  — staging origin preferred (e.g. https://…vercel.app)
+#   CRON_APP_URL  — staging / preview origin (e.g. https://…vercel.app)
 #   CRON_SECRET   — same value as the app's CRON_SECRET env var
 # Optional:
 #   ALLOW_PROD_CRON=yes — required if CRON_APP_URL contains prod/production
+#   ALLOW_LIVE_CRON_PROVIDER=yes — required if messagingProvider is not dry-run
 #
-# Staging apps should set MESSAGING_PROVIDER=dry-run so this never texts
-# real leads. Production dry-run is blocked in-app when VERCEL_ENV=production.
+# Staging apps MUST set MESSAGING_PROVIDER=dry-run. The workflow fails unless
+# the cron JSON reports messagingProvider=dry-run (unless override is set).
 
 name: Campaign follow-up cron
 
@@ -44,8 +42,6 @@ jobs:
             echo "::error::Missing required secrets CRON_APP_URL and/or CRON_SECRET. Follow-ups will not run until they are set."
             exit 1
           fi
-          # Soft production guard: refuse URLs with prod/production host labels
-          # unless ALLOW_PROD_CRON=yes. Prefer staging / *.vercel.app previews.
           lower="$(printf '%s' "$CRON_APP_URL" | tr '[:upper:]' '[:lower:]')"
           if printf '%s' "$lower" | grep -Eq '(^|[./-])(prod|production)([./-]|$)'; then
             if [ "${ALLOW_PROD_CRON:-}" != "yes" ]; then
@@ -58,6 +54,7 @@ jobs:
         env:
           CRON_APP_URL: ${{ secrets.CRON_APP_URL }}
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          ALLOW_LIVE_CRON_PROVIDER: ${{ secrets.ALLOW_LIVE_CRON_PROVIDER }}
         run: |
           set -euo pipefail
           url="${CRON_APP_URL%/}/api/cron/campaigns"
@@ -67,10 +64,17 @@ jobs:
             -H "Authorization: Bearer ${CRON_SECRET}" \
             -H "Content-Type: application/json")
           echo "HTTP $http_code"
-          # Response is counts + messagingProvider only (no PII).
           cat /tmp/cron-body.json || true
           echo
           if [ "$http_code" -lt 200 ] || [ "$http_code" -ge 300 ]; then
             echo "Cron endpoint failed with HTTP $http_code"
             exit 1
+          fi
+          provider=$(python3 -c "import json; print(json.load(open('/tmp/cron-body.json')).get('messagingProvider',''))")
+          echo "messagingProvider=${provider}"
+          if [ "$provider" != "dry-run" ]; then
+            if [ "${ALLOW_LIVE_CRON_PROVIDER:-}" != "yes" ]; then
+              echo "::error::Cron response messagingProvider='${provider}' is not dry-run. Force MESSAGING_PROVIDER=dry-run on the preview, or set ALLOW_LIVE_CRON_PROVIDER=yes."
+              exit 1
+            fi
           fi
