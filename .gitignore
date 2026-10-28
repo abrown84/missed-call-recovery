@@ -44,3 +44,4 @@ coverage/
 .vercel
 
 nul
+.vitest/
