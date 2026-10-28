@@ -262,12 +262,20 @@ vi.mock('@/services/quiet-hours', async () => {
   );
   return {
     ...actual,
-    // Controllable via store.forceQuiet
+    // Controllable via store.forceQuiet — when false, force OPEN so wall-clock
+    // quiet hours cannot flake the "window opened → send" invariant.
     deferUntilQuietHoursOpen: (now: Date, opts: unknown) => {
       if ((store as { forceQuiet?: boolean }).forceQuiet) {
         return {
           allowed: false,
           nextSendAt: new Date(store.nowMs + 8 * 3600_000),
+          zones: ['America/New_York'],
+          endHour: 21,
+        };
+      }
+      if ((store as { forceQuiet?: boolean }).forceQuiet === false) {
+        return {
+          allowed: true,
           zones: ['America/New_York'],
           endHour: 21,
         };
@@ -383,6 +391,44 @@ describe('QC r6 invariants (real send path)', () => {
     expect(deferred.length).toBeGreaterThanOrEqual(1);
     expect(deferred[0].next_retry_at).toBeTruthy();
     expect(store.relaySends).toHaveLength(0);
+  });
+
+  it('P0: deferred recovery is actually sent when quiet window opens', async () => {
+    const biz = {
+      id: 'B1',
+      name: 'Acme',
+      phone: '+12125550999',
+      vertical: 'plumbing',
+      timezone: 'America/New_York',
+      business_hours_start: '08:00',
+      business_hours_end: '17:00',
+      after_hours_enabled: true,
+      emergency_phone: null,
+      settings: {},
+      created_at: '',
+      updated_at: '',
+    };
+    (store as { forceQuiet?: boolean }).forceQuiet = true;
+    await sendRecoverySMS('L1', biz as never, '+12125550100');
+    expect(store.relaySends).toHaveLength(0);
+    const deferred = store.sms.find((s) => s.status === 'deferred');
+    expect(deferred).toBeTruthy();
+    // Window opens: due now
+    deferred!.next_retry_at = new Date(store.nowMs - 60_000).toISOString();
+    (store as { forceQuiet?: boolean }).forceQuiet = false;
+
+    const sid = recoveryMessageSid('L1');
+    const outcome = await sendMessage({
+      kind: 'recovery',
+      leadId: 'L1',
+      businessId: 'B1',
+      to: '+12125550100',
+      body: deferred!.body || 'recovery body',
+      idempotencyKey: sid,
+    });
+    expect(outcome.kind).toBe('sent');
+    expect(store.relaySends.length).toBe(1);
+    expect(store.relaySends[0].idempotencyKey).toBe(sid);
   });
 
   it('invariant: any STOP keyword (contains) is opt_out or ambiguous — never not_opt_out', () => {

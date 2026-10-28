@@ -69,7 +69,9 @@ if (provider !== 'dry-run' && process.env.CONFIRM_LIVE_SMS !== 'yes') {
 
 const base = process.env.CRON_APP_URL.replace(/\/$/, '');
 const businessPhone = process.env.STAGING_BUSINESS_PHONE;
-const testCaller = process.env.STAGING_TEST_CALLER || '+15550001234';
+// Default: fictional 555-01xx in a *mapped* area code (213 = LA). Unmapped
+// +1555… correctly fails closed as quiet_hours_unresolved — don't use it here.
+const testCaller = process.env.STAGING_TEST_CALLER || '+12135550100';
 const secret = process.env.BRWN_WEBHOOK_SECRET;
 const cronSecret = process.env.CRON_SECRET;
 

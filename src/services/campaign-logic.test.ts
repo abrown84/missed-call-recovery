@@ -124,14 +124,31 @@ describe('hasFreshClaim / claimables', () => {
   });
 });
 
+const EMERGENCY_STEPS = [
+  { step_number: 1, delay_minutes: 0, template_key: 'emergency_initial' },
+  { step_number: 2, delay_minutes: 60, template_key: 'emergency_followup_1' },
+];
+
 describe('planEnrollmentStart / selectCampaign', () => {
-  it('skips initial when recovery sent', () => {
+  it('skips Standard initial when recovery sent', () => {
     const plan = planEnrollmentStart(STANDARD_STEPS, {
       recoveryAlreadySent: true,
+      treatRecoveryAsInitial: true,
       now: new Date('2026-10-28T12:00:00.000Z'),
     });
     expect(plan.currentStep).toBe(2);
     expect(plan.skippedInitial).toBe(true);
+  });
+
+  it('staging (c): Emergency switch keeps step 1 even when recovery sent', () => {
+    const plan = planEnrollmentStart(EMERGENCY_STEPS, {
+      recoveryAlreadySent: true,
+      treatRecoveryAsInitial: false,
+      now: new Date('2026-10-28T12:00:00.000Z'),
+    });
+    expect(plan.currentStep).toBe(1);
+    expect(plan.skippedInitial).toBe(false);
+    expect(plan.nextSendAt.toISOString()).toBe('2026-10-28T12:00:00.000Z');
   });
 
   it('selects Standard when urgency null', () => {

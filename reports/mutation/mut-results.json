@@ -1,0 +1,127 @@
+[
+ [
+  "03",
+  "r4#2 enroll park when recovery pending",
+  "KILLED"
+ ],
+ [
+  "04",
+  "r4#2 recovery resend removed",
+  "KILLED"
+ ],
+ [
+  "05",
+  "r4#2 skipRecoveryGate forced",
+  "KILLED"
+ ],
+ [
+  "10",
+  "r4#4 cron per-row catch rethrows",
+  "KILLED"
+ ],
+ [
+  "11",
+  "r4#4 quiet unresolved treated as allowed",
+  "KILLED"
+ ],
+ [
+  "12",
+  "r4#4 unresolved -> campaign release w/o review",
+  "KILLED"
+ ],
+ [
+  "16",
+  "r4#5 leadTimezone not passed (campaign)",
+  "KILLED"
+ ],
+ [
+  "17",
+  "r4#5 leadTimezone ignored (module)",
+  "KILLED"
+ ],
+ [
+  "19",
+  "r4#6 compact form removed",
+  "KILLED"
+ ],
+ [
+  "22",
+  "r4#7 backfill ON CONFLICT dropped",
+  "SURVIVED"
+ ],
+ [
+  "24",
+  "r4#7 NULLS LAST -> FIRST",
+  "KILLED"
+ ],
+ [
+  "25",
+  "r4#7 NFKC removed from backfill",
+  "SURVIVED"
+ ],
+ [
+  "26",
+  "r4#7 STOP PLEASE removed from backfill",
+  "KILLED"
+ ],
+ [
+  "27",
+  "r4b A caps probe removed",
+  "KILLED"
+ ],
+ [
+  "34",
+  "r4b B needs_review -> advance (campaign)",
+  "KILLED"
+ ],
+ [
+  "35",
+  "r4b B needs_review not persisted",
+  "SURVIVED"
+ ],
+ [
+  "37",
+  "r4b C dup-sid failed -> needs_review",
+  "KILLED"
+ ],
+ [
+  "38",
+  "r4b C dup-sid confirmed short-circuit",
+  "KILLED"
+ ],
+ [
+  "40",
+  "r4b D ambiguous -> advance (campaign)",
+  "KILLED"
+ ],
+ [
+  "41",
+  "r4b D park status unknown not set",
+  "SURVIVED"
+ ],
+ [
+  "44",
+  "claim check on advance removed",
+  "SURVIVED"
+ ],
+ [
+  "45",
+  "recovery_pending -> advance",
+  "KILLED"
+ ],
+ [
+  "46",
+  "requeue exact step removed",
+  "KILLED"
+ ],
+ [
+  "51",
+  "dry-run redaction removed",
+  "KILLED"
+ ],
+ [
+  "52",
+  "dry-run to redaction removed",
+  "KILLED"
+ ]
+]

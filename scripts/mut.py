@@ -31,7 +31,7 @@ muts=[
 ('23','r4#7 enrollment dedupe prefers non-active',G,"CASE WHEN status = 'active' THEN 0 ELSE 1 END,","CASE WHEN status = 'active' THEN 1 ELSE 0 END,",1),
 ('24','r4#7 NULLS LAST -> FIRST',G,"enrolled_at DESC NULLS LAST,","enrolled_at DESC NULLS FIRST,",1),
 ('25','r4#7 NFKC removed from backfill',G,"normalize(btrim(m.body), NFKC),","btrim(m.body),",1),
-('26','r4#7 STOP PLEASE removed from backfill',G,"'PLEASE STOP', 'STOP PLEASE', 'STOP IT',","'PLEASE STOP', 'STOP IT',",1),
+('26','r4#7 STOP PLEASE removed from backfill',G,"'PLEASE STOP', 'STOP PLEASE', 'STOP IT', 'STOP PLS',","'PLEASE STOP', 'STOP IT', 'STOP PLS',",1),
 ('27','r4b A caps probe removed',I,"capsBeforeSend = await ensureRelayKeySupportProbed(adapter);","capsBeforeSend = true;",1),
 ('28','r4b A echo-only gate',M,"keySupportedAtSend: capsBeforeSend && signal.keyEchoed,","keySupportedAtSend: signal.keyEchoed,",1),
 ('29','r4b A caps-only gate',M,"keySupportedAtSend: capsBeforeSend && signal.keyEchoed,","keySupportedAtSend: capsBeforeSend,",1),
@@ -46,7 +46,7 @@ muts=[
 ('38','r4b C dup-sid confirmed short-circuit',I,"if (isConfirmedStatus(existing?.status)) {","if (false) {",1),
 ('39','r4b D 429 ambiguous ignored',I,"} else if (result.ambiguous) {","} else if (false) {",1),
 ('40','r4b D ambiguous -> advance (campaign)',C,"if (outcome.kind === 'ambiguous') {","if (outcome.kind === 'ambiguous') { "+ADV,1),
-('41','r4b D park status unknown not set',I,".update({ status: 'unknown' })",".update({ status: 'queued' })",1),
+('41','r4b D park status unknown not set',I,"status: 'unknown',","status: 'queued',",1),
 ('42','E.164 normalization removed',I,"const toE164 = tryNormalizeToE164(req.to);","const toE164 = req.to || null;",1),
 ('43','E.164 raw to relay',I,"      to: toE164,","      to: req.to,",1),
 ('44','claim check on advance removed',C,"      .eq('claim_token', claimToken)\n      .select(ENROLLMENT_CLAIM_SELECT);","      .select(ENROLLMENT_CLAIM_SELECT);",1),
@@ -87,7 +87,7 @@ for mid,tag,f,old,new,occ in muts:
   finally:
     open(p,'w').write(src)
   res.append((mid,tag,'KILLED' if killed else 'SURVIVED')); print(mid,tag,'KILLED' if killed else 'SURVIVED',flush=True)
-out=str(Path(__file__).resolve().parents[1]/reports/mutation/mut-results.json')
+out = str(Path(__file__).resolve().parents[1] / 'reports/mutation/mut-results.json')
 Path(out).parent.mkdir(parents=True, exist_ok=True)
-json.dump(res,open(out,'w'),indent=1)
-print('wrote',out)
+json.dump(res, open(out, 'w'), indent=1)
+print('wrote', out)

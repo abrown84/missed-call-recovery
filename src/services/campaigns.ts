@@ -121,8 +121,11 @@ export async function enrollLeadInCampaign(
   const recoveryState = await getRecoverySendState(supabase, leadId);
   const recoveryConfirmed =
     recoveryState === 'confirmed' || Boolean(lead.sms_outbound_sid);
+  // Recovery only substitutes Standard's delay-0 initial — never Emergency/High
+  // (staging evidence c: first Emergency step must still go out).
   const plan = planEnrollmentStart(steps, {
     recoveryAlreadySent: recoveryConfirmed,
+    treatRecoveryAsInitial: selectedCampaign.urgency_filter == null,
   });
 
   if (
@@ -223,8 +226,11 @@ export async function switchEnrollmentCampaign(
     return { enrolled: false, reason: 'no_steps' };
   }
 
+  // Staging (c): recovery ≠ Emergency initial — always start at step 1 of the
+  // target campaign so the first Emergency text goes out on switch.
   const plan = planEnrollmentStart(steps, {
     recoveryAlreadySent: Boolean(lead.sms_outbound_sid),
+    treatRecoveryAsInitial: false,
   });
   const nextSendAt = plan.nextSendAt.toISOString();
   const staleBefore = new Date(Date.now() - CLAIM_STALE_MS).toISOString();

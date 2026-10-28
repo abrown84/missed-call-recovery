@@ -201,7 +201,24 @@ export async function sendMessage(req: SendRequest): Promise<SendOutcome> {
       if (isFailedStatus(existing?.status) || existing?.status === 'needs_review') {
         return { kind: 'needs_review', sid, reason: 'duplicate_failed' };
       }
-      return { kind: 'blocked', reason: 'duplicate_in_flight', detail: existing?.status ?? 'missing' };
+      // Deferred quiet-hours row (or abandoned_retry) → claim and send now.
+      const st = String(existing?.status ?? '').toLowerCase();
+      if (st === 'deferred' || st === 'abandoned_retry') {
+        await supabase
+          .from('sms_messages')
+          .update({
+            status: 'sending',
+            next_retry_at: null,
+            body: req.body,
+          })
+          .eq('message_sid', sid);
+        return dispatchToRelay(supabase, req, sid, toE164);
+      }
+      return {
+        kind: 'blocked',
+        reason: 'duplicate_in_flight',
+        detail: existing?.status ?? 'missing',
+      };
     }
     if (insertError) {
       throw new Error(`sms_messages insert failed: ${insertError.message}`);

@@ -67,7 +67,16 @@ export function selectCampaignForUrgency<T extends CampaignLike>(
 
 export function planEnrollmentStart(
   steps: StepLike[],
-  options: { recoveryAlreadySent: boolean; now?: Date }
+  options: {
+    recoveryAlreadySent: boolean;
+    /**
+     * When true (Standard catch-all only), a prior recovery SMS replaces the
+     * delay-0 initial step. Emergency/High/switch must pass false — recovery
+     * is not the Emergency initial (staging evidence c @ b148d3a).
+     */
+    treatRecoveryAsInitial?: boolean;
+    now?: Date;
+  }
 ): EnrollmentStartPlan {
   const sorted = [...steps].sort((a, b) => a.step_number - b.step_number);
   if (sorted.length === 0) {
@@ -78,7 +87,12 @@ export function planEnrollmentStart(
   let startIdx = 0;
   let skippedInitial = false;
 
-  if (options.recoveryAlreadySent && sorted[0].delay_minutes === 0) {
+  const treatRecoveryAsInitial = options.treatRecoveryAsInitial !== false;
+  if (
+    options.recoveryAlreadySent &&
+    treatRecoveryAsInitial &&
+    sorted[0].delay_minutes === 0
+  ) {
     startIdx = 1;
     skippedInitial = true;
   }

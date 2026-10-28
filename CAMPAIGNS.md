@@ -149,6 +149,8 @@ A send that timed out on **&lt; 1.7.6** (no key / no capabilities) can look like
 | Single send module | All relay I/O goes through `src/services/send` (`sendMessage` / reconcile). Stryker mutates `send/index.ts`, `campaigns.ts`, `sms.ts` (no StringLiteral/Regex exclusions; no-cov counted). |
 | Deferred recovery persisted | Quiet-hours block → `sms_messages.status='deferred'` + `next_retry_at`; cron `processDeferredRecoveries` sends when the window opens. **Never drop.** |
 | Missed-call enrolls again | Non-responders enroll into Standard (urgency null). Classification switches Emergency/High on reply. **Alex: confirm non-responder path.** |
+| Staging (c) Emergency step 1 | Switch / urgency enroll does **not** treat recovery as the Emergency initial (`treatRecoveryAsInitial: false`). Step 1 goes out immediately. Standard still skips delay-0 when recovery was sent. |
+| Evidence script default caller | `+12135550100` (mapped 213 + fictional 555-01xx). Unmapped `+1555…` correctly fails closed as unresolved. |
 | Recovery under quiet hours | Same TCPA window as campaigns. **Alex flag:** 47 CFR 64.1200(c)(1) solicitation window — confirm whether recovery may send outside it as an informational reply. |
 | Opt-out contains-keyword | Any message containing STOP/QUIT/END/REVOKE/CANCEL/UNSUBSCRIBE (after fold) → opt_out; service-talk → ambiguous. Shared list with 003 backfill. |
 | Backoff persisted | `next_retry_at` on unknown rows; reconcile filters on it. ≈2.5h across 5 attempts then `needs_review`. |

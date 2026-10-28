@@ -1,5 +1,5 @@
-import { describe, expect, it } from 'vitest';
-import { redactPhonesInText } from './dry-run';
+import { describe, expect, it, vi } from 'vitest';
+import { DryRunAdapter, redactPhonesInText } from './dry-run';
 
 describe('dry-run phone redaction (QC r6 P2)', () => {
   it('US numbers keep only last 4', () => {
@@ -18,5 +18,25 @@ describe('dry-run phone redaction (QC r6 P2)', () => {
     const out = redactPhonesInText('212 555 0101 ext 5');
     expect(out).toMatch(/\*\*\*-\*\*\*-0101/);
     expect(out).not.toMatch(/1015/);
+  });
+
+  it('DryRunAdapter logs use redactPhonesInText and redactPhone (kills #51/#52)', async () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const adapter = new DryRunAdapter();
+    await adapter.sendMessage({
+      to: '+442071234567',
+      body: 'Call back +442071234567 please',
+    });
+    const line = String(log.mock.calls[0]?.[0] ?? '');
+    expect(line).toContain('***-***-4567');
+    expect(line).not.toContain('442071234567');
+    expect(line).not.toContain('+442071234567');
+    // Source must call the helpers (mut.py string revert)
+    const src = await import('fs').then((fs) =>
+      fs.readFileSync(new URL('./dry-run.ts', import.meta.url), 'utf8')
+    );
+    expect(src).toContain('redactPhonesInText(input.body)');
+    expect(src).toContain('redactPhone(input.to)');
+    log.mockRestore();
   });
 });
