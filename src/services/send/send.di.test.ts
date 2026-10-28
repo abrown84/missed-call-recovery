@@ -437,7 +437,10 @@ describe('sendMessageWithDeps', () => {
   });
 
   it('relay ok / conflict / maintenance / failed / throw', async () => {
-    const mk = async (result: unknown | Error) => {
+    const mk = async (
+      result: unknown | Error,
+      kind: 'recovery' | 'campaign' = 'recovery'
+    ) => {
       const db = makeDb({ leads: { opted_out: false } });
       const send =
         result instanceof Error
@@ -445,30 +448,66 @@ describe('sendMessageWithDeps', () => {
               throw result;
             })
           : vi.fn(async () => result);
-      return sendMessageWithDeps(
-        baseDeps({
-          dbImpl: db,
-          adapter: () => ({ name: 'm', sendMessage: send }) as never,
-        }),
-        {
-          kind: 'recovery',
-          leadId: 'L',
-          businessId: 'B',
-          to: '+12135550100',
-          body: 'hi',
-        }
-      );
+      return {
+        outcome: await sendMessageWithDeps(
+          baseDeps({
+            dbImpl: db,
+            adapter: () => ({ name: 'm', sendMessage: send }) as never,
+          }),
+          {
+            kind,
+            leadId: 'L',
+            businessId: 'B',
+            to: '+12135550100',
+            body: 'hi',
+            skipQuietHours: true,
+            skipRecoveryGate: true,
+            enrollmentId: 'E',
+            campaignId: 'C',
+            stepNumber: 2,
+          }
+        ),
+        db,
+      };
     };
-    expect((await mk({ id: 'm', status: 'queued', keyEchoed: true })).kind).toBe(
+    expect((await mk({ id: 'm', status: 'queued', keyEchoed: true })).outcome.kind).toBe(
       'sent'
     );
-    expect((await mk({ id: 'm', conflict: true })).kind).toBe('needs_review');
+    expect((await mk({ id: 'm', conflict: true })).outcome.kind).toBe('needs_review');
     expect(
-      (await mk({ id: 'm', ambiguous: true, status: 'maintenance' })).kind
+      (await mk({ id: 'm', ambiguous: true, status: 'maintenance' })).outcome.kind
     ).toBe('ambiguous');
-    expect((await mk({ id: 'm', ambiguous: true })).kind).toBe('ambiguous');
-    expect((await mk({ id: 'm', status: 'failed' })).kind).toBe('needs_review');
-    expect((await mk(new Error('boom'))).kind).toBe('ambiguous');
+    expect((await mk({ id: 'm', ambiguous: true })).outcome.kind).toBe('ambiguous');
+    expect((await mk({ id: 'm', status: 'failed' })).outcome.kind).toBe('needs_review');
+    expect((await mk(new Error('boom'))).outcome.kind).toBe('ambiguous');
+
+    // Campaign kind must also update sms row on needs_review / ambiguous / sent
+    // but must NOT write leads.sms_outbound_sid (recovery-only).
+    for (const result of [
+      { id: 'm', status: 'queued', keyEchoed: true },
+      { id: 'm', conflict: true },
+      { id: 'm', ambiguous: true },
+    ] as const) {
+      const { outcome, db } = await mk(result, 'campaign');
+      expect(['sent', 'needs_review', 'ambiguous']).toContain(outcome.kind);
+      expect(
+        db.calls.some(
+          (c) =>
+            c.table === TABLE.smsMessages &&
+            c.op === 'update' &&
+            c.args[0] &&
+            typeof c.args[0] === 'object'
+        )
+      ).toBe(true);
+      expect(
+        db.calls.some(
+          (c) =>
+            c.table === TABLE.leads &&
+            c.op === 'update' &&
+            (c.args[0] as { sms_outbound_sid?: string })?.sms_outbound_sid
+        )
+      ).toBe(false);
+    }
   });
 
   it('manual/escalation skips customer gates and still sends', async () => {
