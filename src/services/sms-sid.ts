@@ -65,7 +65,11 @@ export function isAmbiguousSmsStatus(status: string | null | undefined): boolean
 
 /**
  * Relay lookup outcome. Only 'never_sent' permits automatic requeue.
- * Bare 404 / arrays / missing fields → 'unknown' (park).
+ * 404 / 405 (pre-v1.7.5) / arrays / missing fields → 'unknown' (park).
+ *
+ * Supported shape (relay >= 1.7.5):
+ *   { found: false }
+ *   | { found: true, id, to, status, error, created, updated, attempts, auto }
  */
 export type RelayLookupOutcome = 'sent' | 'never_sent' | 'unknown';
 
@@ -75,8 +79,9 @@ export function classifyRelayLookupResponse(opts: {
 }): RelayLookupOutcome {
   const { httpStatus, body } = opts;
 
-  if (httpStatus === 404) {
-    // QC: bare 404 is NOT definite never-sent (endpoint may be missing).
+  // Pre-v1.7.5 relays return 405 Method Not Allowed for GET /api/messages.
+  // Bare 404 also means lookup is missing — never treat as never_sent.
+  if (httpStatus === 404 || httpStatus === 405) {
     return 'unknown';
   }
   if (httpStatus < 200 || httpStatus >= 300) {
@@ -92,8 +97,5 @@ export function classifyRelayLookupResponse(opts: {
   const obj = body as Record<string, unknown>;
   if (obj.found === false) return 'never_sent';
   if (obj.found === true && (obj.id || obj.status)) return 'sent';
-  if (typeof obj.id === 'string' && obj.id.length > 0) return 'sent';
-  if (obj.exists === false || obj.present === false) return 'never_sent';
-
   return 'unknown';
 }

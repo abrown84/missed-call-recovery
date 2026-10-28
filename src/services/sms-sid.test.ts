@@ -36,7 +36,16 @@ describe('sms-sid parse / confirm', () => {
   });
 });
 
-describe('relay lookup contract (conservative)', () => {
+describe('relay lookup contract (FastAPI >= v1.7.5)', () => {
+  it('405 Method Not Allowed is unknown (pre-v1.7.5)', () => {
+    expect(
+      classifyRelayLookupResponse({
+        httpStatus: 405,
+        body: { detail: 'Method Not Allowed' },
+      })
+    ).toBe('unknown');
+  });
+
   it('bare 404 is unknown — not never_sent', () => {
     expect(
       classifyRelayLookupResponse({ httpStatus: 404, body: null })
@@ -52,9 +61,12 @@ describe('relay lookup contract (conservative)', () => {
     ).toBe('unknown');
   });
 
-  it('missing lookup body is unknown', () => {
+  it('missing lookup body / id without found is unknown', () => {
     expect(
       classifyRelayLookupResponse({ httpStatus: 200, body: {} })
+    ).toBe('unknown');
+    expect(
+      classifyRelayLookupResponse({ httpStatus: 200, body: { id: 'm1' } })
     ).toBe('unknown');
     expect(
       classifyRelayLookupResponse({ httpStatus: 200, body: null })
@@ -70,17 +82,21 @@ describe('relay lookup contract (conservative)', () => {
     ).toBe('never_sent');
   });
 
-  it('found:true with id is sent', () => {
+  it('found:true with id (+ optional relay fields) is sent', () => {
     expect(
       classifyRelayLookupResponse({
         httpStatus: 200,
-        body: { found: true, id: 'm1', status: 'queued' },
-      })
-    ).toBe('sent');
-    expect(
-      classifyRelayLookupResponse({
-        httpStatus: 200,
-        body: { id: 'm1' },
+        body: {
+          found: true,
+          id: 'm1',
+          to: '+15551234567',
+          status: 'queued',
+          error: null,
+          created: '2026-10-28T00:00:00Z',
+          updated: '2026-10-28T00:00:01Z',
+          attempts: 0,
+          auto: true,
+        },
       })
     ).toBe('sent');
   });

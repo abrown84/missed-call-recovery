@@ -2,11 +2,18 @@ import { classifyRelayLookupResponse } from '@/services/sms-sid';
 import type {
   IdempotencyLookupResult,
   MessagingAdapter,
+  RelayLookupSupport,
   SendMessageInput,
   SendMessageResult,
 } from './types';
 
 const DEFAULT_TIMEOUT_MS = 15_000;
+
+/** Probe key used only for lookup capability checks (never a real send sid). */
+export const RELAY_LOOKUP_PROBE_KEY = '__brwn_lookup_probe__';
+
+/** Minimum relay version that supports GET lookup + idempotency requeue. */
+export const BRWN_RELAY_MIN_VERSION_FOR_REQUEUE = '1.7.5';
 
 /** Validate and normalize a BRWN relay base URL (exported for unit tests). */
 export function resolveBrwnRelayUrl(rawInput?: string): string {
@@ -55,15 +62,16 @@ function getTimeoutMs(): number {
 }
 
 /**
- * BRWN Text relay adapter.
- * POST {BRWN_RELAY_URL}/api/messages with Bearer sender token.
- * The Android (or future Mac) node long-polls the relay and sends the SMS.
+ * BRWN Text relay adapter (FastAPI).
  *
- * RELAY VERIFICATION (QC r3): No public `abrown84` relay source repo was
- * found that documents GET /api/messages?idempotencyKey=… or server-side
- * dedupe on idempotencyKey. This client treats bare 404 / arrays / missing
- * fields as `unknown` (never auto-requeue). Only an explicit
- * `{ found: false }` (HTTP 2xx) is `never_sent`.
+ * POST /api/messages JSON body: { to, body, auto, idempotencyKey? }
+ *   200 → { id, status, duplicate?: true }
+ *   429 → { detail: 'recent_send' } (same number <45s, or same number+body <600s)
+ *     On keyed send → ambiguous (park/reconcile), not a hard error.
+ *
+ * GET /api/messages?idempotencyKey=<key> (Bearer auth) — requires relay >= v1.7.5
+ *   200 → { found: false } | { found: true, id, to, status, error, created, updated, attempts, auto }
+ *   405 / 404 → unknown (lookup unsupported or missing)
  */
 export class BrwnRelayAdapter implements MessagingAdapter {
   readonly name = 'brwn-relay';
@@ -77,20 +85,23 @@ export class BrwnRelayAdapter implements MessagingAdapter {
     const timer = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
+      // Exact FastAPI contract field names (JSON body, not headers).
+      const payload: Record<string, unknown> = {
+        to: input.to,
+        body: input.body,
+        auto: input.auto ?? true,
+      };
+      if (input.idempotencyKey) {
+        payload.idempotencyKey = input.idempotencyKey;
+      }
+
       const res = await fetch(`${baseUrl}/api/messages`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({
-          to: input.to,
-          body: input.body,
-          auto: input.auto ?? true,
-          ...(input.idempotencyKey
-            ? { idempotencyKey: input.idempotencyKey }
-            : {}),
-        }),
+        body: JSON.stringify(payload),
         signal: controller.signal,
       });
 
@@ -103,6 +114,18 @@ export class BrwnRelayAdapter implements MessagingAdapter {
       }
 
       if (res.status === 429) {
+        // FastAPI shape: { detail: 'recent_send' }
+        if (input.idempotencyKey) {
+          // Keyed send: park + reconcile — not a hard error.
+          console.warn(
+            `BRWN relay 429 recent_send on keyed send (${input.idempotencyKey}); treating as unknown`
+          );
+          return {
+            id: `rate-limited:${input.idempotencyKey}`,
+            status: 'unknown',
+            ambiguous: true,
+          };
+        }
         throw new Error('BRWN relay rate-limited send (recent_send)');
       }
 
@@ -110,26 +133,33 @@ export class BrwnRelayAdapter implements MessagingAdapter {
         throw new Error(`BRWN relay HTTP ${res.status}`);
       }
 
-      const id = (json as { id?: string })?.id;
-      const status = (json as { status?: string })?.status || 'queued';
+      const obj = json as {
+        id?: string;
+        status?: string;
+        duplicate?: boolean;
+      };
+      const id = obj?.id;
+      const status = obj?.status || 'queued';
       if (!id) {
         throw new Error('BRWN relay returned no message id');
       }
 
-      return { id, status };
+      return {
+        id,
+        status,
+        ...(obj.duplicate === true ? { duplicate: true } : {}),
+      };
     } finally {
       clearTimeout(timer);
     }
   }
 
   /**
-   * Look up a prior queue by idempotency key.
-   * GET {BRWN_RELAY_URL}/api/messages?idempotencyKey=…
-   *
-   * Contract (conservative):
-   * - HTTP 2xx + `{ found: false }` → never_sent (safe to requeue)
-   * - HTTP 2xx + `{ found: true, id }` or `{ id }` → sent
-   * - Bare 404, array body, missing fields, non-2xx → unknown (park)
+   * GET /api/messages?idempotencyKey=<key>
+   * Contract:
+   * - 200 + { found: false } → never_sent
+   * - 200 + { found: true, id, … } → sent
+   * - 404 / 405 / other → unknown
    */
   async lookupByIdempotencyKey(
     key: string
@@ -180,4 +210,113 @@ export class BrwnRelayAdapter implements MessagingAdapter {
       clearTimeout(timer);
     }
   }
+
+  /**
+   * Probe GET lookup support. Older relays return 405 Method Not Allowed.
+   */
+  async checkLookupSupport(): Promise<RelayLookupSupport> {
+    const baseUrl = getRelayUrl();
+    const token = getSenderToken();
+    const timeoutMs = getTimeoutMs();
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      const url = new URL(`${baseUrl}/api/messages`);
+      url.searchParams.set('idempotencyKey', RELAY_LOOKUP_PROBE_KEY);
+      const res = await fetch(url.toString(), {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${token}` },
+        signal: controller.signal,
+      });
+
+      if (res.status === 405 || res.status === 404) {
+        return {
+          supported: false,
+          reason:
+            res.status === 405
+              ? `GET /api/messages?idempotencyKey not allowed (HTTP 405). Upgrade BRWN Text relay to >= ${BRWN_RELAY_MIN_VERSION_FOR_REQUEUE} for requeue.`
+              : `GET /api/messages?idempotencyKey returned 404. Upgrade BRWN Text relay to >= ${BRWN_RELAY_MIN_VERSION_FOR_REQUEUE} for requeue.`,
+          httpStatus: res.status,
+        };
+      }
+
+      if (res.status >= 200 && res.status < 300) {
+        let body: unknown = null;
+        try {
+          body = await res.json();
+        } catch {
+          body = null;
+        }
+        if (
+          body &&
+          typeof body === 'object' &&
+          !Array.isArray(body) &&
+          'found' in (body as object)
+        ) {
+          return { supported: true };
+        }
+        return {
+          supported: false,
+          reason:
+            'GET lookup returned 2xx without { found } — unexpected shape; parked rows cannot be reconciled safely.',
+          httpStatus: res.status,
+        };
+      }
+
+      return {
+        supported: false,
+        reason: `GET lookup HTTP ${res.status}; parked rows cannot be reconciled until relay >= ${BRWN_RELAY_MIN_VERSION_FOR_REQUEUE}.`,
+        httpStatus: res.status,
+      };
+    } catch (err) {
+      return {
+        supported: false,
+        reason: `GET lookup probe failed: ${err instanceof Error ? err.message : 'unknown'}`,
+      };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+}
+
+let lookupWarningLogged = false;
+
+/**
+ * Startup/health check: loud warning when relay lookup is unsupported so
+ * parked ambiguous rows are visible (cannot requeue without >= v1.7.5).
+ */
+export async function warnIfRelayLookupUnsupported(
+  adapter: MessagingAdapter = new BrwnRelayAdapter()
+): Promise<RelayLookupSupport> {
+  if (!adapter.checkLookupSupport) {
+    const result: RelayLookupSupport = {
+      supported: false,
+      reason: 'Messaging adapter has no checkLookupSupport / lookup API',
+    };
+    logLookupUnsupported(result);
+    return result;
+  }
+
+  const result = await adapter.checkLookupSupport();
+  if (!result.supported) {
+    logLookupUnsupported(result);
+  }
+  return result;
+}
+
+function logLookupUnsupported(result: Extract<RelayLookupSupport, { supported: false }>) {
+  if (lookupWarningLogged) return;
+  lookupWarningLogged = true;
+  console.error(
+    '!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n' +
+      `ALERT: BRWN relay idempotency LOOKUP NOT SUPPORTED — ${result.reason}\n` +
+      `Ambiguous/parked sms_messages rows will STAY PARKED until relay >= ${BRWN_RELAY_MIN_VERSION_FOR_REQUEUE}.\n` +
+      '!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!'
+  );
+}
+
+/** Test helper */
+export function resetRelayLookupWarningFlag(): void {
+  lookupWarningLogged = false;
 }

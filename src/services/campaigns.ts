@@ -1,6 +1,7 @@
 import { randomUUID } from 'crypto';
 import { createServerClient } from '@/lib/supabase';
 import { getMessagingAdapter } from '@/lib/messaging';
+import { warnIfRelayLookupUnsupported } from '@/lib/messaging/brwn-relay';
 import { getTemplate } from '@/lib/templates';
 import type { Database } from '@/types/database';
 import {
@@ -505,6 +506,20 @@ export async function sendCampaignSMS(
       idempotencyKey: stepSid,
     });
 
+    // 429 recent_send on keyed send → ambiguous (park), not a hard error.
+    if (message.ambiguous || message.status === 'unknown') {
+      await supabase
+        .from('sms_messages')
+        .update({ status: 'unknown' })
+        .eq('message_sid', stepSid);
+      await parkEnrollmentForReconcile(supabase, enrollmentId, token);
+      console.warn(
+        `Campaign SMS ambiguous for ${enrollmentId} step ${enrollment.current_step} ` +
+          `(sid=${stepSid}); parked for reconcile`
+      );
+      return false;
+    }
+
     await supabase
       .from('sms_messages')
       .update({ status: message.status || 'queued' })
@@ -525,7 +540,8 @@ export async function sendCampaignSMS(
 
     console.log(
       `Campaign SMS sent for ${enrollmentId} step ${enrollment.current_step} ` +
-        `(provider=${message.id}, sid=${stepSid})`
+        `(provider=${message.id}, sid=${stepSid}` +
+        `${message.duplicate ? ', duplicate' : ''})`
     );
 
     return true;
@@ -1047,9 +1063,19 @@ export async function processDueCampaigns(): Promise<{
   stuckSendingCount: number;
   requeued: number;
   confirmed: number;
+  parked: number;
   alert: boolean;
+  relayLookupSupported?: boolean;
 }> {
   const adapter = getMessagingAdapter();
+
+  // Loud warning when GET lookup is missing (relay < v1.7.5 → parked rows stick).
+  let relayLookupSupported: boolean | undefined;
+  if (adapter.checkLookupSupport) {
+    const support = await warnIfRelayLookupUnsupported(adapter);
+    relayLookupSupported = support.supported;
+  }
+
   const reconcile = await reconcileAmbiguousSms();
 
   const ids = await listClaimableEnrollmentIds(100);
@@ -1061,6 +1087,7 @@ export async function processDueCampaigns(): Promise<{
       errors: 0,
       skipped: 0,
       messagingProvider: adapter.name,
+      relayLookupSupported,
       ...reconcile,
     };
   }
@@ -1096,6 +1123,7 @@ export async function processDueCampaigns(): Promise<{
     errors,
     skipped,
     messagingProvider: adapter.name,
+    relayLookupSupported,
     ...reconcile,
   };
 }

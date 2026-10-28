@@ -90,6 +90,18 @@ export async function sendRecoverySMS(
       idempotencyKey: sid,
     });
 
+    // 429 on keyed recovery → park as unknown (do not hard-fail the webhook).
+    if (message.ambiguous || message.status === 'unknown') {
+      await supabase
+        .from('sms_messages')
+        .update({ status: 'unknown' })
+        .eq('message_sid', sid);
+      console.warn(
+        `Recovery SMS ambiguous for lead ${leadId}; parked for reconcile`
+      );
+      return;
+    }
+
     await supabase
       .from('sms_messages')
       .update({ status: message.status || 'queued' })
@@ -101,7 +113,8 @@ export async function sendRecoverySMS(
       .eq('id', leadId);
 
     console.log(
-      `Recovery SMS queued to ${redactPhone(callerPhone)}, id: ${message.id}`
+      `Recovery SMS queued to ${redactPhone(callerPhone)}, id: ${message.id}` +
+        `${message.duplicate ? ' (duplicate)' : ''}`
     );
   } catch (error) {
     await supabase

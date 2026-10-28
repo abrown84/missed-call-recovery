@@ -98,6 +98,15 @@ Tracks leads in campaigns
 | `UNKNOWN_SMS_ALERT_THRESHOLD` | `5` | Cron alerts when ambiguous (`unknown` + stuck `sending`) rows in a reconcile pass meet/exceed this count. |
 | `MESSAGING_PROVIDER` | `brwn-relay` | Set `dry-run` on staging to log sends without hitting the relay. |
 
+### BRWN Text relay version
+
+**Requeue / reconcile requires relay >= v1.7.5.** That release adds:
+
+- `POST /api/messages` JSON body fields: `to`, `body`, `auto`, optional `idempotencyKey` (body field, not a header). Duplicate key → `200 { id, status, duplicate: true }`.
+- `GET /api/messages?idempotencyKey=<key>` (same Bearer) → `{ found: false }` or `{ found: true, id, to, status, error, created, updated, attempts, auto }`.
+
+Older relays return **405** for that GET and **429 `{ detail: 'recent_send' }`** for the same number within 45s (or same number+body within 600s). This app treats keyed-send 429 as **unknown (park + reconcile)**, not a hard error; 405/404 on lookup stay **unknown**. Cron logs a loud `LOOKUP NOT SUPPORTED` warning when the probe fails so parked rows are visible until the relay is upgraded.
+
 ---
 
 ## How It Works
@@ -148,9 +157,10 @@ Insert sms_messages (sid=campaign:{enrollment}:{campaign}:step:{n}, status=sendi
   - UNIQUE hit + existing status confirmed → advance
   - UNIQUE hit + sending/unknown → PARK (far-future next_send_at) until reconcile
   ↓
-Send via BRWN (idempotencyKey=sid) or dry-run
-  - success → status=queued, advance, clear claim
-  - timeout/error → status=unknown, PARK (do not advance; do not resend yet)
+Send via BRWN (JSON `idempotencyKey=sid`) or dry-run
+  - success / duplicate:true → status=queued, advance, clear claim
+  - 429 recent_send (keyed) → status=unknown, PARK (reconcile later)
+  - timeout/other error → status=unknown, PARK
 ```
 
 ### **Send / reconcile state machine**
@@ -162,12 +172,12 @@ Sids:
 | Relay lookup outcome | Action |
 |----------------------|--------|
 | `sent` | Mark sms row confirmed; for campaign sids, advance past the **exact** step in the sid |
-| `never_sent` | Only when relay returns HTTP 2xx + `{ found: false }`. Abandon sid (`…:abandoned:{ts}`), requeue **exact** step (or clear recovery outbound sid) |
-| `unknown` | Bare 404, array body, missing fields, HTTP errors, or no lookup API. **Park** — never auto-requeue |
+| `never_sent` | Only when relay (>= v1.7.5) returns HTTP 2xx + `{ found: false }`. Abandon sid (`…:abandoned:{ts}`), requeue **exact** step (or clear recovery outbound sid) |
+| `unknown` | 404, **405** (pre-v1.7.5), array body, missing `{ found }`, HTTP errors. **Park** — never auto-requeue |
 
-Alert: if `unknown + stuck sending >= UNKNOWN_SMS_ALERT_THRESHOLD` (default **5**), cron logs `ALERT: …`.
+Alert: if `unknown + stuck sending >= UNKNOWN_SMS_ALERT_THRESHOLD` (default **5**), cron logs `ALERT: …`. Cron also probes GET lookup and logs `LOOKUP NOT SUPPORTED` when the relay is below **v1.7.5**.
 
-> **Relay verification:** No public `abrown84` BRWN relay source was available to confirm GET `/api/messages?idempotencyKey=` or server-side idempotency dedupe. The client is conservative (404 ≠ never_sent). Contract tests live in `brwn-relay.test.ts` / `sms-sid.test.ts`.
+Contract tests: `brwn-relay.test.ts` / `sms-sid.test.ts`.
 
 ---
 

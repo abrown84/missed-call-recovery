@@ -47,7 +47,12 @@ export type {
   SendMessageInput,
   SendMessageResult,
   IdempotencyLookupResult,
+  RelayLookupSupport,
 } from './types';
-export { BrwnRelayAdapter } from './brwn-relay';
+export {
+  BrwnRelayAdapter,
+  warnIfRelayLookupUnsupported,
+  BRWN_RELAY_MIN_VERSION_FOR_REQUEUE,
+} from './brwn-relay';
 export { DryRunAdapter } from './dry-run';
 export { authorizeBrwnWebhook, bearerMatches } from './auth';

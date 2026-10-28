@@ -2,6 +2,7 @@ import { redactPhone } from '@/lib/pii';
 import type {
   IdempotencyLookupResult,
   MessagingAdapter,
+  RelayLookupSupport,
   SendMessageInput,
   SendMessageResult,
 } from './types';
@@ -38,5 +39,9 @@ export class DryRunAdapter implements MessagingAdapter {
       id: `dry-run-lookup`,
       status: 'queued',
     };
+  }
+
+  async checkLookupSupport(): Promise<RelayLookupSupport> {
+    return { supported: true };
   }
 }
