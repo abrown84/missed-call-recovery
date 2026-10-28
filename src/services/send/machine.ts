@@ -54,6 +54,9 @@ export type SendMachineDecision =
 
 export function parkDelayMs(reconcileAttempts: number): number {
   const n = Number(reconcileAttempts);
+  // n > 0 (not >=): Math.floor(0) === 0 so >= is equivalent for the exp path;
+  // still require finite + positive so NaN/Infinity/negatives park at base delay.
+  // Stryker disable next-line EqualityOperator: n >= 0 ≡ n > 0 here (floor(0)===0)
   const exp = Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
   const raw = PARK_BASE_MS * 2 ** exp;
   return Math.min(raw, PARK_MAX_MS);
@@ -132,6 +135,7 @@ function onSendResult(
         phase: 'ambiguous',
         nextAttempts: 0,
       };
+    // Stryker disable next-line StringLiteral,ConditionalExpression: case 'error' ≡ default body
     case 'error':
     default:
       return {
@@ -166,9 +170,10 @@ function onLookup(
           nextAttempts: next,
         };
       }
+      // status is non-empty here: falsy values fail isConfirmedStatus above
       return {
         action: 'resolved',
-        providerStatus: signal.status || 'queued',
+        providerStatus: signal.status,
         phase: 'resolved',
       };
     case 'failed':
@@ -199,18 +204,15 @@ function onLookup(
 }
 
 export function isFailedStatus(status: string | null | undefined): boolean {
-  if (!status) return false;
-  return FAILED_STATUSES.has(String(status).toLowerCase());
+  return FAILED_STATUSES.has(String(status ?? '').toLowerCase());
 }
 
 export function isConfirmedStatus(status: string | null | undefined): boolean {
-  if (!status) return false;
-  return CONFIRMED_STATUSES.has(String(status).toLowerCase());
+  return CONFIRMED_STATUSES.has(String(status ?? '').toLowerCase());
 }
 
 export function isAmbiguousStatus(status: string | null | undefined): boolean {
-  if (!status) return false;
-  const s = String(status).toLowerCase();
+  const s = String(status ?? '').toLowerCase();
   return s === 'sending' || s === 'unknown' || s === 'deferred' || s === 'pending';
 }
 
@@ -228,14 +230,8 @@ export function classifyRecoveryStatus(
   const s = String(status).toLowerCase();
   if (isConfirmedStatus(s)) return 'resolved_sent';
   if (s === 'abandoned_retry' || s === 'abandoned_done') return 'resolved_abandoned';
-  if (s === 'deferred') return 'pending';
-  if (
-    isAmbiguousStatus(s) ||
-    s === 'needs_review' ||
-    isFailedStatus(s)
-  ) {
-    return 'pending';
-  }
-  // Unknown vocabulary → pending (never treat as absent → no step-1 double send)
+  // Ambiguous / failed / needs_review / deferred / unknown vocabulary → pending
+  // (never treat as absent → no step-1 double send). Prior explicit pending
+  // branches were equivalent to this fallthrough and only fed survivor mutants.
   return 'pending';
 }

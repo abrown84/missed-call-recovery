@@ -6,8 +6,9 @@ describe('isSendsEnabled', () => {
     delete process.env.SENDS_ENABLED;
   });
 
-  it('defaults true when unset or empty', () => {
+  it('defaults true when unset; empty string also enables', () => {
     expect(isSendsEnabled({})).toBe(true);
+    expect(isSendsEnabled({ SENDS_ENABLED: undefined })).toBe(true);
     expect(isSendsEnabled({ SENDS_ENABLED: '' })).toBe(true);
   });
 

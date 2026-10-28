@@ -33,13 +33,65 @@ describe('normalizeLookupOutcome', () => {
   });
 
   it('explicit found:false is never_sent; outcome string wins when present', () => {
-    expect(normalizeLookupOutcome({ found: false }).outcome).toBe('never_sent');
+    expect(normalizeLookupOutcome({ found: false })).toEqual({
+      outcome: 'never_sent',
+      providerStatus: 'queued',
+    });
     expect(
       normalizeLookupOutcome({ outcome: 'never_sent', found: true }).outcome
     ).toBe('never_sent');
     expect(
-      normalizeLookupOutcome({ outcome: 'sent', status: 'failed' }).outcome
-    ).toBe('failed');
+      normalizeLookupOutcome({ outcome: 'sent', status: 'failed' })
+    ).toEqual({ outcome: 'failed', providerStatus: 'failed' });
+  });
+
+  it('defaults missing status to queued; preserves explicit outcomes', () => {
+    expect(normalizeLookupOutcome({ outcome: 'sent' })).toEqual({
+      outcome: 'sent',
+      providerStatus: 'queued',
+    });
+    expect(normalizeLookupOutcome({ outcome: 'unknown' })).toEqual({
+      outcome: 'unknown',
+      providerStatus: 'queued',
+    });
+    expect(normalizeLookupOutcome({ outcome: 'failed' })).toEqual({
+      outcome: 'failed',
+      providerStatus: 'queued',
+    });
+    expect(
+      normalizeLookupOutcome({ outcome: 'never_sent', status: 'sent' })
+    ).toEqual({ outcome: 'never_sent', providerStatus: 'sent' });
+  });
+
+  it('found:true without id/status stays unknown; status alone → sent', () => {
+    // lookup.id || lookup.status — status-only must still confirm sent
+    expect(normalizeLookupOutcome({ found: true, status: 'delivered' })).toEqual(
+      {
+        outcome: 'sent',
+        providerStatus: 'delivered',
+      }
+    );
+    expect(normalizeLookupOutcome({ found: true, id: 'sid-1' })).toEqual({
+      outcome: 'sent',
+      providerStatus: 'queued',
+    });
+    // found:true with neither id nor status → do not invent sent
+    expect(normalizeLookupOutcome({ found: true })).toEqual({
+      outcome: 'unknown',
+      providerStatus: 'queued',
+    });
+  });
+
+  it('found:true + failed status without outcome → failed', () => {
+    expect(
+      normalizeLookupOutcome({ found: true, status: 'failed' })
+    ).toEqual({ outcome: 'failed', providerStatus: 'failed' });
+  });
+
+  it('explicit sent + non-failed status stays sent (&& failed would wrongly flip)', () => {
+    expect(
+      normalizeLookupOutcome({ outcome: 'sent', status: 'delivered' })
+    ).toEqual({ outcome: 'sent', providerStatus: 'delivered' });
   });
 });
 
@@ -56,6 +108,15 @@ describe('decideReconcileRow', () => {
         keySupportedAtSend: true,
       })
     ).toMatchObject({ action: 'confirm', providerStatus: 'delivered' });
+  });
+
+  it('confirm defaults missing providerStatus to queued', () => {
+    const d = decideReconcileRow({
+      sid,
+      outcome: 'sent',
+      keySupportedAtSend: true,
+    });
+    expect(d).toMatchObject({ action: 'confirm', providerStatus: 'queued' });
   });
 
   it('parks unknown; requeues never_sent only with key support', () => {
