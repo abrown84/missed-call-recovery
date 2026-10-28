@@ -19,6 +19,7 @@ vi.mock('@/services/campaigns', () => ({
 
 vi.mock('@/services/suppressions', () => ({
   isPhoneSuppressed: (...args: unknown[]) => isPhoneSuppressed(...args),
+  SuppressionLookupError: class SuppressionLookupError extends Error {},
 }));
 
 import { processMissedCall } from './missed-call';

@@ -10,6 +10,7 @@ import {
   isLeadWithinLookupAge,
   isProductionRuntime,
   planEnrollmentStart,
+  parkedNextSendAt,
   selectCampaignForUrgency,
   shouldSendCampaignStep,
 } from './campaign-logic';
@@ -46,6 +47,42 @@ describe('campaignStepMessageSid includes campaign', () => {
 });
 
 describe('decideReplyEnrollmentAction', () => {
+  it('returns noop when enrollment missing', () => {
+    expect(decideReplyEnrollmentAction(null, CAMPAIGNS[0])).toEqual({
+      action: 'noop',
+    });
+  });
+
+  it('pauses active enrollment when target campaign missing and replyMode pause', () => {
+    expect(
+      decideReplyEnrollmentAction(
+        { id: 'e1', campaign_id: 'c-std', status: 'active' },
+        undefined,
+        { replyMode: 'pause' }
+      )
+    ).toEqual({ action: 'pause' });
+  });
+
+  it('noops when target campaign missing and replyMode continue', () => {
+    expect(
+      decideReplyEnrollmentAction(
+        { id: 'e1', campaign_id: 'c-std', status: 'active' },
+        undefined,
+        { replyMode: 'continue' }
+      )
+    ).toEqual({ action: 'noop' });
+  });
+
+  it('noops when target campaign missing and enrollment not active', () => {
+    expect(
+      decideReplyEnrollmentAction(
+        { id: 'e1', campaign_id: 'c-std', status: 'paused' },
+        undefined,
+        { replyMode: 'pause' }
+      )
+    ).toEqual({ action: 'noop' });
+  });
+
   it('switches Standard → Emergency when not claimed', () => {
     expect(
       decideReplyEnrollmentAction(
@@ -154,6 +191,29 @@ describe('planEnrollmentStart / selectCampaign', () => {
   it('selects Standard when urgency null', () => {
     expect(selectCampaignForUrgency(CAMPAIGNS, null)?.id).toBe('c-std');
   });
+
+  it('selects exact urgency match', () => {
+    expect(selectCampaignForUrgency(CAMPAIGNS, 'high')?.id).toBe('c-hi');
+  });
+
+  it('throws when campaign has no steps', () => {
+    expect(() =>
+      planEnrollmentStart([], { recoveryAlreadySent: false })
+    ).toThrow('Campaign has no steps');
+  });
+
+  it('when only initial skipped and no further steps', () => {
+    const plan = planEnrollmentStart(
+      [{ step_number: 1, delay_minutes: 0, template_key: 'only' }],
+      {
+        recoveryAlreadySent: true,
+        treatRecoveryAsInitial: true,
+        now: new Date('2026-10-28T12:00:00.000Z'),
+      }
+    );
+    expect(plan.skippedInitial).toBe(true);
+    expect(plan.currentStep).toBe(1);
+  });
 });
 
 describe('misc helpers', () => {
@@ -173,7 +233,49 @@ describe('misc helpers', () => {
       'continue'
     );
     expect(getCampaignReplyMode({})).toBe('pause');
+    expect(getCampaignReplyMode({ CAMPAIGN_REPLY_MODE: 'PAUSE' })).toBe('pause');
     expect(isProductionRuntime({ NODE_ENV: 'production' })).toBe(true);
     expect(isProductionRuntime({ VERCEL_ENV: 'preview' })).toBe(false);
+  });
+
+  it('parkedNextSendAt adds 30 minutes', () => {
+    const now = new Date('2026-10-28T12:00:00.000Z');
+    expect(parkedNextSendAt(now)).toBe('2026-10-28T12:30:00.000Z');
+  });
+
+  it('hasFreshClaim rejects invalid dates', () => {
+    expect(hasFreshClaim({ claimed_at: 'not-a-date' })).toBe(false);
+    expect(hasFreshClaim({ claimed_at: null })).toBe(false);
+  });
+
+  it('isLeadWithinLookupAge rejects invalid created_at', () => {
+    expect(isLeadWithinLookupAge('invalid')).toBe(false);
+  });
+
+  it('isEnrollmentClaimable due when next_send_at passed', () => {
+    const now = new Date('2026-10-28T12:00:00.000Z');
+    expect(
+      isEnrollmentClaimable(
+        {
+          status: 'active',
+          next_send_at: '2026-10-28T11:00:00.000Z',
+          claimed_at: null,
+        },
+        now
+      )
+    ).toBe(true);
+  });
+
+  it('isEnrollmentClaimable false when not active', () => {
+    expect(
+      isEnrollmentClaimable(
+        { status: 'paused', next_send_at: null, claimed_at: null },
+        new Date()
+      )
+    ).toBe(false);
+  });
+
+  it('classifyMessageInsertError failed for other codes', () => {
+    expect(classifyMessageInsertError({ code: 'XX' })).toBe('failed');
   });
 });

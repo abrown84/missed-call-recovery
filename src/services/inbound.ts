@@ -1,22 +1,9 @@
-import { createServerClient } from '@/lib/supabase';
-import { redactPhone } from '@/lib/pii';
-import { tryNormalizeToE164 } from '@/lib/phone';
-import { classifyUrgency, isOptOutMessage } from '@/services/classification';
-import { classifyOptOut } from '@/services/opt-out';
-import { escalateLead } from '@/services/escalation';
-import {
-  handleClassifiedReplyEnrollment,
-  pauseCampaignForLead,
-} from '@/services/campaigns';
-import {
-  markLeadOptedOut,
-  suppressPhoneForBusiness,
-} from '@/services/suppressions';
-import {
-  isLeadWithinLookupAge,
-  LEAD_LOOKUP_MAX_AGE_DAYS,
-} from '@/services/campaign-logic';
+import { LEAD_LOOKUP_MAX_AGE_DAYS } from '@/services/campaign-logic';
 import type { Database } from '@/types/database';
+import {
+  defaultInboundDeps,
+  type InboundDeps,
+} from '@/services/inbound-deps';
 
 type Lead = Database['public']['Tables']['leads']['Row'];
 
@@ -39,6 +26,9 @@ export type InboundResult =
   | { status: 'ambiguous_opt_out'; leadId?: string }
   | { status: 'no_lead_found' };
 
+export type { InboundDeps };
+export { defaultInboundDeps };
+
 /**
  * Handle an inbound customer SMS (forwarded from the BRWN relay webhook).
  * STOP is handled before the age-limited lead lookup so a late opt-out
@@ -47,11 +37,18 @@ export type InboundResult =
 export async function processInboundSms(
   event: InboundSmsEvent
 ): Promise<InboundResult> {
-  const supabase = createServerClient();
+  return processInboundSmsWithDeps(defaultInboundDeps(), event);
+}
+
+export async function processInboundSmsWithDeps(
+  deps: InboundDeps,
+  event: InboundSmsEvent
+): Promise<InboundResult> {
+  const supabase = deps.db();
   const body = event.body.slice(0, 1600);
   const messageId =
     event.messageId ||
-    `brwn-in-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    `brwn-in-${deps.clock().getTime()}-${deps.randomSuffix()}`;
 
   const { data: business, error: bizError } = await supabase
     .from('businesses')
@@ -60,27 +57,28 @@ export async function processInboundSms(
     .single();
 
   if (bizError || !business) {
+    // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
     console.error(
       'Business not found for number:',
-      redactPhone(event.businessPhone)
+      deps.redactPhone(event.businessPhone)
     );
+    // Stryker restore StringLiteral,CallExpression
     throw new InboundError('Business not found', 404);
   }
 
-  // Never throw on bad sender before STOP check (QC: non-numeric sender).
-  const fromE164 = tryNormalizeToE164(event.from);
+  const fromE164 = deps.tryNormalizeToE164(event.from);
   const phoneForLookup = fromE164 || event.from.trim();
 
-  const optOutVerdict = classifyOptOut(body);
+  const optOutVerdict = deps.classifyOptOut(body);
 
-  // Opt-out FIRST — before age-limited lead lookup — so STOP after 7 days
-  // still suppresses the number for this business.
-  if (optOutVerdict.kind === 'opt_out' || isOptOutMessage(body)) {
+  if (optOutVerdict.kind === 'opt_out' || deps.isOptOutMessage(body)) {
     if (!fromE164) {
+      // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
       console.warn(
         'Definite STOP from non-normalizable sender; recording without E.164 suppress',
-        redactPhone(event.from)
+        deps.redactPhone(event.from)
       );
+      // Stryker restore StringLiteral,CallExpression
     }
 
     const { data: anyLead } = await supabase
@@ -107,17 +105,19 @@ export async function processInboundSms(
     const leadId = anyLead?.id || rawLead?.id;
 
     if (fromE164) {
-      await suppressPhoneForBusiness(business.id, fromE164, 'opt_out');
+      await deps.suppressPhoneForBusiness(business.id, fromE164, 'opt_out');
     }
 
     if (leadId) {
-      await markLeadOptedOut(leadId).catch((err) => {
+      await deps.markLeadOptedOut(leadId).catch((err) => {
+        // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
         console.error(
           'Failed to mark lead opted out:',
           err instanceof Error ? err.message : 'unknown'
         );
+        // Stryker restore StringLiteral,CallExpression
       });
-      await pauseCampaignForLead(leadId).catch(() => undefined);
+      await deps.pauseCampaignForLead(leadId).catch(() => undefined);
       await supabase.from('sms_messages').insert({
         lead_id: leadId,
         direction: 'inbound',
@@ -135,11 +135,11 @@ export async function processInboundSms(
   }
 
   if (optOutVerdict.kind === 'ambiguous') {
-    // Flag for human review only — do NOT auto-suppress or pause the campaign
-    // (QC r7: keyword-in-sentence must not silently drop a hot lead).
+    // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
     console.warn(
-      `Ambiguous opt-out language from ${redactPhone(event.from)}: needs_human_review`
+      `Ambiguous opt-out language from ${deps.redactPhone(event.from)}: needs_human_review`
     );
+    // Stryker restore StringLiteral,CallExpression
     const { data: anyLead } = await supabase
       .from('leads')
       .select('id')
@@ -154,9 +154,9 @@ export async function processInboundSms(
         .from('leads')
         .update({
           needs_human_review: true,
-          needs_human_review_at: new Date().toISOString(),
+          needs_human_review_at: deps.clock().toISOString(),
           needs_human_review_reason: optOutVerdict.reason,
-          updated_at: new Date().toISOString(),
+          updated_at: deps.clock().toISOString(),
         })
         .eq('id', anyLead.id);
       await supabase.from('sms_messages').insert({
@@ -172,12 +172,14 @@ export async function processInboundSms(
   }
 
   if (!fromE164) {
-    console.error('Invalid sender phone for inbound:', redactPhone(event.from));
+    // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
+    console.error('Invalid sender phone for inbound:', deps.redactPhone(event.from));
+    // Stryker restore StringLiteral,CallExpression
     return { status: 'no_lead_found' };
   }
 
   const cutoff = new Date(
-    Date.now() - LEAD_LOOKUP_MAX_AGE_DAYS * 24 * 60 * 60 * 1000
+    deps.clock().getTime() - LEAD_LOOKUP_MAX_AGE_DAYS * 24 * 60 * 60 * 1000
   ).toISOString();
 
   const { data: pendingLead } = await supabase
@@ -207,7 +209,6 @@ export async function processInboundSms(
     lead = openLead;
   }
 
-  // Fallback: un-normalized stored phone
   if (!lead && fromE164 !== event.from) {
     const { data: legacy } = await supabase
       .from('leads')
@@ -222,8 +223,10 @@ export async function processInboundSms(
     lead = legacy;
   }
 
-  if (!lead || !isLeadWithinLookupAge(lead.created_at)) {
-    console.error('No recent open lead found for:', redactPhone(event.from));
+  if (!lead || !deps.isLeadWithinLookupAge(lead.created_at, deps.clock())) {
+    // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
+    console.error('No recent open lead found for:', deps.redactPhone(event.from));
+    // Stryker restore StringLiteral,CallExpression
     return { status: 'no_lead_found' };
   }
 
@@ -235,7 +238,7 @@ export async function processInboundSms(
     status: 'received',
   });
 
-  const classification = await classifyUrgency(body, business.vertical);
+  const classification = await deps.classifyUrgency(body, business.vertical);
 
   const { error: updateError } = await supabase
     .from('leads')
@@ -244,30 +247,33 @@ export async function processInboundSms(
       urgency: classification.urgency,
       issue: classification.issue,
       sms_response_text: body,
-      classified_at: new Date().toISOString(),
+      classified_at: deps.clock().toISOString(),
     })
     .eq('id', lead.id);
 
   if (updateError) {
+    // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
     console.error('Failed to update lead:', updateError.message);
+    // Stryker restore StringLiteral,CallExpression
   }
 
-  const enrollment = await handleClassifiedReplyEnrollment(
-    lead.id,
-    classification.urgency
-  ).catch((err) => {
-    console.error(
-      'Enrollment handling failed:',
-      err instanceof Error ? err.message : 'unknown'
-    );
-    return { action: 'error', campaignName: undefined as string | undefined };
-  });
+  const enrollment = await deps
+    .handleClassifiedReplyEnrollment(lead.id, classification.urgency)
+    .catch((err) => {
+      // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
+      console.error(
+        'Enrollment handling failed:',
+        err instanceof Error ? err.message : 'unknown'
+      );
+      // Stryker restore StringLiteral,CallExpression
+      return { action: 'error', campaignName: undefined as string | undefined };
+    });
 
   if (
     classification.urgency === 'emergency' ||
     classification.urgency === 'high'
   ) {
-    await escalateLead(lead.id, business, classification);
+    await deps.escalateLead(lead.id, business, classification);
   }
 
   return {

@@ -1,12 +1,7 @@
-import { createServerClient } from '@/lib/supabase';
-import { redactPhone } from '@/lib/pii';
-import { normalizeToE164 } from '@/lib/phone';
-import { enrollLeadInCampaign } from '@/services/campaigns';
-import { sendRecoverySMS } from '@/services/sms';
 import {
-  SuppressionLookupError,
-  isPhoneSuppressed,
-} from '@/services/suppressions';
+  defaultMissedCallDeps,
+  type MissedCallDeps,
+} from '@/services/missed-call-deps';
 
 export interface MissedCallEvent {
   /** Caller's phone (E.164 preferred). */
@@ -23,6 +18,9 @@ export interface MissedCallResult {
   leadId: string;
 }
 
+export type { MissedCallDeps };
+export { defaultMissedCallDeps };
+
 /**
  * Record a missed call, create a lead, send recovery SMS, enroll in the
  * Standard (catch-all) campaign skipping step 1 so non-responders still get
@@ -31,7 +29,14 @@ export interface MissedCallResult {
 export async function processMissedCall(
   event: MissedCallEvent
 ): Promise<MissedCallResult> {
-  const supabase = createServerClient();
+  return processMissedCallWithDeps(defaultMissedCallDeps(), event);
+}
+
+export async function processMissedCallWithDeps(
+  deps: MissedCallDeps,
+  event: MissedCallEvent
+): Promise<MissedCallResult> {
+  const supabase = deps.db();
 
   const { data: business, error: bizError } = await supabase
     .from('businesses')
@@ -40,10 +45,12 @@ export async function processMissedCall(
     .single();
 
   if (bizError || !business) {
+    // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
     console.error(
       'Business not found for number:',
-      redactPhone(event.businessPhone)
+      deps.redactPhone(event.businessPhone)
     );
+    // Stryker restore StringLiteral,CallExpression
     throw new MissedCallError('Business not found', 404);
   }
 
@@ -76,19 +83,22 @@ export async function processMissedCall(
         return { missedCallId: existing.id, leadId: existingLead.id };
       }
     }
+    // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
     console.error('Failed to record missed call:', callError.message);
+    // Stryker restore StringLiteral,CallExpression
     throw new MissedCallError('Failed to record call', 500);
   }
 
-  const callerE164 = normalizeToE164(event.callerPhone);
+  const callerE164 = deps.normalizeToE164(event.callerPhone);
 
   let suppressed = false;
   try {
-    suppressed = await isPhoneSuppressed(business.id, callerE164);
+    suppressed = await deps.isPhoneSuppressed(business.id, callerE164);
   } catch (err) {
-    if (err instanceof SuppressionLookupError) {
-      // Fail closed: treat as suppressed rather than risk texting an opted-out number.
+    if (err instanceof deps.SuppressionLookupError) {
+      // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
       console.error('Suppression check failed closed on missed call');
+      // Stryker restore StringLiteral,CallExpression
       suppressed = true;
     } else {
       throw err;
@@ -103,45 +113,47 @@ export async function processMissedCall(
       caller_phone: callerE164,
       status: suppressed ? 'spam' : 'pending',
       opted_out: suppressed,
-      opted_out_at: suppressed ? new Date().toISOString() : null,
+      opted_out_at: suppressed ? deps.clock().toISOString() : null,
     })
     .select()
     .single();
 
   if (leadError) {
+    // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
     console.error('Failed to create lead:', leadError.message);
+    // Stryker restore StringLiteral,CallExpression
     throw new MissedCallError('Failed to create lead', 500);
   }
 
   if (suppressed) {
+    // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
     console.log(
-      `Skipping recovery SMS; phone suppressed: ${redactPhone(callerE164)}`
+      `Skipping recovery SMS; phone suppressed: ${deps.redactPhone(callerE164)}`
     );
+    // Stryker restore StringLiteral,CallExpression
     return { missedCallId: missedCall.id, leadId: lead.id };
   }
 
-  // Recovery SMS first so sms_outbound_sid / deferred row is set before
-  // enrollment skips step 1. Quiet-hours deferrals are persisted and cron
-  // sends when the window opens (QC r6 P0).
   try {
-    await sendRecoverySMS(lead.id, business, callerE164);
+    await deps.sendRecoverySMS(lead.id, business, callerE164);
   } catch (err) {
+    // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
     console.error(
       'SMS send failed:',
       err instanceof Error ? err.message : 'unknown'
     );
+    // Stryker restore StringLiteral,CallExpression
   }
 
-  // Enroll into Standard (urgency null → Standard). After-hours non-responders
-  // still get recovery via deferred queue + campaign follow-ups. Classification
-  // switches Emergency/High on reply. Alex: confirm non-responder path.
   try {
-    await enrollLeadInCampaign(lead.id);
+    await deps.enrollLeadInCampaign(lead.id);
   } catch (err) {
+    // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
     console.error(
       'Enrollment failed:',
       err instanceof Error ? err.message : 'unknown'
     );
+    // Stryker restore StringLiteral,CallExpression
   }
 
   return { missedCallId: missedCall.id, leadId: lead.id };

@@ -354,3 +354,10 @@ values, DB writes, or control flow.
   multi-zone deferral loop were **not** equivalents. Removed.
 - Behavioural coverage: DST spring/fall, 850 dual-zone `Math.max` (not min),
   HI/AK area codes — see `quiet-hours.r7.test.ts`.
+
+### inbound-missed-call-log-only
+
+- file: `src/services/inbound.ts`, `src/services/missed-call.ts` / mutator:
+  StringLiteral,CallExpression on `console.error` / `console.warn` / `console.log`
+- justification: log-only messages; return values, DB writes, and control flow
+  unchanged. Wrapped with Stryker disable/restore blocks like campaign-runtime.
