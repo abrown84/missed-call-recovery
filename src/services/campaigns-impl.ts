@@ -20,11 +20,8 @@ import {
   resolveRecoveryOutcome,
 } from '@/services/send';
 import {
-  decideCampaignLeadGates,
-  decideCampaignSendDispatch,
   decideReconcileAdvanceEligibility,
   decideRequeueEligibility,
-  decideSkipRecoveryGate,
   mapRecoveryOutcomeToState,
 } from '@/services/campaign-decisions';
 import { planEnroll, planSwitch } from '@/services/campaign-enroll-plan';
@@ -41,6 +38,10 @@ import {
   noteSendSuccess,
   staleClaimCutoffIso,
 } from '@/services/campaign-cron-plan';
+import {
+  planCampaignSendPost,
+  planCampaignSendPre,
+} from '@/services/campaign-send-plan';
 import {
   advanceStepPayload,
   claimDuePayload,
@@ -369,129 +370,129 @@ export async function sendCampaignSMS(
     .eq(COL.id, enrollmentId)
     .single();
 
-  if (enrollError || !enrollment) {
-    // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
-    console.error('Failed to fetch enrollment:', enrollError);
-    // Stryker restore StringLiteral,CallExpression
-    return false;
-  }
-
-  const token = claimToken || enrollment.claim_token;
-  if (!token) {
-    // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
-    console.error(`No claim_token for enrollment ${enrollmentId}`);
-    // Stryker restore StringLiteral,CallExpression
-    return false;
-  }
-
-  const lead = (enrollment as any).leads as Lead & { businesses: Business };
-  const business = lead.businesses;
-  const campaign = (enrollment as any).campaigns as Campaign;
+  const lead = enrollment
+    ? ((enrollment as any).leads as Lead & { businesses: Business })
+    : null;
+  const business = lead?.businesses ?? null;
+  const campaign = enrollment
+    ? ((enrollment as any).campaigns as Campaign)
+    : null;
 
   let suppressed = false;
   let suppressionLookupFailed = false;
-  try {
-    suppressed = await isPhoneSuppressed(business.id, lead.caller_phone);
-  } catch (err) {
-    if (err instanceof SuppressionLookupError) {
-      // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
-      console.error('Suppression check failed closed:', err.message);
-      // Stryker restore StringLiteral,CallExpression
-      suppressionLookupFailed = true;
-    } else {
-      throw err;
+  if (lead && business) {
+    try {
+      suppressed = await isPhoneSuppressed(business.id, lead.caller_phone);
+    } catch (err) {
+      if (err instanceof SuppressionLookupError) {
+        // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
+        console.error('Suppression check failed closed:', err.message);
+        // Stryker restore StringLiteral,CallExpression
+        suppressionLookupFailed = true;
+      } else {
+        throw err;
+      }
     }
   }
-  const leadGate = decideCampaignLeadGates({
-    optedOut: Boolean(lead.opted_out),
+
+  const { data: steps, error: stepsError } =
+    campaign != null
+      ? await supabase
+          .from(TABLE.campaignSteps)
+          .select(STEP_SELECT_STAR)
+          .eq(COL.campaignId, campaign.id)
+          .order(COL.stepNumber, { ascending: true })
+      : { data: null, error: null };
+
+  const token = claimToken || enrollment?.claim_token || null;
+  const pre = planCampaignSendPre({
+    enrollmentFound: Boolean(enrollment) && !enrollError,
+    claimToken: token,
+    optedOut: Boolean(lead?.opted_out),
     suppressed,
     suppressionLookupFailed,
+    steps: (stepsError ? [] : steps) ?? [],
+    currentStep: enrollment?.current_step ?? -1,
+    leadTimezone: (lead as { timezone?: string | null } | null)?.timezone ?? null,
   });
-  if (leadGate.action === 'pause') {
+
+  if (pre.type === 'fail') {
+    if (pre.reason === 'no_enrollment') {
+      // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
+      console.error('Failed to fetch enrollment:', enrollError);
+      // Stryker restore StringLiteral,CallExpression
+    } else {
+      // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
+      console.error(`No claim_token for enrollment ${enrollmentId}`);
+      // Stryker restore StringLiteral,CallExpression
+    }
+    return pre.success;
+  }
+
+  if (pre.type === 'pause') {
     if (suppressed) {
       // Stryker disable next-line StringLiteral,CallExpression: log-only (no control flow)
       console.log(`Suppressed phone for enrollment ${enrollmentId}; pausing`);
     }
-    await pauseCampaignForLead(lead.id);
-    return leadGate.success;
-  }
-  if (leadGate.action === 'release_fail') {
-    await releaseClaim(supabase, enrollmentId, token);
-    return leadGate.success;
+    await pauseCampaignForLead(lead!.id);
+    return pre.success;
   }
 
-  const { data: steps, error: stepsError } = await supabase
-    .from(TABLE.campaignSteps)
-    .select(STEP_SELECT_STAR)
-    .eq(COL.campaignId, campaign.id)
-    .order(COL.stepNumber, { ascending: true });
-
-  if (stepsError || !steps || steps.length === 0) {
-    // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
-    console.error('Failed to fetch campaign steps:', stepsError);
-    // Stryker restore StringLiteral,CallExpression
-    await releaseClaim(supabase, enrollmentId, token);
-    return false;
-  }
-
-  const currentStep = steps.find(
-    (s) => s.step_number === enrollment.current_step
-  );
-
-  if (!currentStep) {
-    // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
-    console.error(`Step ${enrollment.current_step} not found`);
-    // Stryker restore StringLiteral,CallExpression
-    await releaseClaim(supabase, enrollmentId, token);
-    return false;
+  if (pre.type === 'release_fail') {
+    if (pre.reason === 'no_steps') {
+      // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
+      console.error('Failed to fetch campaign steps:', stepsError);
+      // Stryker restore StringLiteral,CallExpression
+    } else if (pre.reason === 'step_missing') {
+      // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
+      console.error(`Step ${enrollment!.current_step} not found`);
+      // Stryker restore StringLiteral,CallExpression
+    }
+    await releaseClaim(supabase, enrollmentId, token!);
+    return pre.success;
   }
 
   const stepSid = campaignStepMessageSid(
     enrollmentId,
-    campaign.id,
-    enrollment.current_step
+    campaign!.id,
+    pre.stepNumber
   );
 
-  const messageBody = getTemplate(currentStep.template_key, {
-    business: business.name,
+  const messageBody = getTemplate(pre.templateKey, {
+    business: business!.name,
     name: '',
-    issue: lead.issue || '',
+    issue: lead!.issue || '',
   });
 
-  const leadTz = (lead as { timezone?: string | null }).timezone ?? null;
   const parkedFallback = parkedNextSendAt();
 
   // Single send module: E.164, quiet hours, recovery gate, caps+echo, relay.
   const outcome = await sendMessage({
     kind: 'campaign',
-    leadId: lead.id,
-    businessId: business.id,
-    to: lead.caller_phone,
+    leadId: lead!.id,
+    businessId: business!.id,
+    to: lead!.caller_phone,
     body: messageBody,
     idempotencyKey: stepSid,
     enrollmentId,
-    campaignId: campaign.id,
-    stepNumber: enrollment.current_step,
-    claimToken: token,
-    leadTimezone: leadTz,
-    businessTimezone: business.timezone,
-    skipRecoveryGate: decideSkipRecoveryGate({
-      delayMinutes: currentStep.delay_minutes,
-      currentStep: enrollment.current_step,
-      firstStepNumber: steps[0]?.step_number,
-    }),
+    campaignId: campaign!.id,
+    stepNumber: pre.stepNumber,
+    claimToken: token!,
+    leadTimezone: pre.leadTimezone,
+    businessTimezone: business!.timezone,
+    skipRecoveryGate: pre.skipRecoveryGate,
   });
 
-  const dispatch = decideCampaignSendDispatch(outcome, parkedFallback);
+  const dispatch = planCampaignSendPost(outcome, parkedFallback);
 
   switch (dispatch.type) {
     case 'advance': {
       const advanced = await advanceEnrollment(
         supabase,
         enrollmentId,
-        token,
-        enrollment.current_step,
-        steps
+        token!,
+        pre.stepNumber,
+        steps as CampaignStep[]
       );
       if (!advanced && outcome.kind === 'sent') {
         // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
@@ -501,14 +502,14 @@ export async function sendCampaignSMS(
       if (outcome.kind === 'sent') {
         // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
         console.log(
-          `Campaign SMS sent for ${enrollmentId} step ${enrollment.current_step} sid=${outcome.sid}`
+          `Campaign SMS sent for ${enrollmentId} step ${pre.stepNumber} sid=${outcome.sid}`
         );
         // Stryker restore StringLiteral,CallExpression
       }
       return dispatch.success;
     }
     case 'release':
-      await releaseClaim(supabase, enrollmentId, token, {
+      await releaseClaim(supabase, enrollmentId, token!, {
         nextSendAt: dispatch.nextSendAt,
       });
       return dispatch.success;
@@ -525,13 +526,13 @@ export async function sendCampaignSMS(
             nowIso: new Date().toISOString(),
           })
         )
-        .eq(COL.id, lead.id);
-      await releaseClaim(supabase, enrollmentId, token, {
+        .eq(COL.id, lead!.id);
+      await releaseClaim(supabase, enrollmentId, token!, {
         nextSendAt: dispatch.nextSendAt,
       });
       return dispatch.success;
     case 'park':
-      await parkEnrollmentForReconcile(supabase, enrollmentId, token, {
+      await parkEnrollmentForReconcile(supabase, enrollmentId, token!, {
         nextSendAt: dispatch.nextSendAt,
       });
       if (outcome.kind === 'ambiguous') {
@@ -542,7 +543,7 @@ export async function sendCampaignSMS(
       }
       return dispatch.success;
     case 'pause_opt_out':
-      await pauseCampaignForLead(lead.id);
+      await pauseCampaignForLead(lead!.id);
       return dispatch.success;
     case 'needs_review_terminal':
       // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
@@ -556,12 +557,12 @@ export async function sendCampaignSMS(
       await markEnrollmentNeedsReview(
         supabase,
         enrollmentId,
-        token,
+        token!,
         dispatch.reason
       );
       return dispatch.success;
     case 'noop_false':
-      await releaseClaim(supabase, enrollmentId, token);
+      await releaseClaim(supabase, enrollmentId, token!);
       return dispatch.success;
   }
 }
