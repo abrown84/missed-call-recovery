@@ -83,38 +83,42 @@ describe('campaign-decisions survivors', () => {
 
   it('decideCampaignSendDispatch exact type strings', () => {
     const park = 'p';
-    const cases = [
+    const cases: Array<{
+      o: Parameters<typeof decideCampaignSendDispatch>[0];
+      type: string;
+      success: boolean;
+    }> = [
       {
         o: {
-          kind: 'skipped' as const,
+          kind: 'skipped',
           reason: 'recovery_already_sent_skip_step_1',
         },
         type: 'advance',
         success: true,
       },
       {
-        o: { kind: 'blocked' as const, reason: 'quiet_hours_unresolved' },
+        o: { kind: 'blocked', reason: 'quiet_hours_unresolved' },
         type: 'flag_unresolved_tz',
         success: false,
       },
       {
-        o: { kind: 'blocked' as const, reason: 'invalid_phone' },
+        o: { kind: 'blocked', reason: 'invalid_phone' },
         type: 'noop_false',
         success: false,
       },
       {
-        o: { kind: 'needs_review' as const, sid: 's', reason: 'r' },
+        o: { kind: 'needs_review', sid: 's', reason: 'r' },
         type: 'needs_review_terminal',
         success: false,
       },
       {
-        o: { kind: 'blocked' as const, reason: 'suppressed' },
+        o: { kind: 'blocked', reason: 'suppressed' },
         type: 'pause_opt_out',
         success: true,
       },
       {
         o: {
-          kind: 'blocked' as const,
+          kind: 'blocked',
           reason: 'quiet_hours_deferred',
           nextSendAt: 't',
         },
@@ -122,7 +126,7 @@ describe('campaign-decisions survivors', () => {
         success: true,
       },
       {
-        o: { kind: 'ambiguous' as const, sid: 's', reason: 'r' },
+        o: { kind: 'ambiguous', sid: 's', reason: 'r' },
         type: 'park',
         success: false,
       },

@@ -140,6 +140,13 @@ describe('db-strings constants (kill StringLiteral mutants)', () => {
     expect(reconcileOrFilter('NOW', 'CUT')).toContain('next_retry_at.lte.NOW');
     expect(reconcileOrFilter('NOW', 'CUT')).toContain('sent_at.lt.CUT');
     expect(reconcileOrFilter('NOW', 'CUT')).toContain('status.eq.unknown');
+    // First fragment must keep next_retry_at.is.null (kills emptying that literal)
+    expect(reconcileOrFilter('NOW', 'CUT')).toContain('next_retry_at.is.null');
+    expect(reconcileOrFilter('NOW', 'CUT')).toBe(
+      'and(status.eq.unknown,next_retry_at.is.null),' +
+        'and(status.eq.unknown,next_retry_at.lte.NOW),' +
+        'and(status.eq.sending,sent_at.lt.CUT)'
+    );
   });
 
   it('property: every TABLE value is non-empty snake_case', () => {

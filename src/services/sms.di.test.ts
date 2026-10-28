@@ -219,7 +219,13 @@ describe('persistDeferredRecoveryWithDeps', () => {
       nextSendAt: 't',
     });
     expect(db.calls.some((c) => c.op === 'insert')).toBe(true);
-    expect(db.calls.filter((c) => c.op === 'update').length).toBeGreaterThan(0);
+    const raceUpdates = db.calls.filter((c) => c.op === 'update');
+    expect(raceUpdates.length).toBeGreaterThan(0);
+    expect(raceUpdates[0]?.args[0]).toEqual({
+      status: SMS_STATUS.deferred,
+      next_retry_at: 't',
+      body: 'b',
+    });
     // Unique race must NOT log insert_failed
     expect(log.calls.some((c) => c.args[0] === 'persist_deferred_insert_failed')).toBe(
       false
@@ -237,6 +243,18 @@ describe('persistDeferredRecoveryWithDeps', () => {
     expect(logErr.calls.some((c) => c.args[0] === 'persist_deferred_insert_failed')).toBe(
       true
     );
+    // Non-unique error must NOT take the unique-race update path
+    expect(dbErr.calls.filter((c) => c.op === 'update')).toHaveLength(0);
+
+    // Clean insert (no error) must NOT update (kills error?.code === PG_UNIQUE → true)
+    const dbOk = makeDb({ existing: null, insertError: null });
+    await persistDeferredRecoveryWithDeps(deps({ dbImpl: dbOk }), {
+      leadId: 'L',
+      body: 'b',
+      nextSendAt: 't',
+    });
+    expect(dbOk.calls.some((c) => c.op === 'insert')).toBe(true);
+    expect(dbOk.calls.filter((c) => c.op === 'update')).toHaveLength(0);
   });
 
   it('insert payload uses deferred/outbound constants', async () => {
@@ -513,9 +531,11 @@ describe('processDeferredRecoveriesWithDeps', () => {
     expect(log.calls.some((c) => c.args[0] === 'deferred_row_failed')).toBe(true);
   });
 
-  it('missing business increments errors', async () => {
+  it('missing business increments errors and does not send', async () => {
+    const send = vi.fn();
     const r = await processDeferredRecoveriesWithDeps(
       deps({
+        sendMessage: send,
         dbImpl: makeDb({
           deferredRows: [
             {
@@ -531,11 +551,14 @@ describe('processDeferredRecoveriesWithDeps', () => {
       })
     );
     expect(r.errors).toBe(1);
+    expect(send).not.toHaveBeenCalled();
   });
 
-  it('null businesses via missing optional chain increments errors', async () => {
+  it('null lead increments errors and does not send', async () => {
+    const send = vi.fn();
     const r = await processDeferredRecoveriesWithDeps(
       deps({
+        sendMessage: send,
         dbImpl: makeDb({
           deferredRows: [
             {
@@ -551,6 +574,7 @@ describe('processDeferredRecoveriesWithDeps', () => {
       })
     );
     expect(r.errors).toBe(1);
+    expect(send).not.toHaveBeenCalled();
   });
 });
 
@@ -687,5 +711,26 @@ describe('sendFollowUpSMSWithDeps (QC r6 P2 suppression restore)', () => {
         '+12135550100'
       )
     ).rejects.toThrow('network');
+  });
+
+  it('null lead row still sends (opted_out optional chain)', async () => {
+    const send = vi.fn(async () => ({
+      kind: 'sent' as const,
+      sid: 's',
+      messageId: 'm',
+      providerStatus: 'queued',
+      keySupportedAtSend: true,
+    }));
+    await sendFollowUpSMSWithDeps(
+      deps({
+        dbImpl: makeDb({ lead: null }),
+        sendMessage: send,
+      }),
+      'L',
+      business as never,
+      '+12135550100',
+      'hi'
+    );
+    expect(send).toHaveBeenCalled();
   });
 });
