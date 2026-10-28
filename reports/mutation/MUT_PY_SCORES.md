@@ -6,4 +6,5 @@
 | SURVIVED | 0 |
 | NOMATCH | 1 (#47 urgency gate intentionally removed for Standard enroll) |
 
-Retargeted at pure modules after I/O thinning (`decisions`, `campaigns-impl`, `send-io-plans`, `campaign-reconcile-plan`, …).
+Retargeted at pure modules + `campaign-runtime.ts` after I/O thinning
+(`decisions`, `send-io-plans`, `campaign-reconcile-plan`, DI resend signature).

@@ -1,38 +1,44 @@
 # Mutation scores (QC r6)
 
+Honest Stryker scope — no StringLiteral/Regex exclusions; no-cov counted in
+denominator. Equivalents only individually in `EQUIVALENT.md`.
+
 ## mut.py one-line revert harness
 
 | Result | Count |
 |--------|------:|
 | KILLED | **63** / 63 applicable |
 | SURVIVED | 0 |
-| NOMATCH | 1 (#47 urgency gate intentionally removed) |
+| NOMATCH | 1 (#47 urgency gate intentionally removed for Standard enroll) |
 
-## Stryker (honest — no StringLiteral/Regex exclusions; no-cov in denominator)
-
-### r10 @ `66db356` (reply-plan + send-io-plans + log CallExpression disables)
+## Stryker r18b @ `4b66029`
 
 | File | Score | Killed | Survived | No-cov | Ignored |
 |------|------:|-------:|---------:|-------:|--------:|
 | send/machine.ts | **100%** | 188 | 0 | 0 | 22 |
 | send/policy.ts | **100%** | 7 | 0 | 0 | 6 |
-| send/reconcile-tally.ts | **100%** | 73 | 0 | 0 | 0 |
 | send/send-io-plans.ts | **100%** | 19 | 0 | 0 | 0 |
-| campaign-io-plans.ts | **100%** | 44 | 0 | 0 | 0 |
+| campaign-advance-plan.ts | **100%** | 23 | 0 | 0 | 0 |
+| campaign-cron-plan.ts | **100%** | 30 | 0 | 0 | 0 |
+| campaign-enroll-plan.ts | **100%** | 94 | 0 | 0 | 4 |
+| campaign-io-plans.ts | **100%** | 53 | 0 | 0 | 0 |
+| campaign-reply-plan.ts | **100%** | 49 | 0 | 0 | 1 |
+| campaign-send-effects.ts | **100%** | 16 | 0 | 0 | 0 |
+| campaign-deps.ts | **100%** | 6 | 0 | 0 | 1 |
 | db-strings.ts | **100%** | 4 | 0 | 0 | 29 |
-| send/decisions.ts | **98.0%** | 345 | 7 | 0 | 0 |
-| reconcile-logic.ts | **97.1%** | 134 | 4 | 0 | 0 |
-| campaign-enroll-plan.ts | **96.9%** | 95 | 3 | 0 | 0 |
-| quiet-hours.ts | **96.2%** | 100 | 0 | 4 | 71 |
-| opt-out.ts | **94.7%** | 107 | 5 | 1 | 29 |
-| sms.ts | **92.4%** | 122 | 6 | 4 | 5 |
-| campaign-decisions.ts | **91.5%** | 140 | 7 | 6 | 0 |
-| campaign-reply-plan.ts | 86.0% | 43 | 3 | 4 | 0 |
-| send/index.ts | 74.9% | 203 | 55 | 13 | 3 |
-| campaigns-impl.ts | 50.7% | 226 | 172 | 48 | 90 |
+| send/reconcile-tally.ts | **98.73%** | 78 | 1 | 0 | 0 |
+| send/decisions.ts | **98.05%** | 352 | 7 | 0 | 0 |
+| campaign-reconcile-plan.ts | **97.65%** | 83 | 2 | 0 | 0 |
+| reconcile-logic.ts | **97.10%** | 134 | 4 | 0 | 0 |
+| sms.ts | **96.99%** | 129 | 0 | 4 | 5 |
+| quiet-hours.ts | **96.15%** | 100 | 0 | 4 | 71 |
+| campaign-send-plan.ts | **96.09%** | 123 | 5 | 0 | 0 |
+| send/index.ts | **95.56%** | 215 | 9 | 1 | 4 |
+| opt-out.ts | **94.69%** | 107 | 5 | 1 | 29 |
+| campaign-decisions.ts | **91.50%** | 140 | 7 | 6 | 0 |
+| campaign-runtime.ts | **90.77%** | 177 | 13 | 5 | (wrappers + log-only + justified) |
+| campaigns.ts / campaigns-impl.ts | n/a (thin re-export barrels; 0 scored mutants) | | | | |
 
-### In flight (r11 @ `4d8ed35`)
+**Overall:** 96.64% (2127 killed / 53 survived / 21 no-cov).
 
-Adds `campaign-cron-plan`, reply-plan/cron DI killers, enroll-plan equivalent disables.
-
-Equivalents: `EQUIVALENT.md`.
+**Gate:** every mutate-list file ≥ **90%** ✅
