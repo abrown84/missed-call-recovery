@@ -215,6 +215,57 @@ describe('campaign-runtime DI send path', () => {
       '+12135550100',
       deps.sleep
     );
+    // releaseClaim must keep nextSendAt (kills ObjectLiteral → {})
+    expect(
+      updates.some(
+        (u) =>
+          u.table === 'campaign_enrollments' &&
+          typeof (u.payload as { next_send_at?: string })?.next_send_at ===
+            'string'
+      )
+    ).toBe(true);
+  });
+
+  it('notifyUnresolvedTimezone throw still releases with nextSendAt + ALERT log', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    deps.notifyUnresolvedTimezone = vi.fn(async () => {
+      throw new Error('notify boom');
+    });
+    await expect(
+      run({ kind: 'blocked', reason: 'quiet_hours_unresolved' })
+    ).resolves.toBe(false);
+    expect(
+      errSpy.mock.calls.some(
+        (c) =>
+          String(c[0]).includes('ALERT: unresolved-timezone owner notify threw') &&
+          c[1] === 'notify boom'
+      )
+    ).toBe(true);
+    expect(
+      updates.some(
+        (u) =>
+          u.table === 'campaign_enrollments' &&
+          typeof (u.payload as { next_send_at?: string })?.next_send_at ===
+            'string'
+      )
+    ).toBe(true);
+    errSpy.mockRestore();
+  });
+
+  it('notifyUnresolvedTimezone non-Error throw logs unknown', async () => {
+    const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    deps.notifyUnresolvedTimezone = vi.fn(async () => {
+      throw 'raw-string';
+    });
+    await run({ kind: 'blocked', reason: 'quiet_hours_unresolved' });
+    expect(
+      errSpy.mock.calls.some(
+        (c) =>
+          String(c[0]).includes('ALERT: unresolved-timezone owner notify threw') &&
+          c[1] === 'unknown'
+      )
+    ).toBe(true);
+    errSpy.mockRestore();
   });
 
   it('ambiguous → park release (next_send_at set)', async () => {

@@ -584,13 +584,10 @@ export async function sendCampaignSMSWithDeps(
           deps.sleep
         );
       } catch (err) {
-        // Stryker disable StringLiteral,CallExpression,BlockStatement: log-only
-        console.error(
-          'ALERT: unresolved-timezone owner notify threw',
-          err instanceof Error ? err.message : 'unknown'
-        );
-        // Stryker restore StringLiteral,CallExpression,BlockStatement
+        const detail = err instanceof Error ? err.message : 'unknown';
+        console.error('ALERT: unresolved-timezone owner notify threw', detail);
       }
+      // nextSendAt must stay on the release payload (ObjectLiteral {} is a mutant).
       await releaseClaim(supabase, enrollmentId, token!, deps.clock, {
         nextSendAt,
       });
