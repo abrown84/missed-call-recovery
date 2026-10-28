@@ -44,7 +44,15 @@ export type InboundResult =
       enrolledCampaign?: string;
     }
   | { status: 'opt_out_recorded'; leadId?: string }
-  | { status: 'ambiguous_opt_out'; leadId?: string }
+  | {
+      status: 'ambiguous_opt_out';
+      leadId?: string;
+      urgency?: string;
+      enrollmentAction?: string;
+      enrolledCampaign?: string;
+      campaignPaused?: boolean;
+      ownerNotified?: boolean;
+    }
   | { status: 'no_lead_found' };
 
 export type { InboundDeps };
@@ -159,46 +167,10 @@ export async function processInboundSmsWithDeps(
     return { status: 'opt_out_recorded' };
   }
 
-  if (optOutVerdict.kind === 'ambiguous') {
-    // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
-    console.warn(
-      `Ambiguous opt-out language from ${deps.redactPhone(event.from)}: needs_human_review`
-    );
-    // Stryker restore StringLiteral,CallExpression
-    const { data: anyLead } = await supabase
-      .from(TABLE.leads)
-      .select(COL.id)
-      .eq(COL.businessId, business.id)
-      .eq(COL.callerPhone, phoneForLookup)
-      .order(COL.createdAt, ORDER_CREATED_DESC)
-      .limit(1)
-      .maybeSingle();
+  const ambiguous =
+    optOutVerdict.kind === 'ambiguous' ? optOutVerdict : null;
 
-    if (anyLead?.id) {
-      await supabase
-        .from(TABLE.leads)
-        .update(
-          inboundAmbiguousReviewPayload({
-            reason: optOutVerdict.reason,
-            flaggedAt: deps.clock().toISOString(),
-          })
-        )
-        .eq(COL.id, anyLead.id);
-      await supabase.from(TABLE.smsMessages).insert(
-        inboundSmsReceivedPayload(
-          inboundSmsInsertInput({
-            leadId: anyLead.id,
-            body,
-            messageSid: messageId,
-          })
-        )
-      );
-      return { status: 'ambiguous_opt_out', leadId: anyLead.id };
-    }
-    return { status: 'ambiguous_opt_out' };
-  }
-
-  if (!fromE164) {
+  if (!fromE164 && !ambiguous) {
     // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
     console.error('Invalid sender phone for inbound:', deps.redactPhone(event.from));
     // Stryker restore StringLiteral,CallExpression
@@ -209,11 +181,13 @@ export async function processInboundSmsWithDeps(
     deps.clock().getTime() - LEAD_LOOKUP_MAX_AGE_DAYS * 24 * 60 * 60 * 1000
   ).toISOString();
 
+  const lookupPhone = fromE164 || phoneForLookup;
+
   const { data: pendingLead } = await supabase
     .from(TABLE.leads)
     .select(LEAD_SELECT_STAR)
     .eq(COL.businessId, business.id)
-    .eq(COL.callerPhone, fromE164)
+    .eq(COL.callerPhone, lookupPhone)
     .eq(COL.status, LEAD_STATUS.pending)
     .gte(COL.createdAt, cutoff)
     .order(COL.createdAt, { ascending: false })
@@ -227,7 +201,7 @@ export async function processInboundSmsWithDeps(
       .from(TABLE.leads)
       .select(LEAD_SELECT_STAR)
       .eq(COL.businessId, business.id)
-      .eq(COL.callerPhone, fromE164)
+      .eq(COL.callerPhone, lookupPhone)
       .in(COL.status, OPEN_LEAD_STATUSES as unknown as string[])
       .gte(COL.createdAt, cutoff)
       .order(COL.createdAt, ORDER_CREATED_DESC)
@@ -236,7 +210,7 @@ export async function processInboundSmsWithDeps(
     lead = openLead;
   }
 
-  if (!lead && fromE164 !== event.from) {
+  if (!lead && fromE164 && fromE164 !== event.from) {
     const { data: legacy } = await supabase
       .from(TABLE.leads)
       .select(LEAD_SELECT_STAR)
@@ -250,11 +224,54 @@ export async function processInboundSmsWithDeps(
     lead = legacy;
   }
 
+  // Ambiguous without a recent lead: still nothing to pause/classify.
+  if (ambiguous && (!lead || !deps.isLeadWithinLookupAge(lead.created_at, deps.clock()))) {
+    // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
+    console.warn(
+      `Ambiguous opt-out language from ${deps.redactPhone(event.from)}: no lead`
+    );
+    // Stryker restore StringLiteral,CallExpression
+    return { status: 'ambiguous_opt_out' };
+  }
+
   if (!lead || !deps.isLeadWithinLookupAge(lead.created_at, deps.clock())) {
     // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
     console.error('No recent open lead found for:', deps.redactPhone(event.from));
     // Stryker restore StringLiteral,CallExpression
     return { status: 'no_lead_found' };
+  }
+
+  let campaignPaused = false;
+  let ownerNotified = false;
+
+  if (ambiguous) {
+    // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
+    console.warn(
+      `Ambiguous opt-out language from ${deps.redactPhone(event.from)}: pause+notify+classify`
+    );
+    // Stryker restore StringLiteral,CallExpression
+    await supabase
+      .from(TABLE.leads)
+      .update(
+        inboundAmbiguousReviewPayload({
+          reason: ambiguous.reason,
+          flaggedAt: deps.clock().toISOString(),
+        })
+      )
+      .eq(COL.id, lead.id);
+    await deps.pauseCampaignForLead(lead.id).catch(() => undefined);
+    campaignPaused = true;
+    await deps
+      .notifyPossibleOptOut(lead.id, business, body, ambiguous.reason)
+      .catch((err) => {
+        // Stryker disable StringLiteral,CallExpression,BlockStatement: log-only
+        console.error(
+          'Possible-opt-out notify failed:',
+          err instanceof Error ? err.message : 'unknown'
+        );
+        // Stryker restore StringLiteral,CallExpression,BlockStatement
+      });
+    ownerNotified = true;
   }
 
   await supabase.from(TABLE.smsMessages).insert(
@@ -288,23 +305,38 @@ export async function processInboundSmsWithDeps(
     // Stryker restore StringLiteral,CallExpression
   }
 
-  const enrollment = await deps
-    .handleClassifiedReplyEnrollment(lead.id, classification.urgency)
-    .catch((err) => {
-      // Stryker disable StringLiteral,CallExpression,BlockStatement: log-only (no control flow)
-      console.error(
-        'Enrollment handling failed:',
-        err instanceof Error ? err.message : 'unknown'
-      );
-      // Stryker restore StringLiteral,CallExpression,BlockStatement
-      return { action: 'error', campaignName: undefined as string | undefined };
-    });
+  // Ambiguous already paused — skip enrollment mutations that could re-activate.
+  const enrollment = ambiguous
+    ? { action: 'paused_ambiguous', campaignName: undefined as string | undefined }
+    : await deps
+        .handleClassifiedReplyEnrollment(lead.id, classification.urgency)
+        .catch((err) => {
+          // Stryker disable StringLiteral,CallExpression,BlockStatement: log-only (no control flow)
+          console.error(
+            'Enrollment handling failed:',
+            err instanceof Error ? err.message : 'unknown'
+          );
+          // Stryker restore StringLiteral,CallExpression,BlockStatement
+          return { action: 'error', campaignName: undefined as string | undefined };
+        });
 
   if (
     classification.urgency === 'emergency' ||
     classification.urgency === 'high'
   ) {
     await deps.escalateLead(lead.id, business, classification);
+  }
+
+  if (ambiguous) {
+    return {
+      status: 'ambiguous_opt_out',
+      leadId: lead.id,
+      urgency: classification.urgency,
+      enrollmentAction: enrollment.action,
+      enrolledCampaign: enrollment.campaignName,
+      campaignPaused,
+      ownerNotified,
+    };
   }
 
   return {

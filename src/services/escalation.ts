@@ -88,6 +88,50 @@ function buildEscalationMessage(
   ].join('\n');
 }
 
+/**
+ * Notify the business owner that a reply may be an opt-out (ambiguous keyword
+ * in a longer sentence). Does not change lead status to escalated — that is
+ * reserved for classified high/emergency urgency.
+ */
+export async function notifyPossibleOptOut(
+  leadId: string,
+  business: Business,
+  body: string,
+  reason: string
+): Promise<void> {
+  const escalationPhone = business.emergency_phone || business.phone;
+  const message = [
+    '⚠️ POSSIBLE OPT-OUT — campaign paused',
+    `Lead: ${leadId}`,
+    `Reason: ${reason}`,
+    `Reply: "${body.slice(0, 160)}"`,
+    'Review before sending more texts.',
+  ].join('\n');
+
+  const outcome = await sendMessage({
+    kind: 'escalation',
+    leadId,
+    businessId: business.id,
+    to: escalationPhone,
+    body: message,
+    businessTimezone: business.timezone,
+    skipQuietHours: true,
+    auto: true,
+  });
+
+  if (outcome.kind !== 'sent' && outcome.kind !== 'ambiguous') {
+    console.error(
+      'Possible-opt-out notify failed:',
+      outcome.kind,
+      'reason' in outcome ? outcome.reason : ''
+    );
+  } else {
+    console.log(
+      `Possible opt-out notified for lead ${redactId(leadId)} → ${redactPhone(escalationPhone)}`
+    );
+  }
+}
+
 export function shouldEscalate(
   business: Business,
   urgency: ClassificationResult['urgency']

@@ -60,9 +60,10 @@ describe('opt-out normalize killers', () => {
 });
 
 describe('opt-out whole-message / whole-word policy', () => {
-  it('compact whole-message STOPPLEASE is NOT auto opt-out (not in compact set)', () => {
-    // Compact set is whole-message forms only; STOPPLEASE is not a carrier keyword.
-    expect(classifyOptOut('STOPPLEASE').kind).not.toBe('opt_out');
+  it('compact STOPPLEASE matches whole-message STOP PLEASE / PLEASE STOP', () => {
+    // Derived compact forms of "STOP PLEASE" / "PLEASE STOP" — still whole-message.
+    expect(classifyOptOut('STOPPLEASE').kind).toBe('opt_out');
+    expect(classifyOptOut('STOP PLEASE').kind).toBe('opt_out');
   });
 
   it('compact STOPSTOP / STOPSTOPSTOP are whole-message opt_out', () => {
@@ -111,15 +112,18 @@ describe('opt-out service-talk / keyword-in-sentence → ambiguous', () => {
 });
 
 describe('opt-out normalize property', () => {
-  it('normalize is idempotent uppercase ASCII letters', () => {
-    // Regression: punct after a quote (`#"!`) must still be idempotent.
-    expect(normalizeOptOutText('#"!')).toBe(normalizeOptOutText(normalizeOptOutText('#"!')));
+  it('normalize is idempotent (fixpoint strip; no pinned seed)', () => {
+    // Regression: punct after a quote (`#"!`) and uncovering cases like `?"?`.
+    for (const s of ['#"!', '?"?', ",'?", "?',", '!"…', '""STOP""']) {
+      const once = normalizeOptOutText(s);
+      expect(normalizeOptOutText(once), s).toBe(once);
+    }
     fc.assert(
       fc.property(fc.string({ maxLength: 40 }), (s) => {
         const once = normalizeOptOutText(s);
         expect(normalizeOptOutText(once)).toBe(once);
       }),
-      { numRuns: 80, seed: -1799525932 }
+      { numRuns: 200 }
     );
   });
 });

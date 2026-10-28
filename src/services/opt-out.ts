@@ -1,9 +1,10 @@
 /**
- * TCPA / carrier opt-out detection (QC r7 first-principles rewrite).
+ * TCPA / carrier opt-out detection (QC r7/r8).
  *
- * 1. Normalize (NFKC, confusables, zero-width, punctuation trim, upper).
+ * 1. Normalize (NFKC, confusables, zero-width, quote/punct fixpoint, upper).
  * 2. Whole message equals a carrier keyword → opt_out (auto-suppress).
- * 3. Keyword as a whole word inside a longer message → ambiguous (flag only).
+ * 3. Keyword as a whole word inside a longer message → ambiguous
+ *    (inbound pauses campaign + notifies owner + still classifies).
  * 4. Never substring / compact-includes matching.
  *
  * Shared token list: opt-out-data.ts (also used by migration 003 backfill).
@@ -61,8 +62,12 @@ export function foldConfusables(raw: string): string {
   return out;
 }
 
+/** Quotes + trailing/leading punct stripped together so uncovering is idempotent. */
+const EDGE_NOISE_RE = /^[\s?!.,…"'`“”‘’]+|[\s?!.,…"'`“”‘’]+$/g;
+
 /**
  * Canonical normalizer used by inbound webhook AND migration 003 backfill.
+ * Loops quote/punct stripping to a fixpoint (QC r8 — no pinned seed).
  */
 export function normalizeOptOutText(raw: string): string {
   const folded = foldConfusables(raw)
@@ -70,15 +75,17 @@ export function normalizeOptOutText(raw: string): string {
     .replace(ZERO_WIDTH_RE, '')
     .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, '');
   const spaced = replaceNbspWithSpace(folded);
-  // Stryker disable next-line Regex,MethodExpression: later /\s+/g + final trim make newline/+ and mid-trim equivalent
-  const lined = spaced.replace(/[\r\n]+/g, ' ').trim();
-  // Strip edge quotes, then trailing punct, then quotes again so e.g. `#"!` → `#`
-  // (punct uncovering a quote) stays idempotent.
-  const once = stripEdgeQuotes(lined)
-    .replace(/[\s?!.,…]+$/g, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-  return stripEdgeQuotes(once).trim().toUpperCase();
+  // Stryker disable next-line Regex,MethodExpression: later /\s+/g collapse makes + vs empty quantifier equivalent
+  let out = spaced.replace(/[\r\n]+/g, ' ').trim();
+  for (let i = 0; i < 8; i++) {
+    const next = out
+      .replace(EDGE_NOISE_RE, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (next === out) break;
+    out = next;
+  }
+  return out.toUpperCase();
 }
 
 /** Spaceless form so 'S T O P' compact to STOP. */
@@ -103,7 +110,6 @@ export function hasWholeWordStem(normalized: string, stem: string): boolean {
  */
 export function classifyOptOut(raw: string): OptOutVerdict {
   const normalized = normalizeOptOutText(raw);
-  // Stryker disable next-line ConditionalExpression: empty never matches whole-message/stem sets
   if (!normalized) return { kind: 'not_opt_out' };
 
   const compact = compactOptOutText(normalized);
@@ -173,7 +179,6 @@ export function optOutBackfillTokens(): string[] {
  */
 export function wouldBackfillSuppress(raw: string): boolean {
   const normalized = normalizeOptOutText(raw);
-  // Stryker disable next-line ConditionalExpression: empty never hits whole-message sets
   if (!normalized) return false;
   const compact = compactOptOutText(normalized);
   const collapsed = collapseSpacedLetterTokens(normalized);

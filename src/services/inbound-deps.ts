@@ -3,7 +3,7 @@ import { redactPhone } from '@/lib/pii';
 import { tryNormalizeToE164 } from '@/lib/phone';
 import { classifyUrgency, isOptOutMessage } from '@/services/classification';
 import { classifyOptOut } from '@/services/opt-out';
-import { escalateLead } from '@/services/escalation';
+import { escalateLead, notifyPossibleOptOut } from '@/services/escalation';
 import {
   handleClassifiedReplyEnrollment,
   pauseCampaignForLead,
@@ -24,6 +24,7 @@ export type InboundDeps = {
   isOptOutMessage: typeof isOptOutMessage;
   classifyUrgency: typeof classifyUrgency;
   escalateLead: typeof escalateLead;
+  notifyPossibleOptOut: typeof notifyPossibleOptOut;
   handleClassifiedReplyEnrollment: typeof handleClassifiedReplyEnrollment;
   pauseCampaignForLead: typeof pauseCampaignForLead;
   markLeadOptedOut: typeof markLeadOptedOut;
@@ -42,6 +43,7 @@ export function defaultInboundDeps(): InboundDeps {
     isOptOutMessage,
     classifyUrgency,
     escalateLead,
+    notifyPossibleOptOut,
     handleClassifiedReplyEnrollment,
     pauseCampaignForLead,
     markLeadOptedOut,

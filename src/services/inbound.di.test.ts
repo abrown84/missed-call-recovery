@@ -137,6 +137,7 @@ function buildDeps(over: Partial<InboundDeps> & { dbImpl?: ReturnType<typeof cre
     isOptOutMessage: ReturnType<typeof vi.fn>;
     classifyUrgency: InboundDeps['classifyUrgency'];
     escalateLead: ReturnType<typeof vi.fn>;
+    notifyPossibleOptOut: ReturnType<typeof vi.fn>;
     handleClassifiedReplyEnrollment: ReturnType<typeof vi.fn>;
     pauseCampaignForLead: ReturnType<typeof vi.fn>;
     markLeadOptedOut: ReturnType<typeof vi.fn>;
@@ -157,6 +158,7 @@ function buildDeps(over: Partial<InboundDeps> & { dbImpl?: ReturnType<typeof cre
       issue: 'general',
     })) as InboundDeps['classifyUrgency'],
     escalateLead: vi.fn(async () => undefined),
+    notifyPossibleOptOut: vi.fn(async () => undefined),
     handleClassifiedReplyEnrollment: vi.fn(async () => ({
       action: 'noop',
       campaignName: undefined,
@@ -174,6 +176,13 @@ function buildDeps(over: Partial<InboundDeps> & { dbImpl?: ReturnType<typeof cre
   };
 
   const randomSuffix = vi.fn(() => 'abc12345');
+
+  // Apply overrides onto spies so assertions track the same fns deps use.
+  for (const key of Object.keys(spies) as (keyof typeof spies)[]) {
+    if (over[key] !== undefined) {
+      (spies as Record<string, unknown>)[key] = over[key];
+    }
+  }
 
   const deps: InboundDeps = {
     db: () => ({ from: db.from }) as unknown as SupabaseClient,
@@ -283,7 +292,7 @@ describe('processInboundSmsWithDeps', () => {
     expect(spies.suppressPhoneForBusiness).toHaveBeenCalled();
   });
 
-  it('ambiguous opt-out flags lead and does NOT pause campaign', async () => {
+  it('ambiguous opt-out pauses campaign, notifies owner, still classifies', async () => {
     const db = createDb({
       leads: () => ({ data: { id: 'lead-amb' }, error: null }),
     });
@@ -293,20 +302,72 @@ describe('processInboundSmsWithDeps', () => {
         kind: 'ambiguous' as const,
         reason: 'keyword_in_sentence',
       })),
+      classifyUrgency: vi.fn(async () => ({
+        urgency: 'normal' as const,
+        confidence: 0.6,
+        keywords: [],
+        issue: 'hired_elsewhere',
+      })),
     });
 
     const result = await processInboundSmsWithDeps(
       deps,
-      baseEvent({ body: 'Please STOP calling me about quotes' })
+      baseEvent({ body: 'Stop texting me, I already hired someone' })
     );
 
-    expect(result).toEqual({
+    expect(result).toMatchObject({
       status: 'ambiguous_opt_out',
       leadId: 'lead-amb',
+      urgency: 'normal',
+      campaignPaused: true,
+      ownerNotified: true,
     });
-    expect(spies.pauseCampaignForLead).not.toHaveBeenCalled();
+    expect(spies.pauseCampaignForLead).toHaveBeenCalledWith('lead-amb');
+    expect(spies.notifyPossibleOptOut).toHaveBeenCalledWith(
+      'lead-amb',
+      expect.objectContaining({ id: 'biz-1' }),
+      'Stop texting me, I already hired someone',
+      'keyword_in_sentence'
+    );
+    expect(spies.classifyUrgency).toHaveBeenCalled();
+    expect(spies.handleClassifiedReplyEnrollment).not.toHaveBeenCalled();
     expect(spies.suppressPhoneForBusiness).not.toHaveBeenCalled();
     expect(db.updates[0]).toMatchObject({ needs_human_review: true });
+  });
+
+  it('ambiguous service-talk still classifies and escalates high urgency', async () => {
+    const db = createDb({
+      leads: () => ({ data: { id: 'lead-stop-by' }, error: null }),
+    });
+    const { deps, spies } = buildDeps({
+      dbImpl: db,
+      classifyOptOut: vi.fn(() => ({
+        kind: 'ambiguous' as const,
+        reason: 'keyword_in_sentence',
+      })),
+      classifyUrgency: vi.fn(async () => ({
+        urgency: 'high' as const,
+        confidence: 0.9,
+        keywords: ['stop by'],
+        issue: 'appointment',
+      })),
+    });
+
+    const result = await processInboundSmsWithDeps(
+      deps,
+      baseEvent({ body: 'Can you stop by at 3?' })
+    );
+
+    expect(result).toMatchObject({
+      status: 'ambiguous_opt_out',
+      leadId: 'lead-stop-by',
+      urgency: 'high',
+      campaignPaused: true,
+      ownerNotified: true,
+    });
+    expect(spies.pauseCampaignForLead).toHaveBeenCalledWith('lead-stop-by');
+    expect(spies.escalateLead).toHaveBeenCalled();
+    expect(spies.notifyPossibleOptOut).toHaveBeenCalled();
   });
 
   it('ambiguous opt-out without matching lead', async () => {
@@ -873,7 +934,7 @@ describe('processInboundSmsWithDeps', () => {
     });
   });
 
-  it('does not classify urgency on ambiguous opt-out path', async () => {
+  it('classifies urgency on ambiguous opt-out path (QC r8)', async () => {
     const db = createDb({
       leads: () => ({ data: { id: 'a1' }, error: null }),
     });
@@ -887,7 +948,9 @@ describe('processInboundSmsWithDeps', () => {
 
     await processInboundSmsWithDeps(deps, baseEvent({ body: 'please stop calling' }));
 
-    expect(spies.classifyUrgency).not.toHaveBeenCalled();
+    expect(spies.classifyUrgency).toHaveBeenCalled();
+    expect(spies.pauseCampaignForLead).toHaveBeenCalledWith('a1');
+    expect(spies.notifyPossibleOptOut).toHaveBeenCalled();
   });
 
   it('orders lead lookups by created_at descending', async () => {
@@ -959,11 +1022,11 @@ describe('processInboundSmsWithDeps', () => {
     expect(leadQueries).toBe(1);
   });
 
-  it('stores ambiguous reason on lead flag', async () => {
+  it('stores ambiguous reason on lead flag then classifies', async () => {
     const db = createDb({
       leads: () => ({ data: { id: 'amb' }, error: null }),
     });
-    const { deps } = buildDeps({
+    const { deps, spies } = buildDeps({
       dbImpl: db,
       classifyOptOut: vi.fn(() => ({
         kind: 'ambiguous' as const,
@@ -977,6 +1040,8 @@ describe('processInboundSmsWithDeps', () => {
       needs_human_review_reason: 'stop_in_sentence',
       needs_human_review_at: FIXED.toISOString(),
     });
+    // Review flag first, then qualified lead update after classify.
+    expect(db.updates.length).toBeGreaterThanOrEqual(2);
     expect(db.inserts[0]).toMatchObject({
       lead_id: 'amb',
       body: 'maybe stop',
@@ -984,6 +1049,7 @@ describe('processInboundSmsWithDeps', () => {
       direction: 'inbound',
       status: 'received',
     });
+    expect(spies.pauseCampaignForLead).toHaveBeenCalledWith('amb');
   });
 });
 

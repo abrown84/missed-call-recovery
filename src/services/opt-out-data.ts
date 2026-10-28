@@ -2,19 +2,24 @@
  * Shared carrier opt-out keyword lists — single source of truth for
  * runtime classifyOptOut AND migration 003 STOP backfill.
  *
- * Policy (QC r7):
+ * Policy (pending Alex confirmation; QC r7/r8):
  * - Whole message (after normalize) equals a keyword → auto opt_out.
- * - Keyword as a whole word inside a longer message → ambiguous (human review).
+ * - Keyword as a whole word inside a longer message → ambiguous
+ *   (pause + notify + still classify; never silent continue).
  * - Never substring / compact-includes matching.
+ *
+ * Extending keywords:
+ *   1. Add the token to BASE_WHOLE_MESSAGE (and BASE_STEMS if it should
+ *      trigger ambiguous mid-sentence).
+ *   2. Run tests — compact doubles/repeats are derived automatically.
+ *   3. `npm run check:opt-out-sql` regenerates/diffs the SQL IN lists.
  */
 
-/** Whole-message auto-suppress tokens (normalized uppercase). */
-export const OPT_OUT_WHOLE_MESSAGE = [
+/** Core whole-message auto-suppress tokens (normalized uppercase). */
+const BASE_WHOLE_MESSAGE = [
   'STOP',
   'STOPALL',
   'STOP ALL',
-  'STOP STOP',
-  'STOP STOP STOP',
   'UNSUBSCRIBE',
   'QUIT',
   'END',
@@ -50,28 +55,8 @@ export const OPT_OUT_WHOLE_MESSAGE = [
   "DON'T TEXT ME",
 ] as const;
 
-/**
- * Compact (spaceless) whole-message forms.
- * S T O P → STOP, STOP STOP → STOPSTOP.
- */
-export const OPT_OUT_WHOLE_MESSAGE_COMPACT = [
-  'STOP',
-  'STOPALL',
-  'STOPSTOP',
-  'STOPSTOPSTOP',
-  'UNSUBSCRIBE',
-  'QUIT',
-  'END',
-  'CANCEL',
-  'OPTOUT',
-  'REVOKE',
-] as const;
-
-/**
- * Stems that, as a whole word inside a longer message, flag human review
- * (ambiguous) — never silent auto-suppress.
- */
-export const OPT_OUT_WORD_STEMS = [
+/** Single-token stems that flag ambiguous when used as a whole word mid-sentence. */
+const BASE_WORD_STEMS = [
   'STOP',
   'STOPALL',
   'UNSUBSCRIBE',
@@ -83,51 +68,115 @@ export const OPT_OUT_WORD_STEMS = [
   'OPT-OUT',
 ] as const;
 
-/** Multi-word stems checked with word-boundary style on normalized text. */
+/** Multi-word stems for mid-sentence ambiguous. */
 export const OPT_OUT_MULTIWORD_STEMS = ['OPT OUT', 'STOP ALL'] as const;
+
+/**
+ * Carrier keywords that customers often double-send ("STOP STOP", "END END").
+ * Each gets whole-message + compact entries so repeats behave consistently.
+ */
+const REPEATABLE_KEYWORDS = [
+  'STOP',
+  'END',
+  'CANCEL',
+  'QUIT',
+  'UNSUBSCRIBE',
+  'REVOKE',
+  'OPTOUT',
+  'STOPALL',
+] as const;
+
+function withRepeats(base: readonly string[]): string[] {
+  const out = new Set<string>(base);
+  for (const kw of REPEATABLE_KEYWORDS) {
+    out.add(`${kw} ${kw}`);
+    out.add(`${kw} ${kw} ${kw}`);
+  }
+  return [...out];
+}
+
+function compactForms(tokens: readonly string[]): string[] {
+  const out = new Set<string>();
+  for (const t of tokens) {
+    const c = t.replace(/[^A-Z0-9]/g, '');
+    if (c) out.add(c);
+  }
+  return [...out];
+}
+
+/** Whole-message auto-suppress tokens (normalized uppercase). */
+export const OPT_OUT_WHOLE_MESSAGE: readonly string[] = withRepeats(BASE_WHOLE_MESSAGE);
+
+/**
+ * Compact (spaceless) whole-message forms.
+ * S T O P → STOP, STOP STOP → STOPSTOP, END END → ENDEND.
+ */
+export const OPT_OUT_WHOLE_MESSAGE_COMPACT: readonly string[] = compactForms(
+  OPT_OUT_WHOLE_MESSAGE
+);
+
+/**
+ * Stems that, as a whole word inside a longer message, flag human review
+ * (ambiguous) — never silent auto-suppress.
+ */
+export const OPT_OUT_WORD_STEMS: readonly string[] = [...BASE_WORD_STEMS];
 
 /** Legacy aliases kept for callers / tests that imported old names. */
 export const OPT_OUT_EXACT = OPT_OUT_WHOLE_MESSAGE;
 export const OPT_OUT_COMPACT = new Set(OPT_OUT_WHOLE_MESSAGE_COMPACT);
 
+/**
+ * Homoglyph / lookalike map applied before NFKC.
+ * Includes Greek ο, Cyrillic У/у → U/u (QУIT → QUIT), digit 0 → O (St0p).
+ */
 export const CONFUSABLES: Record<string, string> = {
-  '\u0391': 'A',
-  '\u0410': 'A',
-  '\u0392': 'B',
-  '\u0412': 'B',
-  '\u0395': 'E',
-  '\u0415': 'E',
-  '\u0397': 'H',
-  '\u041D': 'H',
-  '\u0399': 'I',
-  '\u0406': 'I',
+  // Greek capitals
+  '\u0391': 'A', // Α
+  '\u0392': 'B', // Β
+  '\u0395': 'E', // Ε
+  '\u0397': 'H', // Η
+  '\u0399': 'I', // Ι
+  '\u039A': 'K', // Κ
+  '\u039C': 'M', // Μ
+  '\u039D': 'N', // Ν
+  '\u039F': 'O', // Ο
+  '\u03A1': 'P', // Ρ
+  '\u03A4': 'T', // Τ
+  '\u03A7': 'X', // Χ
+  '\u03A3': 'E', // Σ (approx)
+  // Greek lowercase (ο is the critical STOP/REVOKE lookalike)
+  '\u03BF': 'o', // ο omicron
+  '\u03B1': 'a',
+  '\u03B5': 'e',
+  // Cyrillic capitals
+  '\u0410': 'A', // А
+  '\u0412': 'B', // В
+  '\u0415': 'E', // Е
+  '\u041D': 'H', // Н
+  '\u0406': 'I', // І
   '\u04C0': 'I',
-  '\u039A': 'K',
-  '\u041A': 'K',
-  '\u039C': 'M',
-  '\u041C': 'M',
-  '\u039D': 'N',
-  '\u041E': 'O',
-  '\u039F': 'O',
-  '\u0420': 'P',
-  '\u03A1': 'P',
-  '\u0421': 'C',
-  '\u03A3': 'E',
-  '\u0422': 'T',
-  '\u03A4': 'T',
-  '\u0425': 'X',
-  '\u03A7': 'X',
+  '\u041A': 'K', // К
+  '\u041C': 'M', // М
+  '\u041E': 'O', // О
+  '\u0420': 'P', // Р
+  '\u0421': 'C', // С
+  '\u0422': 'T', // Т
+  '\u0425': 'X', // Х
+  '\u0405': 'S', // Ѕ
+  '\u0423': 'U', // У → U so QУIT / УNSУBSCRIBE fold
+  // Cyrillic lowercase
   '\u0430': 'a',
   '\u0435': 'e',
   '\u043E': 'o',
   '\u0440': 'p',
   '\u0441': 'c',
   '\u0442': 't',
-  '\u0443': 'y',
+  '\u0443': 'u', // у → u
   '\u0445': 'x',
   '\u0456': 'i',
-  '\u0405': 'S',
   '\u0455': 's',
+  // Digit lookalikes
+  '0': 'O',
 };
 
 /** Exact list for SQL `IN (...)` — same tokens as OPT_OUT_WHOLE_MESSAGE. */
@@ -145,4 +194,15 @@ export function sqlQuotedList(tokens: readonly string[]): string {
   return tokens
     .map((t) => `'${t.replace(/'/g, "''")}'`)
     .join(', ');
+}
+
+/** Confusable source→target pairs for SQL translate() generation. */
+export function confusableTranslatePairs(): { from: string; to: string } {
+  const from: string[] = [];
+  const to: string[] = [];
+  for (const [src, dst] of Object.entries(CONFUSABLES)) {
+    from.push(src);
+    to.push(dst);
+  }
+  return { from: from.join(''), to: to.join('') };
 }
