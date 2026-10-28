@@ -374,9 +374,11 @@ describe('mut.py #22/#24/#25/#26 migration 003 behavioural (PGlite)', () => {
     return db;
   }
 
-  it('#26 STOP PLEASE backfills; mid-sentence END does not', async () => {
+  it('#26 STOPPLEASE compact backfills; mid-sentence END does not', async () => {
+    // Compact-only body — mut.py #26 drops STOPPLEASE from the compact IN list.
+    // (Removing only exact "STOP PLEASE" still leaves compact STOPPLEASE.)
     const db = await bootWithMessages([
-      { body: 'STOP PLEASE', sid: 'sp1' },
+      { body: 'STOPPLEASE', sid: 'sp1' },
       { body: 'Can you come by end of day?', sid: 'mid1' },
     ]);
     const suppress = await db.query<{ n: number }>(

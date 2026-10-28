@@ -96,12 +96,12 @@ if (!sql.includes('normalize(btrim(m.body), NFKC),')) {
   failed = true;
 }
 
-// mut.py #26
+// mut.py #26 — compact STOPPLEASE needle
 if (
-  !sql.includes("'PLEASE STOP', 'STOP PLEASE', 'STOP IT', 'STOP PLS',")
+  !sql.includes("'PLEASESTOP', 'STOPPLEASE', 'STOPIT', 'STOPPLS',")
 ) {
   console.error(
-    "Migration missing 'PLEASE STOP', 'STOP PLEASE', 'STOP IT', 'STOP PLS', (mut.py #26)"
+    "Migration missing 'PLEASESTOP', 'STOPPLEASE', 'STOPIT', 'STOPPLS', (mut.py #26)"
   );
   failed = true;
 }
