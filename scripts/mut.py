@@ -35,7 +35,7 @@ muts=[
 ('16','r4#5 leadTimezone not passed (campaign)',CI,"    leadTimezone: pre.leadTimezone,","    leadTimezone: null,",1),
 ('17','r4#5 leadTimezone ignored (module)',I,"        leadTimezone: leadTz,","        leadTimezone: null,",1),
 ('18','r4#6 confusable fold removed','src/services/opt-out.ts',"out += CONFUSABLES[ch] ?? ch;","out += ch;",1),
-('19','r4#6 compact form removed','src/services/opt-out.ts',"  if (WHOLE_MESSAGE_SET.has(normalized) || WHOLE_COMPACT_SET.has(compact)) {\n    return { kind: 'opt_out' };\n  }","  if (WHOLE_MESSAGE_SET.has(normalized)) {\n    return { kind: 'opt_out' };\n  }",1),
+('19','r4#6 compact form removed','src/services/opt-out.ts',"  if (\n    WHOLE_MESSAGE_SET.has(normalized) ||\n    WHOLE_COMPACT_SET.has(compact) ||\n    WHOLE_MESSAGE_SET.has(collapsed) ||\n    WHOLE_COMPACT_SET.has(collapsedCompact)\n  ) {\n    return { kind: 'opt_out' };\n  }","  if (\n    WHOLE_MESSAGE_SET.has(normalized) ||\n    WHOLE_MESSAGE_SET.has(collapsed)\n  ) {\n    return { kind: 'opt_out' };\n  }",1),
 ('20','r4#6 opted_out gate in module',D,"  if (input.optedOut) {\n    return { kind: 'blocked', reason: 'opted_out' };\n  }","  if (false) {\n    return { kind: 'blocked', reason: 'opted_out' };\n  }",1),
 ('21','r4#6 suppression gate in module',D,"  if (input.suppressed) {\n    return { kind: 'blocked', reason: 'suppressed' };\n  }","  if (false) {\n    return { kind: 'blocked', reason: 'suppressed' };\n  }",1),
 # occurrence 2 = STOP backfill INSERT (load-bearing); rebuild staging is #1
