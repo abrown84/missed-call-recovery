@@ -153,12 +153,15 @@ DROP TABLE sms_suppressions_norm;
 -- ---------------------------------------------------------------------------
 -- 3) STOP backfill AFTER normalize — whole-message only (shared list with
 --    src/services/opt-out-data.ts). NO mid-sentence keyword retro-suppress.
---    Lists generated via `npm run check:opt-out-sql` (must stay in sync).
+--    Lists: `npm run check:opt-out-sql` / generate-opt-out-sql.mjs.
 --    Normalizer mirrors src/services/opt-out.ts normalizeOptOutText + compact.
+--    mut.py #25 needles `normalize(btrim(m.body), NFKC),` in the LATERAL below.
 -- ---------------------------------------------------------------------------
 
--- Confusables / quotes / emoji / ZWSP — keep in sync with CONFUSABLES + EDGE_NOISE.
-CREATE OR REPLACE FUNCTION opt_out_normalize_body(raw text)
+-- Post-NFKC finish (ZW / emoji / NBSP / newlines / edge noise / upper).
+-- Input should already be NFKC (+ translate). Used by opt_out_normalize_body
+-- and by the backfill LATERAL that keeps the mut.py #25 m.body needle.
+CREATE OR REPLACE FUNCTION opt_out_finish_normalized(s text)
 RETURNS text
 LANGUAGE sql
 IMMUTABLE
@@ -173,14 +176,9 @@ AS $$
                 regexp_replace(
                   regexp_replace(
                     regexp_replace(
-                      translate(
-                        normalize(btrim(raw), NFKC),
-                        -- from: digit0 + Greek + Cyrillic lookalikes (opt-out-data CONFUSABLES)
-                        '0ΑΒΕΗΙΚΜΝΟΡΤΧΣοαεАВЕНІӀКМОРСТХЅУаеорстухіѕ',
-                        'OABEHIKMNOPTXEoaeABEHIIKMOPCTXSUaeopctuxis'
-                      ),
-                      -- zero-width / soft hyphen
-                      E'[\u200B-\u200D\uFEFF\u2060\u180E\u00AD\u034F\u061C]',
+                      s,
+                      -- zero-width / soft hyphen / word-joiner / hangul fillers
+                      E'[\u200B-\u200D\uFEFF\u2060\u180E\u00AD\u034F\u061C\u115F\u1160\u17B4\u17B5\u3164\uFFA0]',
                       '',
                       'g'
                     ),
@@ -197,7 +195,7 @@ AS $$
                 ' ',
                 'g'
               ),
-              -- edge noise pass 1 (quotes + punct + space) — uncovering needs repeats
+              -- edge noise (quotes + punct + space); 3 passes ≈ TS fixpoint
               E'^[\s?!.,…''"`“”‘’]+|[\s?!.,…''"`“”‘’]+$',
               '',
               'g'
@@ -226,6 +224,22 @@ AS $$
   SELECT regexp_replace(normalized, '[^A-Z0-9]', '', 'g');
 $$;
 
+-- Convenience wrapper for tests / ad-hoc (CONFUSABLES via translate).
+CREATE OR REPLACE FUNCTION opt_out_normalize_body(raw text)
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+AS $$
+  SELECT opt_out_finish_normalized(
+    translate(
+      normalize(btrim(raw), NFKC),
+      -- from/to: digit0 + Greek + Cyrillic lookalikes (opt-out-data CONFUSABLES)
+      '0ΑΒΕΗΙΚΜΝΟΡΤΧΣοαεАВЕНІӀКМОРСТХЅУаеорстухіѕ',
+      'OABEHIKMNOPTXEoaeABEHIIKMOPCTXSUaeopctuxis'
+    )
+  );
+$$;
+
 INSERT INTO sms_suppressions (business_id, phone, reason)
 SELECT DISTINCT ON (l.business_id, l.caller_phone)
   l.business_id,
@@ -233,9 +247,19 @@ SELECT DISTINCT ON (l.business_id, l.caller_phone)
   'opt_out_backfill'
 FROM sms_messages m
 JOIN leads l ON l.id = m.lead_id
+-- Single NFKC site so mut.py #25 (occurrence 1) breaks both exact + compact arms.
+CROSS JOIN LATERAL (
+  SELECT opt_out_finish_normalized(
+    translate(
+      normalize(btrim(m.body), NFKC),
+      '0ΑΒΕΗΙΚΜΝΟΡΤΧΣοαεАВЕНІӀКМОРСТХЅУаеорстухіѕ',
+      'OABEHIKMNOPTXEoaeABEHIIKMOPCTXSUaeopctuxis'
+    )
+  ) AS norm
+) n
 WHERE m.direction = 'inbound'
   AND (
-    opt_out_normalize_body(m.body) IN (
+    n.norm IN (
       'STOP', 'STOPALL', 'STOP ALL', 'UNSUBSCRIBE', 'QUIT', 'END', 'CANCEL',
       'OPTOUT', 'OPT OUT', 'OPT-OUT', 'REVOKE',
       'DON''T TEXT ME AGAIN', 'DONT TEXT ME AGAIN', 'DO NOT TEXT ME AGAIN',
@@ -257,7 +281,7 @@ WHERE m.direction = 'inbound'
       'STOPALL STOPALL', 'STOPALL STOPALL STOPALL'
     )
     OR
-    opt_out_compact_body(opt_out_normalize_body(m.body)) IN (
+    opt_out_compact_body(n.norm) IN (
       'STOP', 'STOPALL', 'UNSUBSCRIBE', 'QUIT', 'END', 'CANCEL', 'OPTOUT', 'REVOKE',
       'DONTTEXTMEAGAIN', 'DONOTTEXTMEAGAIN', 'DONOTCONTACTME', 'DONTCONTACTME',
       'PLEASESTOP', 'STOPPLEASE', 'STOPIT', 'STOPPLS',

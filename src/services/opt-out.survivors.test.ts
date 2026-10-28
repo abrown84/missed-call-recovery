@@ -27,12 +27,11 @@ describe('normalizeOptOutText trailing-punctuation anchor (L75)', () => {
     expect(normalizeOptOutText('HELLO,WORLD')).toBe('HELLO,WORLD');
   });
 
-  it('comma-separated STOP PLEASE stays ambiguous, not whole-message opt_out', () => {
-    expect(classifyOptOut('STOP, PLEASE')).toEqual({
-      kind: 'ambiguous',
-      reason: 'keyword_in_sentence',
-    });
-    expect(isDefiniteOptOut('STOP, PLEASE')).toBe(false);
+  it('comma-only STOP, PLEASE compact-matches STOP PLEASE → opt_out', () => {
+    // Compact strips the comma → STOPPLEASE ≡ whole-message STOP PLEASE.
+    expect(normalizeOptOutText('STOP, PLEASE')).toBe('STOP, PLEASE');
+    expect(classifyOptOut('STOP, PLEASE').kind).toBe('opt_out');
+    expect(isDefiniteOptOut('STOP, PLEASE')).toBe(true);
   });
 });
 

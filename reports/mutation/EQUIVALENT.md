@@ -90,6 +90,18 @@ mutants here when no test can distinguish original from replacement.
   handled above — so forcing the `=== 1` branch true does not change outcomes.
   Disabled in source.
 
+### QC r8 mutation gate notes
+
+- `quiet-hours-zones.ts` removed from Stryker `mutate` + `check-mutation-scores`
+  TARGETS (was 689 static Ignored / 0 tested → vacuous 100%). Covered by
+  `quiet-hours-zones.test.ts` (850 dual-zone, 808/907/212, IANA shape).
+  mut.py #13 still string-replaces the `'850'` entry.
+- `ignoreStatic: false` so `opt-out-data.ts` CONFUSABLES / keyword-list static
+  mutants are actually tested.
+- Gate fails any non-barrel target with `tested === 0` and
+  (`ignored > 0` OR any mutants), and fails if `ignored > MAX_IGNORED_PER_FILE`
+  (default 80; override via `MUTATION_MAX_IGNORED`).
+
 ### opt-out-compact-set-redundant-with-contains — REMOVED (QC r7)
 
 - Was incorrectly claimed equivalent under the old over-broad substring matcher.

@@ -4,6 +4,7 @@ const mockFrom = vi.fn();
 const handleClassifiedReplyEnrollment = vi.fn();
 const pauseCampaignForLead = vi.fn();
 const escalateLead = vi.fn();
+const notifyPossibleOptOut = vi.fn();
 const classifyUrgency = vi.fn();
 const markLeadOptedOut = vi.fn();
 const suppressPhoneForBusiness = vi.fn();
@@ -20,6 +21,7 @@ vi.mock('@/services/campaigns', () => ({
 
 vi.mock('@/services/escalation', () => ({
   escalateLead: (...args: unknown[]) => escalateLead(...args),
+  notifyPossibleOptOut: (...args: unknown[]) => notifyPossibleOptOut(...args),
 }));
 
 vi.mock('@/services/suppressions', () => ({
@@ -64,11 +66,13 @@ describe('processInboundSms QC r2', () => {
     handleClassifiedReplyEnrollment.mockReset();
     pauseCampaignForLead.mockReset();
     escalateLead.mockReset();
+    notifyPossibleOptOut.mockReset();
     classifyUrgency.mockReset();
     markLeadOptedOut.mockReset();
     suppressPhoneForBusiness.mockReset();
     pauseCampaignForLead.mockResolvedValue(undefined);
     escalateLead.mockResolvedValue(undefined);
+    notifyPossibleOptOut.mockResolvedValue(undefined);
     markLeadOptedOut.mockResolvedValue(undefined);
     suppressPhoneForBusiness.mockResolvedValue(undefined);
   });

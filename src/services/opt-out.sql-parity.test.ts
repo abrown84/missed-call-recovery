@@ -41,7 +41,9 @@ async function bootFunctions(): Promise<PGlite> {
     join(process.cwd(), 'supabase/migrations/003_campaign_idempotency.sql'),
     'utf8'
   );
-  const start = forward.indexOf('CREATE OR REPLACE FUNCTION opt_out_normalize_body');
+  const start = forward.indexOf(
+    'CREATE OR REPLACE FUNCTION opt_out_finish_normalized'
+  );
   const end = forward.indexOf('INSERT INTO sms_suppressions (business_id, phone, reason)');
   if (start < 0 || end < 0) {
     throw new Error('Could not locate opt_out SQL functions in migration 003');

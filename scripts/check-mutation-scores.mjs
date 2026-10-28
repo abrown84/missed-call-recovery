@@ -112,10 +112,14 @@ for (const path of TARGETS) {
   totalNoCov += noCov;
   totalIgnored += ignored;
   if (score < MIN) failed = true;
-  // QC r8: vacuous 100% with only ignored mutants is a gate failure
-  if (!BARRELS.has(path) && tested === 0 && ignored > 0) {
+  // QC r8: vacuous 100% when nothing was tested but mutants exist / ignored
+  if (
+    !BARRELS.has(path) &&
+    tested === 0 &&
+    (ignored > 0 || mutants.length > 0)
+  ) {
     console.error(
-      `FAIL ${path}: 0 tested mutants but ${ignored} ignored (vacuous score)`
+      `FAIL ${path}: tested===0 with ignored=${ignored} mutants=${mutants.length} (vacuous score)`
     );
     failed = true;
   }

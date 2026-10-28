@@ -1,9 +1,8 @@
 #!/usr/bin/env node
 /**
- * Diff migration 003 STOP backfill IN lists vs opt-out-data.ts (QC r8 P1-3).
- * Exit 1 on mismatch. Generate lists with the same sqlQuotedList helper.
+ * Diff migration 003 STOP backfill IN lists vs opt-out-data (QC r8 P1-3).
+ * Exit 1 on mismatch. Also asserts mut.py #22/#25/#26 string needles.
  */
-import { createRequire } from 'module';
 import { readFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -12,16 +11,14 @@ import { spawnSync } from 'child_process';
 const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 const migPath = join(root, 'supabase/migrations/003_campaign_idempotency.sql');
 
-// Prefer tsx to load TS module exports.
 const probe = `
 import {
-  optOutBackfillExactList,
-  optOutBackfillCompactList,
-  sqlQuotedList,
-} from './src/services/opt-out-data.ts';
-const exact = sqlQuotedList(optOutBackfillExactList());
-const compact = sqlQuotedList(optOutBackfillCompactList());
-process.stdout.write(JSON.stringify({ exact, compact }));
+  buildOptOutBackfillInLists,
+  buildOptOutConfusableTranslate,
+} from './src/services/opt-out-sql.ts';
+const lists = buildOptOutBackfillInLists();
+const conf = buildOptOutConfusableTranslate();
+process.stdout.write(JSON.stringify({ ...lists, conf }));
 `;
 
 const r = spawnSync('npx', ['tsx', '-e', probe], {
@@ -33,10 +30,10 @@ if (r.status !== 0) {
   console.error(r.stderr || r.stdout);
   process.exit(1);
 }
-const { exact, compact } = JSON.parse(r.stdout.trim());
+const { exact, compact, conf } = JSON.parse(r.stdout.trim());
 const sql = readFileSync(migPath, 'utf8');
 
-function extractInList(label, haystack, afterMarker) {
+function extractInList(haystack, afterMarker) {
   const start = haystack.indexOf(afterMarker);
   if (start < 0) {
     throw new Error(`Marker not found: ${afterMarker}`);
@@ -53,26 +50,14 @@ function extractInList(label, haystack, afterMarker) {
     }
   }
   const inner = haystack.slice(open + 1, end);
-  // Normalize whitespace for compare
   return inner
     .replace(/\s+/g, ' ')
     .replace(/\s*,\s*/g, ', ')
     .trim();
 }
 
-const exactSql = extractInList(
-  'exact',
-  sql,
-  'opt_out_normalize_body(m.body) IN'
-);
-const compactSql = extractInList(
-  'compact',
-  sql,
-  'opt_out_compact_body(opt_out_normalize_body(m.body)) IN'
-);
-
-const expectedExact = exact.replace(/\s+/g, ' ').trim();
-const expectedCompact = compact.replace(/\s+/g, ' ').trim();
+const exactSql = extractInList(sql, 'n.norm IN');
+const compactSql = extractInList(sql, 'opt_out_compact_body(n.norm) IN');
 
 function tokenize(list) {
   return new Set(
@@ -83,9 +68,9 @@ function tokenize(list) {
 }
 
 const exA = tokenize(exactSql);
-const exB = tokenize(expectedExact);
+const exB = tokenize(exact.replace(/\s+/g, ' ').trim());
 const cA = tokenize(compactSql);
-const cB = tokenize(expectedCompact);
+const cB = tokenize(compact.replace(/\s+/g, ' ').trim());
 
 function diffSets(a, b, name) {
   const missing = [...b].filter((x) => !a.has(x));
@@ -103,19 +88,58 @@ let failed = false;
 failed = diffSets(exA, exB, 'EXACT IN list') || failed;
 failed = diffSets(cA, cB, 'COMPACT IN list') || failed;
 
-if (!sql.includes('opt_out_normalize_body')) {
-  console.error('Migration missing opt_out_normalize_body()');
+// mut.py #25 — first occurrence must be the backfill LATERAL (m.body)
+if (!sql.includes('normalize(btrim(m.body), NFKC),')) {
+  console.error(
+    'Migration missing normalize(btrim(m.body), NFKC), (mut.py #25 needle)'
+  );
   failed = true;
 }
-if (!sql.includes("normalize(btrim(raw), NFKC)")) {
-  console.error('Migration missing NFKC normalize (mut.py #25 target)');
+
+// mut.py #26
+if (
+  !sql.includes("'PLEASE STOP', 'STOP PLEASE', 'STOP IT', 'STOP PLS',")
+) {
+  console.error(
+    "Migration missing 'PLEASE STOP', 'STOP PLEASE', 'STOP IT', 'STOP PLS', (mut.py #26)"
+  );
+  failed = true;
+}
+
+// mut.py #22 — 2nd ON CONFLICT is STOP backfill
+const onConflictMatches = sql.match(
+  /ON CONFLICT \(business_id, phone\) DO NOTHING;/g
+);
+if (!onConflictMatches || onConflictMatches.length < 2) {
+  console.error(
+    'Migration needs ≥2× ON CONFLICT (business_id, phone) DO NOTHING; (mut.py #22)'
+  );
+  failed = true;
+}
+
+if (!sql.includes('opt_out_finish_normalized')) {
+  console.error('Migration missing opt_out_finish_normalized()');
+  failed = true;
+}
+if (!sql.includes('opt_out_compact_body')) {
+  console.error('Migration missing opt_out_compact_body()');
+  failed = true;
+}
+
+// Confusable translate pairs embedded in migration
+if (!sql.includes(conf.from) || !sql.includes(conf.to)) {
+  console.error(
+    'Migration confusable translate() from/to out of sync with CONFUSABLES'
+  );
   failed = true;
 }
 
 if (failed) {
-  console.error('\nopt-out SQL check FAILED. Update 003 lists from opt-out-data.ts.');
+  console.error(
+    '\nopt-out SQL check FAILED. Run `node scripts/generate-opt-out-sql.mjs` and update 003.'
+  );
   process.exit(1);
 }
 console.log(
-  `opt-out SQL check OK (exact=${exA.size}, compact=${cA.size})`
+  `opt-out SQL check OK (exact=${exA.size}, compact=${cA.size}; mut.py #22/#25/#26 needles present)`
 );

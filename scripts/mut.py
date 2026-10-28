@@ -42,7 +42,7 @@ muts=[
 ('22','r4#7 backfill ON CONFLICT dropped',G,"ON CONFLICT (business_id, phone) DO NOTHING;",";",2),
 ('23','r4#7 enrollment dedupe prefers non-active',G,"CASE WHEN status = 'active' THEN 0 ELSE 1 END,","CASE WHEN status = 'active' THEN 1 ELSE 0 END,",1),
 ('24','r4#7 NULLS LAST -> FIRST',G,"enrolled_at DESC NULLS LAST,","enrolled_at DESC NULLS FIRST,",1),
-('25','r4#7 NFKC removed from backfill',G,"normalize(btrim(raw), NFKC),","btrim(raw),",1),
+('25','r4#7 NFKC removed from backfill',G,"normalize(btrim(m.body), NFKC),","btrim(m.body),",1),
 ('26','r4#7 STOP PLEASE removed from backfill',G,"'PLEASE STOP', 'STOP PLEASE', 'STOP IT', 'STOP PLS',","'PLEASE STOP', 'STOP IT', 'STOP PLS',",1),
 ('27','r4b A caps probe removed',I,"    capsBeforeSend = await deps.ensureCaps(adapter);","    capsBeforeSend = true;",1),
 ('28','r4b A echo-only gate',M,"keySupportedAtSend: capsBeforeSend && signal.keyEchoed,","keySupportedAtSend: signal.keyEchoed,",1),
