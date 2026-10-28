@@ -72,11 +72,13 @@ export function normalizeOptOutText(raw: string): string {
   const spaced = replaceNbspWithSpace(folded);
   // Stryker disable next-line Regex,MethodExpression: later /\s+/g + final trim make newline/+ and mid-trim equivalent
   const lined = spaced.replace(/[\r\n]+/g, ' ').trim();
-  return stripEdgeQuotes(lined)
+  // Strip edge quotes, then trailing punct, then quotes again so e.g. `#"!` → `#`
+  // (punct uncovering a quote) stays idempotent.
+  const once = stripEdgeQuotes(lined)
     .replace(/[\s?!.,…]+$/g, '')
     .replace(/\s+/g, ' ')
-    .trim()
-    .toUpperCase();
+    .trim();
+  return stripEdgeQuotes(once).trim().toUpperCase();
 }
 
 /** Spaceless form so 'S T O P' compact to STOP. */

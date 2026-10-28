@@ -112,12 +112,14 @@ describe('opt-out service-talk / keyword-in-sentence → ambiguous', () => {
 
 describe('opt-out normalize property', () => {
   it('normalize is idempotent uppercase ASCII letters', () => {
+    // Regression: punct after a quote (`#"!`) must still be idempotent.
+    expect(normalizeOptOutText('#"!')).toBe(normalizeOptOutText(normalizeOptOutText('#"!')));
     fc.assert(
       fc.property(fc.string({ maxLength: 40 }), (s) => {
         const once = normalizeOptOutText(s);
         expect(normalizeOptOutText(once)).toBe(once);
       }),
-      { numRuns: 40 }
+      { numRuns: 80, seed: -1799525932 }
     );
   });
 });
