@@ -1,20 +1,21 @@
-# Mutation scores (QC r9)
+# Mutation scores (QC r10)
 
 Honest score = killed+timeout / (killed+timeout+survived+no-coverage).
 Suppressed-as-survived = killed+timeout / (honest denom + ignored).
 Equivalents only individually in `EQUIVALENT.md`.
 
-## Latest run (QC r9 @ `ddc2a43`)
+## Latest run (QC r10 @ `b5a2899`, CI run 40696546486)
 
 | Metric | Value |
 |--------|-------|
-| Honest | **96.28%** (K=2740, S=84, NoCov=22) |
-| Suppressed-as-survived | **86.96%** (Ignored=305) |
+| Honest | **96.39%** (K=2749, S=81, NoCov=22) |
+| Suppressed-as-survived | **87.08%** (Ignored=305) |
 | Gate MIN | 90 per module |
-| MAX_IGNORED_PER_FILE | 220 |
-| MAX_IGNORED_TOTAL | 400 |
+| MAX_IGNORED_PER_FILE | **200** |
+| MAX_IGNORED_TOTAL | **320** |
+| Ratchet BASELINE_IGNORED | **305** |
 | ignoreStatic | **false** |
-| quiet-hours-zones | `zonesForAreaCode` under mutate; static map in `quiet-hours-zones-data.ts` |
+| quiet-hours-zones | `zonesForAreaCode` under mutate; static map in `quiet-hours-zones-data.ts` (out of mutate; golden pin) |
 
 ## mut.py one-line revert harness
 
