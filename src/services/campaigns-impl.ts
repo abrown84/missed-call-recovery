@@ -40,6 +40,23 @@ import {
   isPhoneSuppressed,
 } from '@/services/suppressions';
 import { ENROLLMENT_CLAIM_SELECT } from '@/lib/postgrest-select';
+import {
+  CAMPAIGN_SELECT_STAR_STEPS,
+  CAMPAIGN_SELECT_URGENCY,
+  DIRECTION_OUTBOUND,
+  ENROLLMENT_SELECT_ADVANCE,
+  ENROLLMENT_SELECT_REQUEUE,
+  ENROLLMENT_SELECT_SEND,
+  ENROLLMENT_SELECT_STAR,
+  ENROLLMENT_STATUS,
+  LEAD_SELECT_STAR_BIZ,
+  PG_UNIQUE,
+  SMS_SELECT_ABANDONED,
+  SMS_SELECT_CONFIRMED,
+  SMS_STATUS,
+  STEP_SELECT_STAR,
+  TABLE,
+} from '@/services/db-strings';
 
 type Business = Database['public']['Tables']['businesses']['Row'];
 type Lead = Database['public']['Tables']['leads']['Row'];
@@ -68,8 +85,8 @@ export async function enrollLeadInCampaign(
   const supabase = createServerClient();
 
   const { data: lead, error: leadError } = await supabase
-    .from('leads')
-    .select('*, businesses(*)')
+    .from(TABLE.leads)
+    .select(LEAD_SELECT_STAR_BIZ)
     .eq('id', leadId)
     .single();
 
@@ -93,9 +110,9 @@ export async function enrollLeadInCampaign(
   }
 
   const { data: campaigns, error: campaignError } = await supabase
-    .from('campaigns')
-    .select('*, campaign_steps(*)')
-    .eq('status', 'active')
+    .from(TABLE.campaigns)
+    .select(CAMPAIGN_SELECT_STAR_STEPS)
+    .eq('status', ENROLLMENT_STATUS.active)
     .eq('auto_enroll', true);
 
   if (campaignError || !campaigns || campaigns.length === 0) {
@@ -145,19 +162,19 @@ export async function enrollLeadInCampaign(
   const nextSendAt = plan.nextSendAt;
 
   const { error: enrollError } = await supabase
-    .from('campaign_enrollments')
+    .from(TABLE.campaignEnrollments)
     .insert({
       lead_id: leadId,
       campaign_id: selectedCampaign.id,
       current_step: plan.currentStep,
-      status: 'active',
+      status: ENROLLMENT_STATUS.active,
       next_send_at: nextSendAt,
       claimed_at: null,
       claim_token: null,
     });
 
   if (enrollError) {
-    if (enrollError.code === '23505') {
+    if (enrollError.code === PG_UNIQUE) {
       return { enrolled: false, reason: 'already_enrolled:unique' };
     }
     // Stryker disable next-line StringLiteral: log-only message (no control flow)
@@ -202,8 +219,8 @@ export async function switchEnrollmentCampaign(
   }
 
   const { data: lead, error: leadError } = await supabase
-    .from('leads')
-    .select('*')
+    .from(TABLE.leads)
+    .select(ENROLLMENT_SELECT_STAR)
     .eq('id', leadId)
     .single();
 
@@ -212,8 +229,8 @@ export async function switchEnrollmentCampaign(
   }
 
   const { data: campaign, error: campError } = await supabase
-    .from('campaigns')
-    .select('*, campaign_steps(*)')
+    .from(TABLE.campaigns)
+    .select(CAMPAIGN_SELECT_STAR_STEPS)
     .eq('id', targetCampaignId)
     .single();
 
@@ -244,11 +261,11 @@ export async function switchEnrollmentCampaign(
   // PostgREST re-applies filters to the representation — select every column
   // referenced by the filter or Postgres returns 42703 (staging evidence c).
   const { data: updated, error: updateError } = await supabase
-    .from('campaign_enrollments')
+    .from(TABLE.campaignEnrollments)
     .update({
       campaign_id: targetCampaignId,
       current_step: plan.currentStep,
-      status: 'active',
+      status: ENROLLMENT_STATUS.active,
       next_send_at: nextSendAt,
       claimed_at: null,
       claim_token: null,
@@ -257,7 +274,7 @@ export async function switchEnrollmentCampaign(
       updated_at: new Date().toISOString(),
     })
     .eq('lead_id', leadId)
-    .eq('status', 'active')
+    .eq('status', ENROLLMENT_STATUS.active)
     .or(`claim_token.is.null,claimed_at.lt.${staleBefore}`)
     .select(ENROLLMENT_CLAIM_SELECT)
     .maybeSingle();
@@ -294,9 +311,9 @@ export async function handleClassifiedReplyEnrollment(
   const replyMode = getCampaignReplyMode();
 
   const { data: campaigns } = await supabase
-    .from('campaigns')
-    .select('id, name, urgency_filter')
-    .eq('status', 'active')
+    .from(TABLE.campaigns)
+    .select(CAMPAIGN_SELECT_URGENCY)
+    .eq('status', ENROLLMENT_STATUS.active)
     .eq('auto_enroll', true);
 
   const target = selectCampaignForUrgency(campaigns || [], urgency);
@@ -354,8 +371,8 @@ export async function getEnrollmentForLead(
 ): Promise<CampaignEnrollment | null> {
   const supabase = createServerClient();
   const { data, error } = await supabase
-    .from('campaign_enrollments')
-    .select('*')
+    .from(TABLE.campaignEnrollments)
+    .select(ENROLLMENT_SELECT_STAR)
     .eq('lead_id', leadId)
     .maybeSingle();
 
@@ -378,8 +395,8 @@ export async function sendCampaignSMS(
   const supabase = createServerClient();
 
   const { data: enrollment, error: enrollError } = await supabase
-    .from('campaign_enrollments')
-    .select('*, leads!inner(*, businesses(*)), campaigns!inner(*)')
+    .from(TABLE.campaignEnrollments)
+    .select(ENROLLMENT_SELECT_SEND)
     .eq('id', enrollmentId)
     .single();
 
@@ -432,8 +449,8 @@ export async function sendCampaignSMS(
   }
 
   const { data: steps, error: stepsError } = await supabase
-    .from('campaign_steps')
-    .select('*')
+    .from(TABLE.campaignSteps)
+    .select(STEP_SELECT_STAR)
     .eq('campaign_id', campaign.id)
     .order('step_number', { ascending: true });
 
@@ -525,7 +542,7 @@ export async function sendCampaignSMS(
         `ALERT: quiet-hours unresolved for enrollment ${enrollmentId}; needs_review`
       );
       await supabase
-        .from('leads')
+        .from(TABLE.leads)
         .update({
           needs_human_review: true,
           needs_human_review_at: new Date().toISOString(),
@@ -591,7 +608,7 @@ export async function advanceEnrollment(
     ).toISOString();
 
     const { data, error } = await supabase
-      .from('campaign_enrollments')
+      .from(TABLE.campaignEnrollments)
       .update({
         current_step: nextStepNumber,
         next_send_at: nextSendAt,
@@ -600,7 +617,7 @@ export async function advanceEnrollment(
         updated_at: new Date().toISOString(),
       })
       .eq('id', enrollmentId)
-      .eq('status', 'active')
+      .eq('status', ENROLLMENT_STATUS.active)
       .eq('claim_token', claimToken)
       .select(ENROLLMENT_CLAIM_SELECT);
 
@@ -621,9 +638,9 @@ export async function advanceEnrollment(
   }
 
   const { data, error } = await supabase
-    .from('campaign_enrollments')
+    .from(TABLE.campaignEnrollments)
     .update({
-      status: 'completed',
+      status: ENROLLMENT_STATUS.completed,
       completed_at: new Date().toISOString(),
       next_send_at: null,
       claimed_at: null,
@@ -631,7 +648,7 @@ export async function advanceEnrollment(
       updated_at: new Date().toISOString(),
     })
     .eq('id', enrollmentId)
-    .eq('status', 'active')
+    .eq('status', ENROLLMENT_STATUS.active)
     .eq('claim_token', claimToken)
     .select(ENROLLMENT_CLAIM_SELECT);
 
@@ -656,7 +673,7 @@ async function releaseClaim(
   opts?: { nextSendAt?: string }
 ): Promise<void> {
   await supabase
-    .from('campaign_enrollments')
+    .from(TABLE.campaignEnrollments)
     .update({
       claimed_at: null,
       claim_token: null,
@@ -666,7 +683,7 @@ async function releaseClaim(
       updated_at: new Date().toISOString(),
     })
     .eq('id', enrollmentId)
-    .eq('status', 'active')
+    .eq('status', ENROLLMENT_STATUS.active)
     .eq('claim_token', claimToken);
 }
 
@@ -693,9 +710,9 @@ async function markEnrollmentNeedsReview(
   reason: string
 ): Promise<void> {
   await supabase
-    .from('campaign_enrollments')
+    .from(TABLE.campaignEnrollments)
     .update({
-      status: 'needs_review',
+      status: ENROLLMENT_STATUS.needsReview,
       next_send_at: null,
       claimed_at: null,
       claim_token: null,
@@ -703,7 +720,7 @@ async function markEnrollmentNeedsReview(
       updated_at: new Date().toISOString(),
     })
     .eq('id', enrollmentId)
-    .eq('status', 'active')
+    .eq('status', ENROLLMENT_STATUS.active)
     .eq('claim_token', claimToken);
   // Stryker disable next-line StringLiteral: log-only message (no control flow)
   console.error(
@@ -719,9 +736,9 @@ export async function pauseCampaignForLead(leadId: string): Promise<void> {
   const supabase = createServerClient();
 
   const { error } = await supabase
-    .from('campaign_enrollments')
+    .from(TABLE.campaignEnrollments)
     .update({
-      status: 'paused',
+      status: ENROLLMENT_STATUS.paused,
       paused_at: new Date().toISOString(),
       next_send_at: null,
       claimed_at: null,
@@ -729,7 +746,7 @@ export async function pauseCampaignForLead(leadId: string): Promise<void> {
       updated_at: new Date().toISOString(),
     })
     .eq('lead_id', leadId)
-    .eq('status', 'active');
+    .eq('status', ENROLLMENT_STATUS.active);
 
   if (error) {
     // Stryker disable next-line StringLiteral: log-only message (no control flow)
@@ -761,7 +778,7 @@ export async function claimDueEnrollment(
   const token = randomUUID();
 
   const due = await supabase
-    .from('campaign_enrollments')
+    .from(TABLE.campaignEnrollments)
     .update({
       next_send_at: null,
       claimed_at: nowIso,
@@ -769,7 +786,7 @@ export async function claimDueEnrollment(
       updated_at: nowIso,
     })
     .eq('id', enrollmentId)
-    .eq('status', 'active')
+    .eq('status', ENROLLMENT_STATUS.active)
     .lte('next_send_at', nowIso)
     .is('claim_token', null)
     .select(ENROLLMENT_CLAIM_SELECT);
@@ -779,14 +796,14 @@ export async function claimDueEnrollment(
   }
 
   const stale = await supabase
-    .from('campaign_enrollments')
+    .from(TABLE.campaignEnrollments)
     .update({
       claimed_at: nowIso,
       claim_token: token,
       updated_at: nowIso,
     })
     .eq('id', enrollmentId)
-    .eq('status', 'active')
+    .eq('status', ENROLLMENT_STATUS.active)
     .is('next_send_at', null)
     .lt('claimed_at', staleBefore)
     // claimed_at is in the filter — must be selected (PostgREST 42703).
@@ -809,18 +826,18 @@ export async function listClaimableEnrollmentIds(
   const staleBefore = new Date(now.getTime() - CLAIM_STALE_MS).toISOString();
 
   const { data: due } = await supabase
-    .from('campaign_enrollments')
+    .from(TABLE.campaignEnrollments)
     .select('id')
-    .eq('status', 'active')
+    .eq('status', ENROLLMENT_STATUS.active)
     .lte('next_send_at', nowIso)
     .is('claim_token', null)
     .order('next_send_at', { ascending: true })
     .limit(limit);
 
   const { data: stale } = await supabase
-    .from('campaign_enrollments')
+    .from(TABLE.campaignEnrollments)
     .select('id')
-    .eq('status', 'active')
+    .eq('status', ENROLLMENT_STATUS.active)
     .is('next_send_at', null)
     .lt('claimed_at', staleBefore)
     .limit(limit);
@@ -858,9 +875,9 @@ export async function reconcileAmbiguousSms(): Promise<ReconcileResult> {
   // that the send module marked in this cron tick is handled inside callers
   // via sid parse on never_sent. Recovery resend uses sendRecoverySMS.
   const { data: abandoned } = await supabase
-    .from('sms_messages')
-    .select('id, lead_id, message_sid, status')
-    .eq('status', 'abandoned_retry')
+    .from(TABLE.smsMessages)
+    .select(SMS_SELECT_ABANDONED)
+    .eq('status', SMS_STATUS.abandonedRetry)
     .order('sent_at', { ascending: true })
     .limit(50);
 
@@ -883,14 +900,14 @@ export async function reconcileAmbiguousSms(): Promise<ReconcileResult> {
     }
     // Prevent reprocessing the same abandoned row forever
     await supabase
-      .from('sms_messages')
-      .update({ status: 'abandoned_done' })
+      .from(TABLE.smsMessages)
+      .update({ status: SMS_STATUS.abandonedDone })
       .eq('id', row.id);
   }
 
   const { data: confirmedRows } = await supabase
-    .from('sms_messages')
-    .select('message_sid, status')
+    .from(TABLE.smsMessages)
+    .select(SMS_SELECT_CONFIRMED)
     .in('status', ['queued', 'dispatched', 'sent', 'delivered'])
     .like('message_sid', 'mlf:campaign:%')
     .order('sent_at', { ascending: false })
@@ -932,7 +949,7 @@ async function resendRecoveryIdempotent(
   abandonedOriginalSid: string
 ): Promise<void> {
   await supabase
-    .from('leads')
+    .from(TABLE.leads)
     .update({
       sms_outbound_sid: null,
       updated_at: new Date().toISOString(),
@@ -941,8 +958,8 @@ async function resendRecoveryIdempotent(
     .eq('sms_outbound_sid', abandonedOriginalSid);
 
   const { data: lead } = await supabase
-    .from('leads')
-    .select('*, businesses(*)')
+    .from(TABLE.leads)
+    .select(LEAD_SELECT_STAR_BIZ)
     .eq('id', leadId)
     .maybeSingle();
 
@@ -972,10 +989,10 @@ async function advanceEnrollmentAfterConfirmedSend(
   stepNumber: number
 ): Promise<void> {
   const { data: enrollment } = await supabase
-    .from('campaign_enrollments')
-    .select('id, campaign_id, current_step, status, claim_token')
+    .from(TABLE.campaignEnrollments)
+    .select(ENROLLMENT_SELECT_ADVANCE)
     .eq('id', enrollmentId)
-    .eq('status', 'active')
+    .eq('status', ENROLLMENT_STATUS.active)
     .maybeSingle();
 
   if (
@@ -990,8 +1007,8 @@ async function advanceEnrollmentAfterConfirmedSend(
   }
 
   const { data: steps } = await supabase
-    .from('campaign_steps')
-    .select('*')
+    .from(TABLE.campaignSteps)
+    .select(STEP_SELECT_STAR)
     .eq('campaign_id', campaignId)
     .order('step_number', { ascending: true });
 
@@ -1003,7 +1020,7 @@ async function advanceEnrollmentAfterConfirmedSend(
       Date.now() + nextStep.delay_minutes * 60 * 1000
     ).toISOString();
     await supabase
-      .from('campaign_enrollments')
+      .from(TABLE.campaignEnrollments)
       .update({
         current_step: nextStep.step_number,
         next_send_at: nextSendAt,
@@ -1012,14 +1029,14 @@ async function advanceEnrollmentAfterConfirmedSend(
         updated_at: new Date().toISOString(),
       })
       .eq('id', enrollmentId)
-      .eq('status', 'active')
+      .eq('status', ENROLLMENT_STATUS.active)
       .eq('current_step', stepNumber)
       .is('claim_token', null);
   } else {
     await supabase
-      .from('campaign_enrollments')
+      .from(TABLE.campaignEnrollments)
       .update({
-        status: 'completed',
+        status: ENROLLMENT_STATUS.completed,
         completed_at: new Date().toISOString(),
         next_send_at: null,
         claimed_at: null,
@@ -1027,7 +1044,7 @@ async function advanceEnrollmentAfterConfirmedSend(
         updated_at: new Date().toISOString(),
       })
       .eq('id', enrollmentId)
-      .eq('status', 'active')
+      .eq('status', ENROLLMENT_STATUS.active)
       .eq('current_step', stepNumber)
       .is('claim_token', null);
   }
@@ -1043,10 +1060,10 @@ async function requeueExactCampaignStep(
   stepNumber: number
 ): Promise<boolean> {
   const { data: enrollment } = await supabase
-    .from('campaign_enrollments')
-    .select('id, campaign_id, status')
+    .from(TABLE.campaignEnrollments)
+    .select(ENROLLMENT_SELECT_REQUEUE)
     .eq('id', enrollmentId)
-    .eq('status', 'active')
+    .eq('status', ENROLLMENT_STATUS.active)
     .maybeSingle();
 
   if (
@@ -1059,7 +1076,7 @@ async function requeueExactCampaignStep(
   }
 
   const { data, error } = await supabase
-    .from('campaign_enrollments')
+    .from(TABLE.campaignEnrollments)
     .update({
       current_step: stepNumber,
       next_send_at: new Date().toISOString(),
@@ -1068,7 +1085,7 @@ async function requeueExactCampaignStep(
       updated_at: new Date().toISOString(),
     })
     .eq('id', enrollmentId)
-    .eq('status', 'active')
+    .eq('status', ENROLLMENT_STATUS.active)
     .eq('campaign_id', campaignId)
     .select(ENROLLMENT_CLAIM_SELECT);
 
@@ -1156,7 +1173,7 @@ export async function processDueCampaigns(): Promise<{
       try {
         const supabase = createServerClient();
         await supabase
-          .from('campaign_enrollments')
+          .from(TABLE.campaignEnrollments)
           .update({
             claim_token: null,
             claimed_at: null,
@@ -1164,7 +1181,7 @@ export async function processDueCampaigns(): Promise<{
             updated_at: new Date().toISOString(),
           })
           .eq('id', id)
-          .eq('status', 'active');
+          .eq('status', ENROLLMENT_STATUS.active);
       } catch {
         /* ignore release failure */
       }

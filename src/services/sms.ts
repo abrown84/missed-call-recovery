@@ -13,6 +13,15 @@ import {
   SuppressionLookupError,
   isPhoneSuppressed,
 } from '@/services/suppressions';
+import {
+  DIRECTION_OUTBOUND,
+  LEAD_SELECT_OPTED_OUT,
+  LEAD_SELECT_STAR_BIZ,
+  PG_UNIQUE,
+  SMS_SELECT_DEFERRED,
+  SMS_STATUS,
+  TABLE,
+} from '@/services/db-strings';
 import type { Database } from '@/types/database';
 
 type Business = Database['public']['Tables']['businesses']['Row'];
@@ -78,16 +87,16 @@ export async function persistDeferredRecoveryWithDeps(
   const supabase = deps.db();
   const sid = recoveryMessageSid(opts.leadId);
   const { data: existing } = await supabase
-    .from('sms_messages')
+    .from(TABLE.smsMessages)
     .select('id, status')
     .eq('message_sid', sid)
     .maybeSingle();
 
   if (existing) {
     await supabase
-      .from('sms_messages')
+      .from(TABLE.smsMessages)
       .update({
-        status: 'deferred',
+        status: SMS_STATUS.deferred,
         next_retry_at: opts.nextSendAt,
         body: opts.body,
       })
@@ -95,24 +104,24 @@ export async function persistDeferredRecoveryWithDeps(
     return;
   }
 
-  const { error } = await supabase.from('sms_messages').insert({
+  const { error } = await supabase.from(TABLE.smsMessages).insert({
     lead_id: opts.leadId,
-    direction: 'outbound',
+    direction: DIRECTION_OUTBOUND,
     body: opts.body,
     message_sid: sid,
-    status: 'deferred',
+    status: SMS_STATUS.deferred,
     next_retry_at: opts.nextSendAt,
     key_supported_at_send: false,
   });
-  if (error && error.code !== '23505') {
+  if (error && error.code !== PG_UNIQUE) {
     // Stryker disable next-line StringLiteral: log-only message (no control flow)
     console.error('persistDeferredRecovery insert failed:', error.message);
   }
-  if (error?.code === '23505') {
+  if (error?.code === PG_UNIQUE) {
     await supabase
-      .from('sms_messages')
+      .from(TABLE.smsMessages)
       .update({
-        status: 'deferred',
+        status: SMS_STATUS.deferred,
         next_retry_at: opts.nextSendAt,
         body: opts.body,
       })
@@ -205,9 +214,9 @@ export async function processDeferredRecoveriesWithDeps(
   const supabase = deps.db();
   const nowIso = deps.clock().toISOString();
   const { data: rows, error } = await supabase
-    .from('sms_messages')
-    .select('id, lead_id, message_sid, body, next_retry_at')
-    .eq('status', 'deferred')
+    .from(TABLE.smsMessages)
+    .select(SMS_SELECT_DEFERRED)
+    .eq('status', SMS_STATUS.deferred)
     .lte('next_retry_at', nowIso)
     .limit(50);
 
@@ -224,8 +233,8 @@ export async function processDeferredRecoveriesWithDeps(
   for (const row of rows ?? []) {
     try {
       const { data: lead } = await supabase
-        .from('leads')
-        .select('*, businesses(*)')
+        .from(TABLE.leads)
+        .select(LEAD_SELECT_STAR_BIZ)
         .eq('id', row.lead_id)
         .single();
       if (!lead?.businesses) {
@@ -264,8 +273,8 @@ export async function processDeferredRecoveriesWithDeps(
       }
       if (outcome.kind === 'blocked' || outcome.kind === 'skipped') {
         await supabase
-          .from('sms_messages')
-          .update({ status: 'abandoned_done', next_retry_at: null })
+          .from(TABLE.smsMessages)
+          .update({ status: SMS_STATUS.abandonedDone, next_retry_at: null })
           .eq('id', row.id);
         continue;
       }
@@ -329,8 +338,8 @@ export async function sendFollowUpSMSWithDeps(
 
   const supabase = deps.db();
   const { data: lead } = await supabase
-    .from('leads')
-    .select('opted_out')
+    .from(TABLE.leads)
+    .select(LEAD_SELECT_OPTED_OUT)
     .eq('id', leadId)
     .maybeSingle();
   if (lead?.opted_out) {
@@ -357,9 +366,9 @@ export async function sendFollowUpSMSWithDeps(
   });
 
   if (outcome.kind === 'sent') {
-    await supabase.from('sms_messages').insert({
+    await supabase.from(TABLE.smsMessages).insert({
       lead_id: leadId,
-      direction: 'outbound',
+      direction: DIRECTION_OUTBOUND,
       body: messageBody,
       message_sid: outcome.sid,
       status: outcome.providerStatus,

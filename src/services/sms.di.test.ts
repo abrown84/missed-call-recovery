@@ -388,6 +388,15 @@ describe('sendFollowUpSMSWithDeps (QC r6 P2 suppression restore)', () => {
       'Custom follow'
     );
     expect(send).toHaveBeenCalled();
+    expect(send.mock.calls[0]).toBeDefined();
+    const [sentReq] = send.mock.calls[0] as unknown as [
+      Record<string, unknown>,
+    ];
+    expect(sentReq).toMatchObject({
+      kind: 'manual',
+      skipQuietHours: true,
+      to: '+12135550100',
+    });
     const insert = db.calls.find((c) => c.op === 'insert');
     expect(insert?.args[0]).toEqual({
       lead_id: 'L',

@@ -163,7 +163,10 @@ describe('sendCampaignSMS dispatch (DI via mocked sendMessage)', () => {
 
   it('returns false without claim token', async () => {
     mockEnrollmentDb({
-      enrollment: { ...enrollmentRow, claim_token: null } as typeof enrollmentRow,
+      enrollment: {
+        ...enrollmentRow,
+        claim_token: null,
+      } as unknown as typeof enrollmentRow,
     });
     await expect(sendCampaignSMS('enr-1')).resolves.toBe(false);
   });

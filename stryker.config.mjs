@@ -16,6 +16,7 @@ const config = {
     'src/services/campaign-decisions.ts',
     'src/services/campaigns.ts',
     'src/services/campaigns-impl.ts',
+    'src/services/db-strings.ts',
     'src/services/sms.ts',
     'src/services/opt-out.ts',
     'src/services/reconcile-logic.ts',

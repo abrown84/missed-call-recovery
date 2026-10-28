@@ -96,8 +96,8 @@ describe('campaigns cron DI', () => {
     // Speed up delay in processDueCampaigns
     vi.spyOn(global, 'setTimeout').mockImplementation(((fn: () => void) => {
       fn();
-      return 0 as never;
-    }) as typeof setTimeout);
+      return 0 as unknown as ReturnType<typeof setTimeout>;
+    }) as unknown as typeof setTimeout);
   });
 
   it('listClaimableEnrollmentIds empty on error', async () => {

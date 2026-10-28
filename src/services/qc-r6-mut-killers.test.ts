@@ -303,9 +303,7 @@ describe('QC r6 mut.py killers', () => {
   });
 
   it('campaigns.ts quiet_hours_deferred releases with nextSendAt', () => {
-    const src =
-      readSrc('src/services/campaigns-impl.ts') ||
-      readSrc('src/services/campaigns.ts');
+    const src = readSrc('src/services/campaigns-impl.ts');
     const decisions = readSrc('src/services/send/decisions.ts');
     const campDec = readSrc('src/services/campaign-decisions.ts');
     if (!src || !decisions || !campDec) return;
@@ -315,7 +313,9 @@ describe('QC r6 mut.py killers', () => {
     expect(decisions).toMatch(
       /outcome\.reason === 'suppressed' \|\| outcome\.reason === 'opted_out'/
     );
-    expect(src).toMatch(/status: 'needs_review'/); // terminal enrollment
+    expect(src).toMatch(
+      /status: ENROLLMENT_STATUS\.needsReview|status: 'needs_review'/
+    ); // terminal enrollment
     expect(src).toMatch(/\.eq\('claim_token', claimToken\)/);
     expect(src).toMatch(/requeueExactCampaignStep/);
     expect(campDec).toContain('hasClaimToken');
@@ -336,9 +336,11 @@ describe('QC r6 mut.py killers', () => {
     expect(decisions).toMatch(/if \(result\.conflict\)/);
     expect(decisions).toMatch(/isFailedStatus\(result\.status\)/);
     expect(decisions).toMatch(/result\.ambiguous/);
-    expect(src).toContain("status: 'unknown'");
+    expect(src).toMatch(/status: SMS_STATUS\.unknown|status: 'unknown'/);
     expect(src).not.toMatch(/\.update\(\{\s*status:\s*'queued'\s*\}\)/);
-    expect(src).toMatch(/status: 'needs_review'/);
+    expect(src).toMatch(
+      /status: SMS_STATUS\.needsReview|status: 'needs_review'/
+    );
     expect(src).toMatch(/sms_outbound_sid: null/);
     expect(src).toMatch(/tryNormalizeToE164/);
     expect(src).toMatch(/to: toE164/);
@@ -348,13 +350,13 @@ describe('QC r6 mut.py killers', () => {
     expect(src).toContain('leadTimezone: leadTz,');
     expect(src).toContain('decideDuplicateSid');
     expect(src).toContain('mapRelaySendResult');
-    expect(src).toContain(".update({ status: 'needs_review' })");
+    expect(src).toMatch(
+      /\.update\(\{\s*status:\s*(SMS_STATUS\.needsReview|'needs_review')\s*\}\)/
+    );
   });
 
   it('campaigns.ts keeps recovery park / claim / requeue / leadTimezone', () => {
-    const src =
-      readSrc('src/services/campaigns-impl.ts') ||
-      readSrc('src/services/campaigns.ts');
+    const src = readSrc('src/services/campaigns-impl.ts');
     const campDec = readSrc('src/services/campaign-decisions.ts');
     const decisions = readSrc('src/services/send/decisions.ts');
     if (!src || !campDec || !decisions) return;
@@ -423,15 +425,15 @@ describe('QC r6 mut.py killers', () => {
     const src = readSrc('src/services/send/index.ts');
     if (!src) return;
     // Both send-path and reconcile-path parks must write status unknown
-    const unknownCount = src.split("status: 'unknown'").length - 1;
+    const unknownCount =
+      (src.split('SMS_STATUS.unknown').length - 1) +
+      (src.split("status: 'unknown'").length - 1);
     expect(unknownCount).toBeGreaterThanOrEqual(2);
     expect(src).not.toContain("status: 'queued',\n        reconcile_attempts:");
   });
 
   it('#44 advanceEnrollment claim_token checks present on both branches', () => {
-    const src =
-      readSrc('src/services/campaigns-impl.ts') ||
-      readSrc('src/services/campaigns.ts');
+    const src = readSrc('src/services/campaigns-impl.ts');
     if (!src) return;
     // Exact mut.py #44 target — must remain (6-space indent before .eq)
     expect(src).toContain(

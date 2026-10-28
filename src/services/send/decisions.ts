@@ -17,13 +17,13 @@ import {
 import type { SendKind, SendOutcome, SendRequest } from './types';
 
 export type QuietHoursInput =
-  | { allowed: true; zones: string[]; endHour: number }
+  | { allowed: true; zones: string[]; endHour?: number }
   | {
       allowed: false;
       unresolved?: false;
       nextSendAt: Date;
       zones: string[];
-      endHour: number;
+      endHour?: number;
     }
   | { allowed: false; unresolved: true; reason: string; zones: string[] };
 
@@ -244,11 +244,11 @@ export function interpretRecoverySendOutcome(
       nextSendAt: outcome.nextSendAt ?? fallbackDeferIso,
     };
   }
-  if (outcome.kind === 'blocked' || outcome.kind === 'skipped') {
-    return {
-      type: 'log_blocked',
-      reason: 'reason' in outcome ? String(outcome.reason) : outcome.kind,
-    };
+  if (outcome.kind === 'blocked') {
+    return { type: 'log_blocked', reason: String(outcome.reason) };
+  }
+  if (outcome.kind === 'skipped') {
+    return { type: 'log_blocked', reason: String(outcome.reason) };
   }
   if (outcome.kind === 'needs_review') {
     return { type: 'log_needs_review', sid: outcome.sid };

@@ -186,3 +186,10 @@ are unchanged. Each site annotated `// Stryker disable next-line StringLiteral`.
 - src/services/send/index.ts:234: `console.error(
 `
 
+
+### opt-out-newline-plus-vs-star
+
+- file: `src/services/opt-out.ts` / mutator: Regex / `replace(/[\r\n]+/g, ' ')`
+- original → replacement: `+` → empty quantifier
+- justification: following `.replace(/\s+/g, ' ')` collapses any run of spaces produced by per-newline replacement, so `+` vs empty quantifier yields the same normalized string.
+  Disabled in source.

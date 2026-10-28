@@ -47,6 +47,7 @@ export function normalizeOptOutText(raw: string): string {
     .replace(ZERO_WIDTH_RE, '')
     .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, '')
     .replace(/\u00a0/g, ' ')
+    // Stryker disable next-line Regex: /[\r\n]/g ≡ /[\r\n]+/g before \s+ collapse
     .replace(/[\r\n]+/g, ' ')
     .trim()
     .replace(/^["'`“”‘’]+|["'`“”‘’]+$/g, '')
