@@ -33,6 +33,15 @@ import {
   planReplyEnrollment,
 } from '@/services/campaign-reply-plan';
 import {
+  decideClaimTokenResult,
+  emptyDueCounts,
+  noteClaimSkip,
+  noteExtraRequeue,
+  noteSendFailure,
+  noteSendSuccess,
+  staleClaimCutoffIso,
+} from '@/services/campaign-cron-plan';
+import {
   advanceStepPayload,
   claimDuePayload,
   clearOutboundSidPayload,
@@ -743,7 +752,7 @@ export async function claimDueEnrollment(
   const supabase = createServerClient();
   const now = new Date();
   const nowIso = now.toISOString();
-  const staleBefore = new Date(now.getTime() - CLAIM_STALE_MS).toISOString();
+  const staleBefore = staleClaimCutoffIso(now.getTime(), CLAIM_STALE_MS);
   const token = randomUUID();
 
   const due = await supabase
@@ -755,8 +764,15 @@ export async function claimDueEnrollment(
     .is(COL.claimToken, null)
     .select(ENROLLMENT_CLAIM_SELECT);
 
-  if (!due.error && (due.data?.length ?? 0) > 0) {
-    return token;
+  const dueCount = due.data?.length ?? 0;
+  if (!due.error && dueCount > 0) {
+    return decideClaimTokenResult({
+      dueError: false,
+      dueCount,
+      staleError: true,
+      staleCount: 0,
+      token,
+    });
   }
 
   const stale = await supabase
@@ -773,9 +789,15 @@ export async function claimDueEnrollment(
     // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
     console.error('Failed to reclaim stale enrollment:', stale.error);
     // Stryker restore StringLiteral,CallExpression
-    return null;
   }
-  return (stale.data?.length ?? 0) > 0 ? token : null;
+
+  return decideClaimTokenResult({
+    dueError: Boolean(due.error),
+    dueCount,
+    staleError: Boolean(stale.error),
+    staleCount: stale.data?.length ?? 0,
+    token,
+  });
 }
 
 export async function listClaimableEnrollmentIds(
@@ -784,7 +806,7 @@ export async function listClaimableEnrollmentIds(
   const supabase = createServerClient();
   const now = new Date();
   const nowIso = now.toISOString();
-  const staleBefore = new Date(now.getTime() - CLAIM_STALE_MS).toISOString();
+  const staleBefore = staleClaimCutoffIso(now.getTime(), CLAIM_STALE_MS);
 
   const { data: due } = await supabase
     .from(TABLE.campaignEnrollments)
@@ -854,10 +876,10 @@ export async function reconcileAmbiguousSms(): Promise<ReconcileResult> {
         parsed.campaignId,
         parsed.stepNumber
       );
-      if (ok) extraRequeued++;
+      extraRequeued = noteExtraRequeue(extraRequeued, ok);
     } else if (parsed.kind === KIND_RECOVERY) {
       await resendRecoveryIdempotent(supabase, parsed.leadId, original);
-      extraRequeued++;
+      extraRequeued = noteExtraRequeue(extraRequeued, true);
     }
     // Prevent reprocessing the same abandoned row forever
     await supabase
@@ -1100,24 +1122,18 @@ export async function processDueCampaigns(): Promise<{
     };
   }
 
-  let processed = 0;
-  let errors = 0;
-  let skipped = 0;
+  let counts = emptyDueCounts();
 
   for (const id of ids) {
     try {
       const token = await claimDueEnrollment(id);
       if (!token) {
-        skipped++;
+        counts = noteClaimSkip(counts);
         continue;
       }
 
       const success = await sendCampaignSMS(id, token);
-      if (success) {
-        processed++;
-      } else {
-        errors++;
-      }
+      counts = success ? noteSendSuccess(counts) : noteSendFailure(counts);
     } catch (err) {
       // Isolate per-enrollment failures (e.g. invalid timezone) so one bad
       // lead cannot 500 the whole cron run.
@@ -1127,7 +1143,7 @@ export async function processDueCampaigns(): Promise<{
         err instanceof Error ? err.message : 'unknown'
       );
       // Stryker restore StringLiteral,CallExpression
-      errors++;
+      counts = noteSendFailure(counts);
       try {
         const supabase = createServerClient();
         await supabase
@@ -1150,15 +1166,13 @@ export async function processDueCampaigns(): Promise<{
 
   // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
   console.log(
-    `Processed ${processed} campaigns, ${errors} errors, ${skipped} skipped ` +
+    `Processed ${counts.processed} campaigns, ${counts.errors} errors, ${counts.skipped} skipped ` +
       `out of ${ids.length} candidates (provider=${adapter.name})`
   );
   // Stryker restore StringLiteral,CallExpression
 
   return {
-    processed,
-    errors,
-    skipped,
+    ...counts,
     messagingProvider: adapter.name,
     relayLookupSupported,
     ...reconcile,

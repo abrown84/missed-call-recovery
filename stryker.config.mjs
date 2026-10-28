@@ -19,6 +19,7 @@ const config = {
     'src/services/campaign-io-plans.ts',
     'src/services/campaign-enroll-plan.ts',
     'src/services/campaign-reply-plan.ts',
+    'src/services/campaign-cron-plan.ts',
     'src/services/campaigns.ts',
     'src/services/campaigns-impl.ts',
     'src/services/db-strings.ts',
