@@ -265,3 +265,20 @@ return values, DB writes, and control flow are unchanged. (sms.ts injects
 - justification: `new RegExp('(?:^|[^A-Z0-9])OPT OUT(?:[^A-Z0-9]|$)')` matches the
   same normalized strings as `normalized.includes('OPT OUT')`, and the `OPTOUT`
   compact path remains as a backstop. Disabled in source.
+
+### enroll-plan-empty-steps-early-return
+
+- file: `src/services/campaign-enroll-plan.ts` / mutator: ConditionalExpression,BlockStatement /
+  `if (steps.length === 0) return no_steps`
+- original → replacement: skip / empty the early return
+- justification: `decideEnrollmentPlan` also returns `{ ok:false, reason:'no_steps' }`
+  for empty steps, so the early return is observationally identical. Disabled in source.
+
+### enroll-plan-switch-options-object-with-treat-false
+
+- file: `src/services/campaign-enroll-plan.ts` / mutator: ObjectLiteral /
+  `planEnrollmentStart(steps, { recoveryAlreadySent, treatRecoveryAsInitial: false })`
+- original → replacement: `{}`
+- justification: with `treatRecoveryAsInitial: false` hardcoded, `recoveryAlreadySent`
+  is ignored by `planEnrollmentStart` (always stays on step 1). Empty options are
+  therefore equivalent for switch. Disabled in source.

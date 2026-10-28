@@ -54,6 +54,8 @@ vi.mock('@/services/suppressions', () => ({
 }));
 
 import {
+  claimDueEnrollment,
+  leadHasActiveEnrollment,
   listClaimableEnrollmentIds,
   processDueCampaigns,
   reconcileAmbiguousSms,
@@ -209,5 +211,128 @@ describe('campaigns cron DI', () => {
     });
     const r = await reconcileAmbiguousSms();
     expect(r.requeued).toBeGreaterThanOrEqual(1);
+  });
+
+  it('processDueCampaigns increments skipped when claim returns null', async () => {
+    mockFrom.mockImplementation((table: string) => {
+      if (table === 'campaign_enrollments') {
+        // listClaimable returns an id; claim update returns empty → null token
+        const b = chainable({ data: [{ id: 'enr-1' }], error: null });
+        b.update = vi.fn(() => {
+          const u = chainable({ data: [], error: null });
+          u.select = vi.fn(() => chainable({ data: [], error: null }));
+          return u;
+        });
+        return b;
+      }
+      return chainable({ data: [], error: null });
+    });
+    const r = await processDueCampaigns();
+    expect(r.skipped).toBeGreaterThanOrEqual(1);
+    expect(r.processed).toBe(0);
+  });
+
+  it('processDueCampaigns catch path parks enrollment and counts error', async () => {
+    mockFrom.mockImplementation((table: string) => {
+      if (table === 'campaign_enrollments') {
+        const enrollmentRow = {
+          id: 'enr-1',
+          current_step: 2,
+          status: 'active',
+          claim_token: 'tok',
+          leads: {
+            id: 'L',
+            caller_phone: '+12135550100',
+            opted_out: false,
+            issue: '',
+            businesses: {
+              id: 'B',
+              name: 'Acme',
+              timezone: 'America/New_York',
+            },
+          },
+          campaigns: { id: 'C', name: 'Standard' },
+        };
+        const b = chainable({ data: [{ id: 'enr-1' }], error: null });
+        b.single = vi.fn(async () => ({ data: enrollmentRow, error: null }));
+        b.update = vi.fn((payload: unknown) => {
+          (b as { _updates?: unknown[] })._updates = [
+            ...((b as { _updates?: unknown[] })._updates ?? []),
+            payload,
+          ];
+          const u = chainable({
+            data: [{ id: 'enr-1', claim_token: 'tok' }],
+            error: null,
+          });
+          u.select = vi.fn(() =>
+            chainable({
+              data: [{ id: 'enr-1', claim_token: 'tok' }],
+              error: null,
+            })
+          );
+          return u;
+        });
+        return b;
+      }
+      if (table === 'campaign_steps') {
+        return chainable({
+          data: [
+            { step_number: 1, delay_minutes: 0, template_key: 'a' },
+            { step_number: 2, delay_minutes: 60, template_key: 'b' },
+          ],
+          error: null,
+        });
+      }
+      return chainable({ data: [], error: null });
+    });
+    mockSendMessage.mockRejectedValue(new Error('boom'));
+    const r = await processDueCampaigns();
+    expect(r.errors).toBeGreaterThanOrEqual(1);
+  });
+
+  it('claimDueEnrollment returns token on due hit', async () => {
+    mockFrom.mockImplementation(() => {
+      const b = chainable({
+        data: [{ id: 'enr-1', claim_token: 'x' }],
+        error: null,
+      });
+      b.update = vi.fn(() => {
+        const u = chainable({
+          data: [{ id: 'enr-1', claim_token: 'x' }],
+          error: null,
+        });
+        u.select = vi.fn(() =>
+          chainable({ data: [{ id: 'enr-1' }], error: null })
+        );
+        return u;
+      });
+      return b;
+    });
+    const tok = await claimDueEnrollment('enr-1');
+    expect(tok).toBeTruthy();
+    expect(typeof tok).toBe('string');
+  });
+
+  it('leadHasActiveEnrollment is true only for status active', async () => {
+    mockFrom.mockImplementation(() =>
+      chainable({
+        data: { id: 'e', status: 'active', lead_id: 'L' },
+        error: null,
+      })
+    );
+    await expect(leadHasActiveEnrollment('L')).resolves.toBe(true);
+
+    mockFrom.mockImplementation(() =>
+      chainable({
+        data: { id: 'e', status: 'paused', lead_id: 'L' },
+        error: null,
+      })
+    );
+    await expect(leadHasActiveEnrollment('L')).resolves.toBe(false);
+
+    mockFrom.mockImplementation(() =>
+      chainable({ data: null, error: null })
+    );
+    await expect(leadHasActiveEnrollment('L')).resolves.toBe(false);
   });
 });

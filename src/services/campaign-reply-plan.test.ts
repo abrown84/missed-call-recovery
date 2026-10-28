@@ -20,6 +20,64 @@ describe('planReplyEnrollment', () => {
     ).toEqual({ type: 'enroll' });
   });
 
+  it('noop when already on matching campaign and replyMode=continue', () => {
+    // Forces !enrollment guard false (must not enroll) and keeps replyMode
+    // in the options object (ObjectLiteral {} would default to pause → pause).
+    const p = planReplyEnrollment({
+      enrollment: {
+        id: 'enr',
+        campaign_id: 'S',
+        status: 'active',
+        claimed_at: null,
+        claim_token: null,
+      },
+      campaigns,
+      urgency: null,
+      replyMode: 'continue',
+    });
+    expect(p).toEqual({ type: 'noop' });
+  });
+
+  it('pause when same campaign and replyMode=pause (explicit)', () => {
+    const p = planReplyEnrollment({
+      enrollment: {
+        id: 'enr',
+        campaign_id: 'S',
+        status: 'active',
+        claimed_at: null,
+        claim_token: null,
+      },
+      campaigns,
+      urgency: null,
+      replyMode: 'pause',
+    });
+    expect(p).toEqual({ type: 'pause' });
+  });
+
+  it('explicit replyMode wins over env default (?? not &&)', () => {
+    const prev = process.env.CAMPAIGN_REPLY_MODE;
+    process.env.CAMPAIGN_REPLY_MODE = 'pause';
+    try {
+      const p = planReplyEnrollment({
+        enrollment: {
+          id: 'enr',
+          campaign_id: 'S',
+          status: 'active',
+          claimed_at: null,
+          claim_token: null,
+        },
+        campaigns,
+        urgency: null,
+        replyMode: 'continue',
+      });
+      // If && were used, env pause would win and we'd get pause — must be noop.
+      expect(p.type).toBe('noop');
+    } finally {
+      if (prev === undefined) delete process.env.CAMPAIGN_REPLY_MODE;
+      else process.env.CAMPAIGN_REPLY_MODE = prev;
+    }
+  });
+
   it('switch to Emergency on high urgency when enrolled in Standard', () => {
     const p = planReplyEnrollment({
       enrollment: {
@@ -96,4 +154,24 @@ describe('mapSwitchResultToReplyAction', () => {
       }).action
     ).toBe('skip:x_deferred');
   });
+
+  it('undefined reason coalesces to empty for startsWith and failed for skip', () => {
+    // reason ?? '' — filler string would still not start with deferred
+    expect(
+      mapSwitchResultToReplyAction({
+        enrolled: false,
+        targetCampaignName: 'E',
+      })
+    ).toEqual({ action: 'skip:failed', campaignName: 'E' });
+
+    // reason ?? 'failed' must be the exact token
+    expect(
+      mapSwitchResultToReplyAction({
+        enrolled: false,
+        reason: undefined,
+        targetCampaignName: 'E',
+      }).action
+    ).toBe('skip:failed');
+  });
 });
+

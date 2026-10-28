@@ -79,6 +79,9 @@ export function planEnroll(input: {
   const steps = sortCampaignSteps(
     stepsOrEmpty(selected.campaign_steps as StepRow[] | null)
   );
+  // Empty steps also rejected inside decideEnrollmentPlan; keep the early
+  // return for a stable reason token without depending on that fallthrough.
+  // Stryker disable next-line ConditionalExpression,BlockStatement -- empty steps ≡ decideEnrollmentPlan no_steps
   if (steps.length === 0) {
     return { type: 'reject', reason: 'no_steps' };
   }
@@ -161,6 +164,9 @@ export function planSwitch(input: {
     return { type: 'reject', reason: 'no_steps' };
   }
   // Staging (c): never treat recovery as Emergency/High initial.
+  // recoveryAlreadySent is ignored while treatRecoveryAsInitial is false —
+  // both false and true keep step 1; the options object is still required.
+  // Stryker disable next-line ObjectLiteral -- treatRecoveryAsInitial:false makes recoveryAlreadySent a no-op
   const plan = planEnrollmentStart(steps, {
     recoveryAlreadySent: Boolean(input.smsOutboundSid),
     treatRecoveryAsInitial: false,
