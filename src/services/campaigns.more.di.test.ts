@@ -399,6 +399,218 @@ describe('campaigns more DI coverage', () => {
     }
   });
 
+  it('enrollLeadInCampaign: no_matching_campaign / insert_failed', async () => {
+    mockFrom.mockImplementation((table: string) => {
+      if (table === 'leads') {
+        return chainable({
+          data: {
+            id: 'L',
+            opted_out: false,
+            urgency: 'emergency',
+            sms_outbound_sid: null,
+            businesses: {},
+          },
+          error: null,
+        });
+      }
+      if (table === 'campaign_enrollments') {
+        return chainable({ data: null, error: null });
+      }
+      if (table === 'campaigns') {
+        // Only Standard (null filter) — no Emergency match
+        return chainable({
+          data: [
+            {
+              id: 'C',
+              name: 'Standard',
+              urgency_filter: null,
+              campaign_steps: [
+                { step_number: 1, delay_minutes: 0, template_key: 't' },
+              ],
+            },
+          ],
+          error: null,
+        });
+      }
+      if (table === 'sms_messages') {
+        return chainable({ data: null, error: null });
+      }
+      return chainable({ data: null, error: null });
+    });
+    // emergency urgency with only Standard present → selectCampaignForUrgency
+    // may still pick Standard (null filter is catch-all). Force no match via empty.
+    mockFrom.mockImplementation((table: string) => {
+      if (table === 'leads') {
+        return chainable({
+          data: {
+            id: 'L',
+            opted_out: false,
+            urgency: 'emergency',
+            sms_outbound_sid: null,
+            businesses: {},
+          },
+          error: null,
+        });
+      }
+      if (table === 'campaign_enrollments') {
+        return chainable({ data: null, error: null });
+      }
+      if (table === 'campaigns') {
+        return chainable({
+          data: [
+            {
+              id: 'C',
+              name: 'High',
+              urgency_filter: 'high',
+              campaign_steps: [
+                { step_number: 1, delay_minutes: 0, template_key: 't' },
+              ],
+            },
+          ],
+          error: null,
+        });
+      }
+      return chainable({ data: null, error: null });
+    });
+    await expect(enrollLeadInCampaign('L')).resolves.toEqual({
+      enrolled: false,
+      reason: 'no_matching_campaign',
+    });
+
+    mockFrom.mockImplementation((table: string) => {
+      if (table === 'leads') {
+        return chainable({
+          data: {
+            id: 'L',
+            opted_out: false,
+            urgency: null,
+            sms_outbound_sid: null,
+            businesses: {},
+          },
+          error: null,
+        });
+      }
+      if (table === 'campaign_enrollments') {
+        const b = chainable({ data: null, error: null });
+        b.insert = vi.fn(() =>
+          chainable({ data: null, error: { code: '42501', message: 'perm' } })
+        );
+        return b;
+      }
+      if (table === 'campaigns') {
+        return chainable({
+          data: [
+            {
+              id: 'C',
+              name: 'Standard',
+              urgency_filter: null,
+              campaign_steps: [
+                { step_number: 1, delay_minutes: 0, template_key: 't' },
+              ],
+            },
+          ],
+          error: null,
+        });
+      }
+      if (table === 'sms_messages') {
+        return chainable({ data: null, error: null });
+      }
+      return chainable({ data: null, error: null });
+    });
+    await expect(enrollLeadInCampaign('L')).resolves.toEqual({
+      enrolled: false,
+      reason: 'insert_failed',
+    });
+  });
+
+  it('switchEnrollmentCampaign: lead_not_found / campaign_not_found / no_steps', async () => {
+    mockFrom.mockImplementation((table: string) => {
+      if (table === 'campaign_enrollments') {
+        return chainable({
+          data: {
+            id: 'e',
+            status: 'active',
+            claim_token: null,
+            claimed_at: null,
+          },
+          error: null,
+        });
+      }
+      if (table === 'leads') {
+        return chainable({ data: null, error: { message: 'x' } });
+      }
+      return chainable({ data: null, error: null });
+    });
+    await expect(switchEnrollmentCampaign('L', 'new')).resolves.toEqual({
+      enrolled: false,
+      reason: 'lead_not_found',
+    });
+
+    mockFrom.mockImplementation((table: string) => {
+      if (table === 'campaign_enrollments') {
+        return chainable({
+          data: {
+            id: 'e',
+            status: 'active',
+            claim_token: null,
+            claimed_at: null,
+          },
+          error: null,
+        });
+      }
+      if (table === 'leads') {
+        return chainable({
+          data: { id: 'L', sms_outbound_sid: null },
+          error: null,
+        });
+      }
+      if (table === 'campaigns') {
+        return chainable({ data: null, error: { message: 'missing' } });
+      }
+      return chainable({ data: null, error: null });
+    });
+    await expect(switchEnrollmentCampaign('L', 'new')).resolves.toEqual({
+      enrolled: false,
+      reason: 'campaign_not_found',
+    });
+
+    mockFrom.mockImplementation((table: string) => {
+      if (table === 'campaign_enrollments') {
+        return chainable({
+          data: {
+            id: 'e',
+            status: 'active',
+            claim_token: null,
+            claimed_at: null,
+          },
+          error: null,
+        });
+      }
+      if (table === 'leads') {
+        return chainable({
+          data: { id: 'L', sms_outbound_sid: null },
+          error: null,
+        });
+      }
+      if (table === 'campaigns') {
+        return chainable({
+          data: {
+            id: 'new',
+            name: 'Emergency',
+            urgency_filter: 'emergency',
+            campaign_steps: [],
+          },
+          error: null,
+        });
+      }
+      return chainable({ data: null, error: null });
+    });
+    await expect(switchEnrollmentCampaign('L', 'new')).resolves.toEqual({
+      enrolled: false,
+      reason: 'no_steps',
+    });
+  });
+
   it('enrollLeadInCampaign: lead_not_found / no_steps / unique race', async () => {
     mockFrom.mockImplementation((table: string) => {
       if (table === 'leads') {

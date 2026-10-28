@@ -252,8 +252,13 @@ describe('opt-out survivor killers (honest scope)', () => {
     expect(
       isServiceTalkWithStop('PLEASE DOESNT THE DRIPPING STOP NOW')
     ).toBe(false);
-    // Start-anchored still matches
+    // Start-anchored still matches — and NOT via third alt (STOP not adjacent)
     expect(isServiceTalkWithStop('WONT THE LEAKING STOP NOW')).toBe(true);
+    expect(isServiceTalkWithStop('DOESNT THE LEAKING STOP NOW')).toBe(true);
+    expect(isServiceTalkWithStop('DIDNT THE LEAKING STOP NOW')).toBe(true);
+    // Apostrophe forms at start with non-adjacent STOP
+    expect(isServiceTalkWithStop("DOESN'T THE LEAKING STOP NOW")).toBe(true);
+    expect(isServiceTalkWithStop("DIDN'T THE LEAKING STOP NOW")).toBe(true);
   });
 
   it('WONT/DOESNT STOP mid-message needs \\\\s+ (multi-space)', () => {

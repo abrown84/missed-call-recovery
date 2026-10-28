@@ -210,6 +210,21 @@ are unchanged. Each site annotated `// Stryker disable next-line StringLiteral`.
   Disabled in source.
 
 
+### opt-out-exact-stop-service-talk-guard
+
+- file: `src/services/opt-out.ts` / mutator: ConditionalExpression,StringLiteral / `normalized === 'STOP'`
+- original → replacement: force false / empty needle
+- justification: exact `STOP` fails every service-talk alternative (no WONT/STOP BY /
+  WONT STOP adjacency), so the early `return false` matches fallthrough.
+  Disabled in source.
+
+### opt-out-no-stop-word-boundary-guard
+
+- file: `src/services/opt-out.ts` / mutator: ConditionalExpression / `if (!/\bSTOP\b/)`
+- original → replacement: `if (false)`
+- justification: without a STOP word, none of the three service-talk alternatives
+  can match, so skipping the guard still returns false. Disabled in source.
+
 ### opt-out-empty-normalized-early-return
 
 - file: `src/services/opt-out.ts` / mutator: ConditionalExpression / `if (!normalized)`

@@ -115,6 +115,7 @@ export function containsOptOutKeyword(
   }
   for (const kw of OPT_OUT_CONTAINS_KEYWORDS) {
     if (kw.includes(' ')) {
+      // Spaced stems (OPT OUT) — includes match; do not fall into word-boundary regex.
       if (normalized.includes(kw)) return true;
       continue;
     }
@@ -134,7 +135,9 @@ export function containsOptOutKeyword(
 
 /** True when STOP appears inside service language (not an auto opt-out). */
 export function isServiceTalkWithStop(normalized: string): boolean {
+  // Stryker disable next-line ConditionalExpression,StringLiteral -- STOP ≡ fallthrough (no service-talk alt matches)
   if (normalized === 'STOP') return false;
+  // Stryker disable next-line ConditionalExpression -- no \bSTOP\b ⇒ all alts fail anyway
   if (!/\bSTOP\b/.test(normalized)) return false;
   // Apostrophe-optional contractions must keep both forms (WONT and WON'T).
   return (
