@@ -281,6 +281,7 @@ export async function processInboundSmsWithDeps(
     )
     .eq(COL.id, lead.id);
 
+  // Stryker disable next-line ConditionalExpression: log-only — update failure only logs
   if (updateError) {
     // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
     console.error('Failed to update lead:', updateError.message);

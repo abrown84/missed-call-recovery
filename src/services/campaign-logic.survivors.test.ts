@@ -79,6 +79,22 @@ describe('planEnrollmentStart', () => {
     expect(p.skippedInitial).toBe(false);
   });
 
+  it('does not skip when first step delay_minutes !== 0 even if recovery sent', () => {
+    const now = new Date('2026-01-01T00:00:00.000Z');
+    const delayed = [
+      { step_number: 1, delay_minutes: 15 },
+      { step_number: 2, delay_minutes: 60 },
+    ];
+    const p = planEnrollmentStart(delayed, {
+      recoveryAlreadySent: true,
+      treatRecoveryAsInitial: true,
+      now,
+    });
+    expect(p.currentStep).toBe(1);
+    expect(p.skippedInitial).toBe(false);
+    expect(p.nextSendAt.getTime()).toBe(now.getTime() + 15 * 60 * 1000);
+  });
+
   it('throws on empty steps', () => {
     expect(() =>
       planEnrollmentStart([], { recoveryAlreadySent: false })
@@ -166,6 +182,32 @@ describe('decideReplyEnrollmentAction / hasFreshClaim', () => {
     ).toEqual({ action: 'pause' });
   });
 
+  it('defaults replyMode to pause when options omit replyMode', () => {
+    expect(
+      decideReplyEnrollmentAction(
+        { id: 'e', campaign_id: 'c', status: 'active' },
+        { id: 'c', name: 'S', urgency_filter: null },
+        { now }
+      )
+    ).toEqual({ action: 'pause' });
+  });
+
+  it('defers switch using default CLAIM_STALE_MS when claimStaleMs omitted', () => {
+    const claimed = new Date(now.getTime() - 1000).toISOString();
+    expect(
+      decideReplyEnrollmentAction(
+        {
+          id: 'e',
+          campaign_id: 'old',
+          status: 'active',
+          claimed_at: claimed,
+        },
+        { id: 'new', name: 'N', urgency_filter: 'emergency' },
+        { now }
+      )
+    ).toEqual({ action: 'defer_switch', targetCampaignId: 'new' });
+  });
+
   it('hasFreshClaim uses strict < staleMs (not <=)', () => {
     const claimed = new Date(now.getTime() - CLAIM_STALE_MS).toISOString();
     expect(hasFreshClaim({ claimed_at: claimed }, now, CLAIM_STALE_MS)).toBe(
@@ -180,6 +222,16 @@ describe('decideReplyEnrollmentAction / hasFreshClaim', () => {
     ).toBe(true);
     expect(hasFreshClaim({ claimed_at: null }, now)).toBe(false);
     expect(hasFreshClaim({ claimed_at: 'not-a-date' }, now)).toBe(false);
+  });
+
+  it('trim+lower on CAMPAIGN_REPLY_MODE (Continue / padded)', () => {
+    expect(getCampaignReplyMode({ CAMPAIGN_REPLY_MODE: 'Continue' })).toBe(
+      'continue'
+    );
+    expect(getCampaignReplyMode({ CAMPAIGN_REPLY_MODE: ' CONTINUE ' })).toBe(
+      'continue'
+    );
+    expect(getCampaignReplyMode({ CAMPAIGN_REPLY_MODE: 'Pause' })).toBe('pause');
   });
 });
 
@@ -243,6 +295,85 @@ describe('isLeadWithinLookupAge / isEnrollmentClaimable', () => {
         now
       )
     ).toBe(false);
+  });
+
+  it('fresh claim blocks reclaim even when next_send_at is due', () => {
+    expect(
+      isEnrollmentClaimable(
+        {
+          status: 'active',
+          next_send_at: new Date(now.getTime() - 1000).toISOString(),
+          claimed_at: new Date(now.getTime() - 1000).toISOString(),
+        },
+        now
+      )
+    ).toBe(false);
+  });
+
+  it('paused stays unclaimable even when next_send_at is due', () => {
+    expect(
+      isEnrollmentClaimable(
+        {
+          status: 'paused',
+          next_send_at: new Date(now.getTime() - 1000).toISOString(),
+          claimed_at: null,
+        },
+        now
+      )
+    ).toBe(false);
+  });
+
+  it('null next_send_at + null claimed_at is not claimable', () => {
+    expect(
+      isEnrollmentClaimable(
+        { status: 'active', next_send_at: null, claimed_at: null },
+        now
+      )
+    ).toBe(false);
+  });
+
+  it('next_send_at exactly equal to now is due (<= not <)', () => {
+    expect(
+      isEnrollmentClaimable(
+        {
+          status: 'active',
+          next_send_at: now.toISOString(),
+          claimed_at: null,
+        },
+        now
+      )
+    ).toBe(true);
+  });
+
+  it('exactly-stale claim with null next_send_at is reclaimable (>=)', () => {
+    expect(
+      isEnrollmentClaimable(
+        {
+          status: 'active',
+          next_send_at: null,
+          claimed_at: new Date(now.getTime() - CLAIM_STALE_MS).toISOString(),
+        },
+        now
+      )
+    ).toBe(true);
+  });
+
+  it('exactly-stale claim with due next_send_at is claimable (not fresh)', () => {
+    expect(
+      isEnrollmentClaimable(
+        {
+          status: 'active',
+          next_send_at: new Date(now.getTime() - 1).toISOString(),
+          claimed_at: new Date(now.getTime() - CLAIM_STALE_MS).toISOString(),
+        },
+        now
+      )
+    ).toBe(true);
+  });
+
+  it('accepts Date objects for createdAt (not only strings)', () => {
+    const created = new Date(now.getTime() - 86400000);
+    expect(isLeadWithinLookupAge(created, now)).toBe(true);
   });
 });
 

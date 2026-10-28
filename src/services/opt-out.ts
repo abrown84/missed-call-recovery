@@ -70,6 +70,7 @@ export function normalizeOptOutText(raw: string): string {
     .replace(ZERO_WIDTH_RE, '')
     .replace(/[\u{1F300}-\u{1FAFF}\u{2600}-\u{27BF}]/gu, '');
   const spaced = replaceNbspWithSpace(folded);
+  // Stryker disable next-line Regex: later /\s+/g collapse makes + vs empty quantifier equivalent
   const lined = spaced.replace(/[\r\n]+/g, ' ').trim();
   return stripEdgeQuotes(lined)
     .replace(/[\s?!.,…]+$/g, '')
@@ -100,6 +101,7 @@ export function hasWholeWordStem(normalized: string, stem: string): boolean {
  */
 export function classifyOptOut(raw: string): OptOutVerdict {
   const normalized = normalizeOptOutText(raw);
+  // Stryker disable next-line ConditionalExpression: empty never matches whole-message/stem sets
   if (!normalized) return { kind: 'not_opt_out' };
 
   const compact = compactOptOutText(normalized);
@@ -168,6 +170,7 @@ export function optOutBackfillTokens(): string[] {
  */
 export function wouldBackfillSuppress(raw: string): boolean {
   const normalized = normalizeOptOutText(raw);
+  // Stryker disable next-line ConditionalExpression: empty never hits whole-message sets
   if (!normalized) return false;
   const compact = compactOptOutText(normalized);
   const collapsed = collapseSpacedLetterTokens(normalized);

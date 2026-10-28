@@ -62,6 +62,19 @@ describe('hasWholeWordStem space vs hyphen branch (L87–88)', () => {
     expect(OPT_OUT_WORD_STEMS).toContain('OPT-OUT');
     expect(hasWholeWordStem('X OPT-OUT Y', 'OPT-OUT')).toBe(true);
   });
+
+  it('escapes regex metacharacters in multiword/hyphen stems', () => {
+    // Space/hyphen branch runs escape. Without escape, "A+" means one-or-more A.
+    expect(hasWholeWordStem('X A+ B Y', 'A+ B')).toBe(true);
+    expect(hasWholeWordStem('X AAA B Y', 'A+ B')).toBe(false);
+    expect(hasWholeWordStem('X A+B-C Y', 'A+B-C')).toBe(true);
+    expect(hasWholeWordStem('X AAABC Y', 'A+B-C')).toBe(false);
+  });
+
+  it('space-only multiword stem still uses escaped whole-word boundaries', () => {
+    expect(hasWholeWordStem('PLEASE STOP ALL NOW', 'STOP ALL')).toBe(true);
+    expect(hasWholeWordStem('PLEASESTOP ALLNOW', 'STOP ALL')).toBe(false);
+  });
 });
 
 describe('empty normalized early return (L102, L170)', () => {
@@ -145,6 +158,22 @@ describe('collapseSpacedLetterTokens regex (L143–144)', () => {
   it('feeds classifyOptOut when normalize already collapsed outer whitespace', () => {
     expect(normalizeOptOutText('S  T  O  P')).toBe('S T O P');
     expect(classifyOptOut('S  T  O  P').kind).toBe('opt_out');
+  });
+
+  it('requires at least one spaced single-letter pair (not a lone letter)', () => {
+    expect(collapseSpacedLetterTokens('S PLEASE')).toBe('S PLEASE');
+    expect(collapseSpacedLetterTokens('A B')).toBe('AB');
+  });
+});
+
+describe('normalizeOptOutText newline + trim chain', () => {
+  it('newlines become spaces and surrounding whitespace is trimmed before upper', () => {
+    expect(normalizeOptOutText('\nSTOP\n')).toBe('STOP');
+    expect(normalizeOptOutText('  STOP\r\nALL  ')).toBe('STOP ALL');
+  });
+
+  it('edge quotes stripped after newline collapse', () => {
+    expect(normalizeOptOutText('"\nSTOP\n"')).toBe('STOP');
   });
 });
 

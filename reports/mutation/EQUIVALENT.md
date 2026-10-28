@@ -369,3 +369,61 @@ values, DB writes, or control flow.
   StringLiteral,CallExpression on `console.error` / `console.warn` / `console.log`
 - justification: log-only messages; return values, DB writes, and control flow
   unchanged. Wrapped with Stryker disable/restore blocks like campaign-runtime.
+
+### inbound-updateError-log-only-guard
+
+- file: `src/services/inbound.ts` / mutator: ConditionalExpression /
+  `if (updateError)`
+- original → replacement: `if (false)`
+- justification: the branch only logs; enrollment/escalation/return continue
+  identically. Disabled in source.
+
+### campaign-logic-urgency-null-guard
+
+- file: `src/services/campaign-logic.ts` / mutator: ConditionalExpression /
+  `if (urgency != null)`
+- original → replacement: `if (true)`
+- justification: when urgency is null/undefined, `find(urgency_filter === urgency)`
+  is the same null-filter catch-all the fallthrough already returns. Disabled.
+
+### campaign-logic-reply-mode-empty-default
+
+- file: `src/services/campaign-logic.ts` / mutator: StringLiteral /
+  `env.CAMPAIGN_REPLY_MODE || 'pause'`
+- original → replacement: `|| ''`
+- justification: both `''` and `'pause'` fail `=== 'continue'` and return
+  `'pause'`. Disabled in source.
+
+### campaign-logic-fresh-claim-naN-guards
+
+- file: `src/services/campaign-logic.ts` / mutator: ConditionalExpression /
+  `if (!enrollment.claimed_at)` / `if (Number.isNaN(claimedAt))`
+- justification: falsy/`NaN` claimed_at yields a non-fresh comparison
+  (`now - 0|NaN < staleMs` is false for wall-clock `now`). Disabled.
+
+### campaign-logic-lookup-age-string-date-naN
+
+- file: `src/services/campaign-logic.ts` / mutator: ConditionalExpression /
+  typeof-string ternary / `Number.isNaN(created.getTime())`
+- justification: `new Date(Date)` preserves time; NaN ages fail the
+  `>= 0 && <= max` window either way. Disabled.
+
+### opt-out-empty-normalized-early-return (r7 rewrite)
+
+- file: `src/services/opt-out.ts` / mutator: ConditionalExpression /
+  `if (!normalized)` in `classifyOptOut` / `wouldBackfillSuppress`
+- justification: empty never matches whole-message or stem sets; fallthrough
+  returns the same not_opt_out / false. Disabled.
+
+### opt-out-newline-plus-vs-star (r7 rewrite)
+
+- file: `src/services/opt-out.ts` / mutator: Regex / `replace(/[\r\n]+/g, ' ')`
+- justification: following `.replace(/\s+/g, ' ')` collapses any run of spaces,
+  so `+` vs empty quantifier yields the same normalized string. Disabled.
+
+### missed-call-suppressed-init-overwritten
+
+- file: `src/services/missed-call.ts` / mutator: BooleanLiteral /
+  `let suppressed = false`
+- justification: overwritten by `isPhoneSuppressed` before read; fail-closed
+  path sets `true` before read. Disabled.

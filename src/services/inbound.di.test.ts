@@ -198,7 +198,11 @@ describe('processInboundSmsWithDeps', () => {
 
     await expect(
       processInboundSmsWithDeps(deps, baseEvent())
-    ).rejects.toMatchObject({ status: 404, name: 'InboundError' });
+    ).rejects.toMatchObject({
+      status: 404,
+      name: 'InboundError',
+      message: 'Business not found',
+    });
   });
 
   it('records STOP without lead and suppresses E.164', async () => {
@@ -544,6 +548,7 @@ describe('processInboundSmsWithDeps', () => {
       }
       return chain({ data: null, error: null });
     });
+    const err = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     const { deps } = buildDeps({
       dbImpl: { from, inserts: [], updates: [], resetPass: () => undefined, eqLog: [], inLog: [], gteLog: [], fromLog: [], orderLog: [] },
     });
@@ -551,6 +556,72 @@ describe('processInboundSmsWithDeps', () => {
     const result = await processInboundSmsWithDeps(deps, baseEvent());
 
     expect(result.status).toBe('processed');
+    expect(err).toHaveBeenCalled();
+    err.mockRestore();
+  });
+
+  it('stores null issue when classification omits issue', async () => {
+    const lead = {
+      id: 'lead-issue',
+      created_at: FIXED.toISOString(),
+      status: 'pending',
+    };
+    const db = createDb({ leads: () => ({ data: lead, error: null }) });
+    const { deps } = buildDeps({
+      dbImpl: db,
+      classifyUrgency: vi.fn(async () => ({
+        urgency: 'normal' as const,
+        confidence: 1,
+        keywords: [],
+        issue: undefined,
+      })),
+    });
+
+    await processInboundSmsWithDeps(deps, baseEvent({ body: 'quote please' }));
+
+    expect(db.updates.length).toBeGreaterThan(0);
+    expect(db.updates.some((u) => (u as { issue?: unknown }).issue === null)).toBe(
+      true
+    );
+  });
+
+  it('normal reply is not forced onto the opt-out path', async () => {
+    const lead = {
+      id: 'lead-norm',
+      created_at: FIXED.toISOString(),
+      status: 'pending',
+    };
+    const db = createDb({ leads: () => ({ data: lead, error: null }) });
+    const { deps, spies } = buildDeps({
+      dbImpl: db,
+      classifyOptOut: vi.fn(() => ({ kind: 'not_opt_out' as const })),
+      isOptOutMessage: vi.fn(() => false),
+    });
+
+    const result = await processInboundSmsWithDeps(
+      deps,
+      baseEvent({ body: 'Can you come tomorrow?' })
+    );
+
+    expect(result.status).toBe('processed');
+    expect(spies.suppressPhoneForBusiness).not.toHaveBeenCalled();
+    expect(spies.classifyUrgency).toHaveBeenCalled();
+  });
+
+  it('open-lead fallback only runs when pending miss', async () => {
+    const pending = {
+      id: 'lead-pending',
+      created_at: FIXED.toISOString(),
+      status: 'pending',
+    };
+    const db = createDb({ leads: () => ({ data: pending, error: null }) });
+    const { deps } = buildDeps({ dbImpl: db });
+
+    const result = await processInboundSmsWithDeps(deps, baseEvent());
+
+    expect(result.status).toBe('processed');
+    // Pending hit ⇒ no .in(OPEN_LEAD_STATUSES) / legacy status fan-out
+    expect(db.inLog.length).toBe(0);
   });
 
   it('STOP falls back to raw caller_phone lookup', async () => {
@@ -908,7 +979,19 @@ describe('resolveBusinessPhone', () => {
     expect(resolveBusinessPhone('  ')).toBe(null);
     process.env[ENV_BRWN_DEFAULT_BUSINESS_PHONE] = '+15550009999';
     expect(resolveBusinessPhone(undefined)).toBe('+15550009999');
+    expect(resolveBusinessPhone(null)).toBe('+15550009999');
+    expect(resolveBusinessPhone('')).toBe('+15550009999');
     delete process.env[ENV_BRWN_DEFAULT_BUSINESS_PHONE];
+    expect(resolveBusinessPhone(undefined)).toBe(null);
+  });
+
+  it('trims env fallback and ignores unrelated env keys', () => {
+    process.env[ENV_BRWN_DEFAULT_BUSINESS_PHONE] = '  +15550008888  ';
+    expect(resolveBusinessPhone(undefined)).toBe('+15550008888');
+    delete process.env[ENV_BRWN_DEFAULT_BUSINESS_PHONE];
+    process.env.OTHER_PHONE = '+15550007777';
+    expect(resolveBusinessPhone(undefined)).toBe(null);
+    delete process.env.OTHER_PHONE;
   });
 });
 

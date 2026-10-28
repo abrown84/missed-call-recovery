@@ -115,7 +115,41 @@ describe('processMissedCallWithDeps', () => {
       business: { data: null, error: { message: 'no' } },
     });
     await expect(processMissedCallWithDeps(deps, baseEvent())).rejects.toMatchObject(
-      { status: 404, name: 'MissedCallError' }
+      { status: 404, name: 'MissedCallError', message: 'Business not found' }
+    );
+  });
+
+  it('does not reclaim on non-unique insert errors even if a row exists', async () => {
+    let mcPass = 0;
+    const from = vi.fn((table: string) => {
+      if (table === 'businesses') {
+        return chain({ data: BIZ, error: null });
+      }
+      if (table === 'missed_calls') {
+        mcPass += 1;
+        if (mcPass === 1) {
+          const c = chain({
+            data: null,
+            error: { code: '42P01', message: 'other' },
+          });
+          c.insert = vi.fn(() => c);
+          return c;
+        }
+        return chain({ data: { id: 'mc-existing' }, error: null });
+      }
+      if (table === 'leads') {
+        return chain({ data: { id: 'lead-existing' }, error: null });
+      }
+      return chain({ data: null, error: null });
+    });
+
+    const deps: MissedCallDeps = {
+      ...buildDeps({}).deps,
+      db: () => ({ from }) as unknown as SupabaseClient,
+    };
+
+    await expect(processMissedCallWithDeps(deps, baseEvent())).rejects.toMatchObject(
+      { status: 500, message: 'Failed to record call' }
     );
   });
 
