@@ -861,3 +861,299 @@ describe('send I/O column/kind constants (survivor killers)', () => {
     });
   });
 });
+
+describe('send/index gate + dispatch survivor killers', () => {
+  beforeEach(() => {
+    resetRelayKeySupportConfirmed();
+    markRelayKeySupportConfirmed();
+  });
+
+  it('manual never runs customer-facing gates (kind guard)', async () => {
+    const suppressed = vi.fn(async () => true);
+    const o = await sendMessageWithDeps(
+      baseDeps({
+        dbImpl: makeDb({ leads: { opted_out: true } }),
+        isPhoneSuppressed: suppressed,
+      }),
+      {
+        kind: 'manual',
+        leadId: 'L',
+        businessId: 'B',
+        to: '+12135550100',
+        body: 'hi',
+      }
+    );
+    expect(o.kind).toBe('sent');
+    expect(suppressed).not.toHaveBeenCalled();
+  });
+
+  it('recovery runs gates: suppressed=false stays false (not forced true)', async () => {
+    const o = await sendMessageWithDeps(
+      baseDeps({
+        dbImpl: makeDb({ leads: { opted_out: false } }),
+        isPhoneSuppressed: async () => false,
+      }),
+      {
+        kind: KIND_RECOVERY,
+        leadId: 'L',
+        businessId: 'B',
+        to: '+12135550100',
+        body: 'hi',
+        skipQuietHours: true,
+      }
+    );
+    expect(o.kind).toBe('sent');
+  });
+
+  it('campaign step 1 recovery gate vs step 2 / skipRecoveryGate', async () => {
+    const sid = 'mlf:recovery:L';
+    const dbPending = makeDb({
+      leads: { opted_out: false },
+      smsBySid: new Map([[sid, { status: 'sending' }]]),
+    });
+    // step 1 → blocked pending
+    expect(
+      (
+        await sendMessageWithDeps(baseDeps({ dbImpl: dbPending }), {
+          kind: KIND_CAMPAIGN,
+          leadId: 'L',
+          businessId: 'B',
+          to: '+12135550100',
+          body: 'hi',
+          stepNumber: 1,
+          enrollmentId: 'E',
+          campaignId: 'C',
+          skipQuietHours: true,
+        })
+      ).kind
+    ).toBe('blocked');
+
+    // step 2 → no recovery gate
+    expect(
+      (
+        await sendMessageWithDeps(baseDeps({ dbImpl: dbPending }), {
+          kind: KIND_CAMPAIGN,
+          leadId: 'L',
+          businessId: 'B',
+          to: '+12135550100',
+          body: 'hi',
+          stepNumber: 2,
+          enrollmentId: 'E',
+          campaignId: 'C',
+          skipQuietHours: true,
+        })
+      ).kind
+    ).toBe('sent');
+
+    // recovery kind never hits campaign step gate
+    expect(
+      (
+        await sendMessageWithDeps(
+          baseDeps({
+            dbImpl: makeDb({ leads: { opted_out: false } }),
+          }),
+          {
+            kind: KIND_RECOVERY,
+            leadId: 'L',
+            businessId: 'B',
+            to: '+12135550100',
+            body: 'hi',
+            skipQuietHours: true,
+          }
+        )
+      ).kind
+    ).toBe('sent');
+  });
+
+  it('skipQuietHours true skips quietHours call', async () => {
+    const quiet = vi.fn(() => ({
+      allowed: false,
+      nextSendAt: new Date('2099-01-01T00:00:00Z'),
+      zones: ['America/New_York'],
+      endHour: 21,
+    }));
+    const o = await sendMessageWithDeps(
+      baseDeps({
+        dbImpl: makeDb({ leads: { opted_out: false } }),
+        quietHours: quiet,
+      }),
+      {
+        kind: KIND_RECOVERY,
+        leadId: 'L',
+        businessId: 'B',
+        to: '+12135550100',
+        body: 'hi',
+        skipQuietHours: true,
+      }
+    );
+    expect(o.kind).toBe('sent');
+    expect(quiet).not.toHaveBeenCalled();
+  });
+
+  it('leadTimezone preference over lead row timezone', async () => {
+    const quiet = vi.fn(() => ({
+      allowed: true,
+      zones: ['America/Chicago'],
+      endHour: 21,
+    }));
+    await sendMessageWithDeps(
+      baseDeps({
+        dbImpl: makeDb({
+          leads: { opted_out: false, timezone: 'America/New_York' },
+        }),
+        quietHours: quiet,
+      }),
+      {
+        kind: KIND_RECOVERY,
+        leadId: 'L',
+        businessId: 'B',
+        to: '+12135550100',
+        body: 'hi',
+        leadTimezone: 'America/Chicago',
+        skipQuietHours: false,
+      }
+    );
+    expect(quiet).toHaveBeenCalled();
+    const arg = quiet.mock.calls[0]?.[1] as { leadTimezone?: string };
+    expect(arg.leadTimezone).toBe('America/Chicago');
+  });
+
+  it('caps probe only when not already confirmed', async () => {
+    const ensure = vi.fn(async () => true);
+    const check = vi.fn(async () => ({ supported: true }));
+    await sendMessageWithDeps(
+      baseDeps({
+        dbImpl: makeDb({ leads: { opted_out: false } }),
+        capsConfirmed: () => true,
+        ensureCaps: ensure,
+        adapter: () =>
+          ({
+            name: 'm',
+            sendMessage: async () => ({
+              id: 'm',
+              status: 'queued',
+              keyEchoed: true,
+            }),
+            checkLookupSupport: check,
+          }) as never,
+      }),
+      {
+        kind: KIND_RECOVERY,
+        leadId: 'L',
+        businessId: 'B',
+        to: '+12135550100',
+        body: 'hi',
+        skipQuietHours: true,
+      }
+    );
+    expect(ensure).not.toHaveBeenCalled();
+
+    await sendMessageWithDeps(
+      baseDeps({
+        dbImpl: makeDb({ leads: { opted_out: false } }),
+        capsConfirmed: () => false,
+        ensureCaps: ensure,
+        adapter: () =>
+          ({
+            name: 'm',
+            sendMessage: async () => ({
+              id: 'm',
+              status: 'queued',
+              keyEchoed: true,
+            }),
+            checkLookupSupport: check,
+          }) as never,
+      }),
+      {
+        kind: KIND_RECOVERY,
+        leadId: 'L',
+        businessId: 'B',
+        to: '+12135550100',
+        body: 'hi',
+        skipQuietHours: true,
+      }
+    );
+    expect(ensure).toHaveBeenCalled();
+  });
+
+  it('recovery sent writes sms_outbound_sid; auto defaults true', async () => {
+    const db = makeDb({ leads: { opted_out: false } });
+    const send = vi.fn(async (req: { auto?: boolean }) => {
+      expect(req.auto).toBe(true);
+      return { id: 'mid-1', status: 'queued', keyEchoed: true };
+    });
+    const o = await sendMessageWithDeps(
+      baseDeps({
+        dbImpl: db,
+        adapter: () =>
+          ({
+            name: 'm',
+            sendMessage: send,
+            checkLookupSupport: async () => ({ supported: true }),
+          }) as never,
+      }),
+      {
+        kind: KIND_RECOVERY,
+        leadId: 'L',
+        businessId: 'B',
+        to: '+12135550100',
+        body: 'hi',
+        skipQuietHours: true,
+      }
+    );
+    expect(o.kind).toBe('sent');
+    if (o.kind === 'sent') {
+      expect(o.messageId).toBe('mid-1');
+    }
+    expect(
+      db.calls.some(
+        (c) =>
+          c.table === TABLE.leads &&
+          c.op === 'update' &&
+          (c.args[0] as { sms_outbound_sid?: string })?.sms_outbound_sid
+      )
+    ).toBe(true);
+  });
+
+  it('auto:false is forwarded to adapter', async () => {
+    const send = vi.fn(async (req: { auto?: boolean }) => {
+      expect(req.auto).toBe(false);
+      return { id: 'm', status: 'queued', keyEchoed: true };
+    });
+    await sendMessageWithDeps(
+      baseDeps({
+        dbImpl: makeDb({ leads: { opted_out: false } }),
+        adapter: () =>
+          ({
+            name: 'm',
+            sendMessage: send,
+            checkLookupSupport: async () => ({ supported: true }),
+          }) as never,
+      }),
+      {
+        kind: KIND_RECOVERY,
+        leadId: 'L',
+        businessId: 'B',
+        to: '+12135550100',
+        body: 'hi',
+        skipQuietHours: true,
+        auto: false,
+      }
+    );
+    expect(send).toHaveBeenCalled();
+  });
+
+  it('invalid phone detail is non-empty', async () => {
+    const o = await sendMessageWithDeps(baseDeps({}), {
+      kind: KIND_RECOVERY,
+      leadId: 'L',
+      businessId: 'B',
+      to: 'nope',
+      body: 'hi',
+    });
+    expect(o).toMatchObject({ kind: 'blocked', reason: SEND_REASON.invalidPhone });
+    if (o.kind === 'blocked') {
+      expect(o.detail && o.detail.length).toBeGreaterThan(0);
+    }
+  });
+});

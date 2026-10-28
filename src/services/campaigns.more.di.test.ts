@@ -243,6 +243,41 @@ describe('campaigns more DI coverage', () => {
     delete process.env.CAMPAIGN_REPLY_MODE;
   });
 
+  it('handleClassifiedReplyEnrollment defer_switch on fresh claim', async () => {
+    process.env.CAMPAIGN_REPLY_MODE = 'continue';
+    mockFrom.mockImplementation((table: string) => {
+      if (table === 'campaign_enrollments') {
+        return chainable({
+          data: {
+            id: 'e',
+            campaign_id: 'std',
+            status: 'active',
+            claim_token: 'tok',
+            claimed_at: new Date().toISOString(),
+          },
+          error: null,
+        });
+      }
+      if (table === 'campaigns') {
+        return chainable({
+          data: [
+            { id: 'std', name: 'Standard', urgency_filter: null },
+            { id: 'em', name: 'Emergency', urgency_filter: 'emergency' },
+          ],
+          error: null,
+        });
+      }
+      return chainable({ data: null, error: null });
+    });
+    await expect(
+      handleClassifiedReplyEnrollment('L', 'emergency')
+    ).resolves.toMatchObject({
+      action: 'defer_switch',
+      campaignName: 'Emergency',
+    });
+    delete process.env.CAMPAIGN_REPLY_MODE;
+  });
+
   it('reconcileAmbiguousSms post-pass abandoned + confirmed', async () => {
     mockFrom.mockImplementation((table: string) => {
       if (table === 'sms_messages') {
