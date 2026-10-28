@@ -1181,12 +1181,11 @@ export async function processDueCampaignsWithDeps(deps: CampaignDeps): Promise<{
 
   const ids = await listClaimableEnrollmentIdsWithDeps(deps, 100);
 
-  // Stryker disable next-line ConditionalExpression: emptyDueCounts() ≡ {processed:0,errors:0,skipped:0}; fallthrough with ids=[] is observationally identical — EQUIVALENT.md process-due-empty-short-circuit
+  // Stryker disable ConditionalExpression,BlockStatement: emptyDueCounts() ≡ early return; fallthrough with ids=[] identical — EQUIVALENT.md process-due-empty-short-circuit
   if (ids.length === 0) {
     // Stryker disable StringLiteral,CallExpression,BlockStatement,LogicalOperator,OptionalChaining,ConditionalExpression,EqualityOperator,ObjectLiteral,BooleanLiteral: log-only (no control flow)
     console.log('No due campaigns to process');
     // Stryker restore StringLiteral,CallExpression,BlockStatement,LogicalOperator,OptionalChaining,ConditionalExpression,EqualityOperator,ObjectLiteral,BooleanLiteral
-    // Stryker disable next-line BlockStatement: same emptyDueCounts equivalence — EQUIVALENT.md process-due-empty-short-circuit
     return {
       processed: 0,
       errors: 0,
@@ -1196,6 +1195,7 @@ export async function processDueCampaignsWithDeps(deps: CampaignDeps): Promise<{
       ...reconcile,
     };
   }
+  // Stryker restore ConditionalExpression,BlockStatement
 
   let counts = emptyDueCounts();
 
