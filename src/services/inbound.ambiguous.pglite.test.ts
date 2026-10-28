@@ -302,6 +302,7 @@ describe('ambiguous inbound (DI — pause / notify contracts)', () => {
       status: 'ambiguous_opt_out',
       campaignPaused: true,
       ownerNotified: false,
+      enrollmentAction: 'paused_ambiguous',
     });
   });
 
@@ -365,5 +366,161 @@ describe('ambiguous inbound (DI — pause / notify contracts)', () => {
     expect(leadHasActiveEnrollment).toHaveBeenCalledWith(staleLead.id);
     expect(pauseCampaignForLead).toHaveBeenCalledWith(staleLead.id);
     expect(leadsCalls).toBeGreaterThanOrEqual(3);
+  });
+
+  it('legacy raw phone is searched when E.164 differs (active enrollment)', async () => {
+    const raw = '5559876543';
+    const e164 = '+15559876543';
+    const staleLead = {
+      id: 'lead-legacy-phone',
+      created_at: new Date(FIXED.getTime() - 10 * 24 * 60 * 60 * 1000).toISOString(),
+      status: 'qualified',
+      caller_phone: raw,
+    };
+    const phonesQueried: string[] = [];
+    const from = vi.fn((table: string) => {
+      if (table === 'businesses') {
+        return chain({ data: BIZ, error: null });
+      }
+      if (table === 'leads') {
+        const c = chain({ data: null, error: null });
+        c.maybeSingle = vi.fn(async () => ({ data: null, error: null }));
+        c.eq = vi.fn((col: string, val: unknown) => {
+          if (col === 'caller_phone') phonesQueried.push(String(val));
+          return c;
+        });
+        c.then = (
+          resolve: (v: unknown) => unknown,
+          reject?: (e: unknown) => unknown
+        ) => {
+          const phone = phonesQueried[phonesQueried.length - 1];
+          const rows = phone === raw ? [staleLead] : [];
+          return Promise.resolve({ data: rows, error: null }).then(
+            resolve,
+            reject
+          );
+        };
+        c.update = vi.fn(() => c);
+        return c;
+      }
+      if (table === 'sms_messages') {
+        const c = chain({ data: null, error: null });
+        c.insert = vi.fn(() => c);
+        return c;
+      }
+      return chain({ data: null, error: null });
+    });
+
+    const pauseCampaignForLead = vi.fn(async () => undefined);
+    const result = await processInboundSmsWithDeps(
+      buildInboundDeps({
+        from,
+        isLeadWithinLookupAge: () => false,
+        tryNormalizeToE164: (p: string) => (p === raw ? e164 : null),
+        leadHasActiveEnrollment: vi.fn(async (id: string) => id === staleLead.id),
+        pauseCampaignForLead,
+      }),
+      {
+        from: raw,
+        businessPhone: BIZ.phone,
+        body: 'Stop texting me, I already hired someone',
+        messageId: 'msg-legacy',
+      }
+    );
+
+    expect(result).toMatchObject({
+      status: 'ambiguous_opt_out',
+      leadId: staleLead.id,
+      campaignPaused: true,
+    });
+    expect(phonesQueried).toContain(raw);
+    expect(pauseCampaignForLead).toHaveBeenCalledWith(staleLead.id);
+  });
+
+  it('null candidate list does not invent rows (Array.isArray guard)', async () => {
+    const from = vi.fn((table: string) => {
+      if (table === 'businesses') {
+        return chain({ data: BIZ, error: null });
+      }
+      if (table === 'leads') {
+        const c = chain({ data: null, error: null });
+        c.maybeSingle = vi.fn(async () => ({ data: null, error: null }));
+        // Enrollment lookup returns SQL null (not []).
+        c.then = (
+          resolve: (v: unknown) => unknown,
+          reject?: (e: unknown) => unknown
+        ) => Promise.resolve({ data: null, error: null }).then(resolve, reject);
+        return c;
+      }
+      return chain({ data: null, error: null });
+    });
+    const leadHasActiveEnrollment = vi.fn(async () => true);
+    const result = await processInboundSmsWithDeps(
+      buildInboundDeps({
+        from,
+        isLeadWithinLookupAge: () => false,
+        leadHasActiveEnrollment,
+      }),
+      ambiguousEvent('Can you stop by at 3?')
+    );
+    expect(result).toEqual({ status: 'ambiguous_opt_out' });
+    expect(leadHasActiveEnrollment).not.toHaveBeenCalled();
+  });
+
+  it('does not overwrite a found lead via forced legacy lookup', async () => {
+    const raw = '5551112222';
+    const e164 = '+15551112222';
+    const recent = {
+      id: 'lead-recent',
+      created_at: FIXED.toISOString(),
+      status: 'pending',
+    };
+    let legacyHits = 0;
+    const from = vi.fn((table: string) => {
+      if (table === 'businesses') {
+        return chain({ data: BIZ, error: null });
+      }
+      if (table === 'leads') {
+        const c = chain({ data: recent, error: null });
+        c.eq = vi.fn((col: string, val: unknown) => {
+          if (col === 'caller_phone' && val === raw) legacyHits += 1;
+          return c;
+        });
+        c.maybeSingle = vi.fn(async () => {
+          // Age-gated pending hit; legacy raw-phone lookup returns null.
+          if (legacyHits > 0) return { data: null, error: null };
+          return { data: recent, error: null };
+        });
+        c.update = vi.fn(() => c);
+        return c;
+      }
+      if (table === 'sms_messages') {
+        const c = chain({ data: null, error: null });
+        c.insert = vi.fn(() => c);
+        return c;
+      }
+      return chain({ data: null, error: null });
+    });
+
+    const result = await processInboundSmsWithDeps(
+      buildInboundDeps({
+        from,
+        tryNormalizeToE164: (p: string) => (p === raw ? e164 : null),
+        isLeadWithinLookupAge: () => true,
+        pauseCampaignForLead: vi.fn(async () => undefined),
+      }),
+      {
+        from: raw,
+        businessPhone: BIZ.phone,
+        body: 'Stop texting me, I already hired someone',
+        messageId: 'msg-no-overwrite',
+      }
+    );
+
+    expect(result).toMatchObject({
+      status: 'ambiguous_opt_out',
+      leadId: 'lead-recent',
+      campaignPaused: true,
+    });
   });
 });

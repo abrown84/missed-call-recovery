@@ -258,4 +258,71 @@ describe('campaign-runtime enroll/claim DI', () => {
     );
     expect(typeof action.action).toBe('string');
   });
+
+  it('handleClassifiedReplyEnrollment filters campaigns with auto_enroll=true', async () => {
+    process.env.CAMPAIGN_REPLY_MODE = 'pause';
+    const eqCalls: Array<[string, unknown]> = [];
+    deps.db = () =>
+      ({
+        from: (table: string) => {
+          const b: Record<string, any> = {};
+          const self = () => b;
+          for (const m of [
+            'select',
+            'eq',
+            'maybeSingle',
+            'single',
+            'insert',
+            'update',
+            'order',
+            'limit',
+          ]) {
+            b[m] = vi.fn(self);
+          }
+          b.eq = vi.fn((col: string, val: unknown) => {
+            if (table === 'campaigns') eqCalls.push([col, val]);
+            return b;
+          });
+          b.maybeSingle = vi.fn(async () => {
+            if (table === 'campaign_enrollments') {
+              return {
+                data: {
+                  id: 'e1',
+                  campaign_id: 'C',
+                  status: 'active',
+                  claimed_at: null,
+                  claim_token: null,
+                },
+                error: null,
+              };
+            }
+            return { data: null, error: null };
+          });
+          b.then = (resolve: any, reject?: any) => {
+            if (table === 'campaigns') {
+              return Promise.resolve({
+                data: [{ id: 'C', name: 'Standard', urgency_filter: null }],
+                error: null,
+              }).then(resolve, reject);
+            }
+            if (table === 'campaign_enrollments') {
+              return Promise.resolve({ data: null, error: null }).then(
+                resolve,
+                reject
+              );
+            }
+            return Promise.resolve({ data: null, error: null }).then(
+              resolve,
+              reject
+            );
+          };
+          return b;
+        },
+      }) as any;
+
+    await handleClassifiedReplyEnrollmentWithDeps(deps, 'L', 'normal');
+    expect(eqCalls).toContainEqual(['auto_enroll', true]);
+    expect(eqCalls).not.toContainEqual(['auto_enroll', false]);
+    delete process.env.CAMPAIGN_REPLY_MODE;
+  });
 });

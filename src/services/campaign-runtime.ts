@@ -84,6 +84,7 @@ import {
   ENROLLMENT_SELECT_SEND,
   ENROLLMENT_SELECT_STAR,
   ENROLLMENT_STATUS,
+  AUTO_ENROLL_ENABLED,
   LEAD_SELECT_STAR_BIZ,
   PG_UNIQUE,
   REVIEW_REASON_QUIET_HOURS,
@@ -309,7 +310,7 @@ export async function handleClassifiedReplyEnrollmentWithDeps(
     .from(TABLE.campaigns)
     .select(CAMPAIGN_SELECT_URGENCY)
     .eq(COL.status, ENROLLMENT_STATUS.active)
-    .eq(COL.autoEnroll, true);
+    .eq(COL.autoEnroll, AUTO_ENROLL_ENABLED);
 
   const plan = planReplyEnrollment({
     enrollment: enrollment

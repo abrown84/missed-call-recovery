@@ -14,6 +14,7 @@ import {
   ENROLLMENT_SELECT_SEND,
   ENROLLMENT_SELECT_STAR,
   ENROLLMENT_STATUS,
+  AUTO_ENROLL_ENABLED,
   KIND_CAMPAIGN,
   KIND_MANUAL,
   KIND_RECOVERY,
@@ -110,6 +111,8 @@ describe('db-strings constants (kill StringLiteral mutants)', () => {
     expect(ENROLLMENT_STATUS.paused).toBe('paused');
     expect(ENROLLMENT_STATUS.completed).toBe('completed');
     expect(ENROLLMENT_STATUS.needsReview).toBe('needs_review');
+    expect(AUTO_ENROLL_ENABLED).toBe(true);
+    expect(AUTO_ENROLL_ENABLED).not.toBe(false);
   });
 
   it('select lists and misc', () => {

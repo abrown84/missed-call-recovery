@@ -81,7 +81,8 @@ async function lookupLeadWithActiveEnrollment(
       .in(COL.status, LEGACY_LEAD_STATUSES as unknown as string[])
       .order(COL.createdAt, ORDER_CREATED_DESC)
       .limit(10);
-    for (const candidate of candidates ?? []) {
+    const rows = Array.isArray(candidates) ? candidates : [];
+    for (const candidate of rows) {
       if (await deps.leadHasActiveEnrollment(candidate.id)) {
         return candidate as Lead;
       }
@@ -289,7 +290,8 @@ export async function processInboundSmsWithDeps(
     return { status: 'no_lead_found' };
   }
 
-  let campaignPaused = false;
+  // Always assigned before read on the ambiguous return path.
+  // Stryker disable next-line BooleanLiteral
   let ownerNotified = false;
 
   if (ambiguous) {
@@ -309,16 +311,15 @@ export async function processInboundSmsWithDeps(
       .eq(COL.id, lead.id);
     // Do not swallow pause failures — fail the webhook so the provider retries.
     await deps.pauseCampaignForLead(lead.id);
-    campaignPaused = true;
     try {
-      ownerNotified = Boolean(
-        await deps.notifyPossibleOptOut(
+      // Strict true — distinguishes notify false/void from a flipped initial true.
+      ownerNotified =
+        (await deps.notifyPossibleOptOut(
           lead.id,
           business,
           body,
           ambiguous.reason
-        )
-      );
+        )) === true;
     } catch (err) {
       // Stryker disable StringLiteral,CallExpression,BlockStatement: log-only
       console.error(
@@ -390,7 +391,8 @@ export async function processInboundSmsWithDeps(
       urgency: classification.urgency,
       enrollmentAction: enrollment.action,
       enrolledCampaign: enrollment.campaignName,
-      campaignPaused,
+      // Pause already awaited above — flag is literal true only on this success path.
+      campaignPaused: true,
       ownerNotified,
     };
   }

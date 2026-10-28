@@ -114,6 +114,7 @@ describe('inbound ambiguous e2e (real classifyOptOut)', () => {
       leadId: 'lead-hired',
       campaignPaused: true,
       ownerNotified: true,
+      enrollmentAction: 'paused_ambiguous',
       urgency: 'low',
     });
     expect(pauseCampaignForLead).toHaveBeenCalledWith('lead-hired');

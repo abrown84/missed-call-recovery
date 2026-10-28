@@ -101,6 +101,9 @@ export const ENROLLMENT_STATUS = {
   needsReview: 'needs_review',
 } as const;
 
+/** Campaigns eligible for auto-enroll on classified reply (QC r9 gate). */
+export const AUTO_ENROLL_ENABLED = true;
+
 export const DIRECTION_OUTBOUND = 'outbound';
 
 export const LEAD_SELECT_GATES = 'opted_out, timezone, sms_outbound_sid';

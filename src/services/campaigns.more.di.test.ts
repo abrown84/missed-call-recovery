@@ -946,6 +946,7 @@ describe('campaigns-impl survivor killers (r12)', () => {
 
   it('handleClassifiedReplyEnrollment enrolls when no enrollment', async () => {
     process.env.CAMPAIGN_REPLY_MODE = 'continue';
+    const campaignEq: Array<[string, unknown]> = [];
     mockFrom.mockImplementation((table: string) => {
       if (table === 'campaign_enrollments') {
         const b = chainable({ data: null, error: null });
@@ -965,7 +966,7 @@ describe('campaigns-impl survivor killers (r12)', () => {
         });
       }
       if (table === 'campaigns') {
-        return chainable({
+        const result = {
           data: [
             {
               id: 'C',
@@ -977,7 +978,21 @@ describe('campaigns-impl survivor killers (r12)', () => {
             },
           ],
           error: null,
-        });
+        };
+        const trackEq = (obj: Record<string, any>) => {
+          obj.eq = vi.fn((col: string, val: unknown) => {
+            campaignEq.push([col, val]);
+            return obj;
+          });
+          const origSelect = obj.select;
+          obj.select = vi.fn((cols?: string) => {
+            const nested = origSelect(cols);
+            trackEq(nested);
+            return nested;
+          });
+          return obj;
+        };
+        return trackEq(chainable(result));
       }
       if (table === 'sms_messages') {
         return chainable({ data: null, error: null });
@@ -986,6 +1001,8 @@ describe('campaigns-impl survivor killers (r12)', () => {
     });
     const r = await handleClassifiedReplyEnrollment('L', 'normal');
     expect(r.action === 'enroll' || r.action.startsWith('skip:')).toBe(true);
+    // Kill autoEnroll true → false (handleClassifiedReplyEnrollmentWithDeps).
+    expect(campaignEq).toContainEqual(['auto_enroll', true]);
     delete process.env.CAMPAIGN_REPLY_MODE;
   });
 
@@ -1062,15 +1079,14 @@ describe('campaigns-impl survivor killers (r12)', () => {
   it('pauseCampaignForLead error path throws (QC r9 fail-closed)', async () => {
     const { pauseCampaignForLead } = await import('./campaigns');
     mockFrom.mockImplementation(() => {
-      const b = chainable({ data: null, error: { message: 'fail' } });
+      const b = chainable({ data: null, error: { message: 'db-pause-boom' } });
       b.update = vi.fn(() =>
-        chainable({ data: null, error: { message: 'fail' } })
+        chainable({ data: null, error: { message: 'db-pause-boom' } })
       );
       return b;
     });
-    await expect(pauseCampaignForLead('L')).rejects.toThrow(
-      /Failed to pause campaign/
-    );
+    // Must surface error.message (??), not replace it via && 'unknown'.
+    await expect(pauseCampaignForLead('L')).rejects.toThrow(/db-pause-boom/);
   });
 
   it('claimDueEnrollment falls through to stale reclaim', async () => {
