@@ -270,12 +270,12 @@ async function dispatchToRelay(
     });
     signal = mapRelaySendResult(result);
   } catch (err) {
-    // Stryker disable StringLiteral: log-only (no control flow)
+    // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
     console.error(
       `sendMessage relay error sid=${sid}:`,
       err instanceof Error ? err.message : 'unknown'
     );
-    // Stryker restore StringLiteral
+    // Stryker restore StringLiteral,CallExpression
     signal = { type: RELAY_SIGNAL.error as 'error' };
   }
 

@@ -242,10 +242,10 @@ are unchanged. Each site annotated `// Stryker disable next-line StringLiteral`.
 ### log-only-console-stringliterals (campaigns-impl / send)
 
 Log-only `console.*` sites in `campaigns-impl.ts` and `send/index.ts` are wrapped in
-`// Stryker disable StringLiteral` … `// Stryker restore StringLiteral` blocks.
-Replacement only changes operator-visible log text; return values, DB writes, and
-control flow are unchanged. (sms.ts now injects `deps.log` with asserted event
-names instead.)
+`// Stryker disable StringLiteral,CallExpression` … `// Stryker restore …` blocks.
+Replacement only changes operator-visible log text (or no-ops the log call);
+return values, DB writes, and control flow are unchanged. (sms.ts injects
+`deps.log` with asserted event names instead.)
 
 ### opt-out-spaced-keyword-branch-covered-by-compact
 

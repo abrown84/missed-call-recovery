@@ -6,11 +6,8 @@ import type { Database } from '@/types/database';
 import {
   CLAIM_STALE_MS,
   campaignStepMessageSid,
-  decideReplyEnrollmentAction,
-  getCampaignReplyMode,
   hasFreshClaim,
   parkedNextSendAt,
-  selectCampaignForUrgency,
 } from '@/services/campaign-logic';
 import {
   parseMessageSid,
@@ -32,7 +29,10 @@ import {
 } from '@/services/campaign-decisions';
 import { planEnroll, planSwitch } from '@/services/campaign-enroll-plan';
 import {
-  REPLY_ACTION,
+  mapSwitchResultToReplyAction,
+  planReplyEnrollment,
+} from '@/services/campaign-reply-plan';
+import {
   advanceStepPayload,
   claimDuePayload,
   clearOutboundSidPayload,
@@ -145,21 +145,21 @@ export async function enrollLeadInCampaign(
 
   if (plan.type === 'reject') {
     if (plan.reason === 'lead_not_found') {
-      // Stryker disable StringLiteral: log-only (no control flow)
+      // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
       console.error('Failed to fetch lead for enrollment:', leadError);
-      // Stryker restore StringLiteral
+      // Stryker restore StringLiteral,CallExpression
     } else if (plan.reason === 'no_campaigns') {
-      // Stryker disable StringLiteral: log-only (no control flow)
+      // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
       console.warn('No active campaigns found for enrollment');
-      // Stryker restore StringLiteral
+      // Stryker restore StringLiteral,CallExpression
     } else if (plan.reason === 'no_matching_campaign') {
-      // Stryker disable StringLiteral: log-only (no control flow)
+      // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
       console.warn('No matching campaign found for lead');
-      // Stryker restore StringLiteral
+      // Stryker restore StringLiteral,CallExpression
     } else if (plan.reason === 'no_steps') {
-      // Stryker disable StringLiteral: log-only (no control flow)
+      // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
       console.error('Campaign has no steps');
-      // Stryker restore StringLiteral
+      // Stryker restore StringLiteral,CallExpression
     }
     return { enrolled: false, reason: plan.reason };
   }
@@ -172,19 +172,19 @@ export async function enrollLeadInCampaign(
     if (enrollError.code === PG_UNIQUE) {
       return { enrolled: false, reason: 'already_enrolled:unique' };
     }
-    // Stryker disable StringLiteral: log-only (no control flow)
+    // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
     console.error('Failed to enroll lead:', enrollError);
-    // Stryker restore StringLiteral
+    // Stryker restore StringLiteral,CallExpression
     return { enrolled: false, reason: 'insert_failed' };
   }
 
-  // Stryker disable StringLiteral: log-only (no control flow)
+  // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
   console.log(
     `Lead ${leadId} enrolled in campaign ${plan.result.campaignName} ` +
       `(urgency=${lead?.urgency ?? 'null'}, step=${plan.result.currentStep}` +
       `${plan.result.skippedInitial ? ', skipped initial' : ''}), next send: ${plan.result.nextSendAt}`
   );
-  // Stryker restore StringLiteral
+  // Stryker restore StringLiteral,CallExpression
 
   return plan.result;
 }
@@ -245,18 +245,18 @@ export async function switchEnrollmentCampaign(
     .maybeSingle();
 
   if (updateError || !updated) {
-    // Stryker disable StringLiteral: log-only (no control flow)
+    // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
     console.error('Failed to switch enrollment (maybe mid-send):', updateError);
-    // Stryker restore StringLiteral
+    // Stryker restore StringLiteral,CallExpression
     return { enrolled: false, reason: 'deferred_or_switch_failed' };
   }
 
-  // Stryker disable StringLiteral: log-only (no control flow)
+  // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
   console.log(
     `Lead ${leadId} switched to campaign ${plan.result.campaignName}, ` +
       `step=${plan.result.currentStep}, next send: ${plan.result.nextSendAt}`
   );
-  // Stryker restore StringLiteral
+  // Stryker restore StringLiteral,CallExpression
 
   return plan.result;
 }
@@ -267,7 +267,6 @@ export async function handleClassifiedReplyEnrollment(
 ): Promise<{ action: string; campaignName?: string }> {
   const supabase = createServerClient();
   const enrollment = await getEnrollmentForLead(leadId);
-  const replyMode = getCampaignReplyMode();
 
   const { data: campaigns } = await supabase
     .from(TABLE.campaigns)
@@ -275,9 +274,8 @@ export async function handleClassifiedReplyEnrollment(
     .eq(COL.status, ENROLLMENT_STATUS.active)
     .eq(COL.autoEnroll, true);
 
-  const target = selectCampaignForUrgency(campaigns || [], urgency);
-  const decision = decideReplyEnrollmentAction(
-    enrollment
+  const plan = planReplyEnrollment({
+    enrollment: enrollment
       ? {
           id: enrollment.id,
           campaign_id: enrollment.campaign_id,
@@ -286,35 +284,37 @@ export async function handleClassifiedReplyEnrollment(
           claim_token: enrollment.claim_token,
         }
       : null,
-    target,
-    { replyMode }
-  );
+    campaigns: campaigns || [],
+    urgency,
+  });
 
-  if (decision.action === REPLY_ACTION.deferSwitch && target) {
-    // Stryker disable next-line StringLiteral: log-only message (no control flow)
+  if (plan.type === 'defer_switch') {
+    // Stryker disable next-line StringLiteral,CallExpression: log-only (no control flow)
     console.log(
       `Deferring switch for lead ${leadId}; fresh claim held (mid-send)`
     );
-    return { action: 'defer_switch', campaignName: target.name };
+    return { action: 'defer_switch', campaignName: plan.campaignName };
   }
 
-  if (decision.action === REPLY_ACTION.switch && target) {
-    const result = await switchEnrollmentCampaign(leadId, target.id);
-    if (!result.enrolled && result.reason.startsWith('deferred')) {
-      return { action: 'defer_switch', campaignName: target.name };
-    }
-    return {
-      action: result.enrolled ? 'switch' : `skip:${result.reason}`,
-      campaignName: result.enrolled ? result.campaignName : target.name,
-    };
+  if (plan.type === 'switch') {
+    const result = await switchEnrollmentCampaign(
+      leadId,
+      plan.targetCampaignId
+    );
+    return mapSwitchResultToReplyAction({
+      enrolled: result.enrolled,
+      reason: result.enrolled ? undefined : result.reason,
+      campaignName: result.enrolled ? result.campaignName : undefined,
+      targetCampaignName: plan.campaignName,
+    });
   }
 
-  if (decision.action === REPLY_ACTION.pause) {
+  if (plan.type === 'pause') {
     await pauseCampaignForLead(leadId);
     return { action: 'pause' };
   }
 
-  if (!enrollment) {
+  if (plan.type === 'enroll') {
     const result = await enrollLeadInCampaign(leadId);
     return {
       action: result.enrolled ? 'enroll' : `skip:${result.reason}`,
@@ -336,9 +336,9 @@ export async function getEnrollmentForLead(
     .maybeSingle();
 
   if (error) {
-    // Stryker disable StringLiteral: log-only (no control flow)
+    // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
     console.error('Failed to fetch enrollment for lead:', error);
-    // Stryker restore StringLiteral
+    // Stryker restore StringLiteral,CallExpression
     return null;
   }
   return data;
@@ -361,17 +361,17 @@ export async function sendCampaignSMS(
     .single();
 
   if (enrollError || !enrollment) {
-    // Stryker disable StringLiteral: log-only (no control flow)
+    // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
     console.error('Failed to fetch enrollment:', enrollError);
-    // Stryker restore StringLiteral
+    // Stryker restore StringLiteral,CallExpression
     return false;
   }
 
   const token = claimToken || enrollment.claim_token;
   if (!token) {
-    // Stryker disable StringLiteral: log-only (no control flow)
+    // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
     console.error(`No claim_token for enrollment ${enrollmentId}`);
-    // Stryker restore StringLiteral
+    // Stryker restore StringLiteral,CallExpression
     return false;
   }
 
@@ -385,9 +385,9 @@ export async function sendCampaignSMS(
     suppressed = await isPhoneSuppressed(business.id, lead.caller_phone);
   } catch (err) {
     if (err instanceof SuppressionLookupError) {
-      // Stryker disable StringLiteral: log-only (no control flow)
+      // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
       console.error('Suppression check failed closed:', err.message);
-      // Stryker restore StringLiteral
+      // Stryker restore StringLiteral,CallExpression
       suppressionLookupFailed = true;
     } else {
       throw err;
@@ -400,7 +400,7 @@ export async function sendCampaignSMS(
   });
   if (leadGate.action === 'pause') {
     if (suppressed) {
-      // Stryker disable next-line StringLiteral: log-only message (no control flow)
+      // Stryker disable next-line StringLiteral,CallExpression: log-only (no control flow)
       console.log(`Suppressed phone for enrollment ${enrollmentId}; pausing`);
     }
     await pauseCampaignForLead(lead.id);
@@ -418,9 +418,9 @@ export async function sendCampaignSMS(
     .order(COL.stepNumber, { ascending: true });
 
   if (stepsError || !steps || steps.length === 0) {
-    // Stryker disable StringLiteral: log-only (no control flow)
+    // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
     console.error('Failed to fetch campaign steps:', stepsError);
-    // Stryker restore StringLiteral
+    // Stryker restore StringLiteral,CallExpression
     await releaseClaim(supabase, enrollmentId, token);
     return false;
   }
@@ -430,9 +430,9 @@ export async function sendCampaignSMS(
   );
 
   if (!currentStep) {
-    // Stryker disable StringLiteral: log-only (no control flow)
+    // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
     console.error(`Step ${enrollment.current_step} not found`);
-    // Stryker restore StringLiteral
+    // Stryker restore StringLiteral,CallExpression
     await releaseClaim(supabase, enrollmentId, token);
     return false;
   }
@@ -485,16 +485,16 @@ export async function sendCampaignSMS(
         steps
       );
       if (!advanced && outcome.kind === 'sent') {
-        // Stryker disable StringLiteral: log-only (no control flow)
+        // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
         console.warn(`Post-send advance lost claim for ${enrollmentId}`);
-        // Stryker restore StringLiteral
+        // Stryker restore StringLiteral,CallExpression
       }
       if (outcome.kind === 'sent') {
-        // Stryker disable StringLiteral: log-only (no control flow)
+        // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
         console.log(
           `Campaign SMS sent for ${enrollmentId} step ${enrollment.current_step} sid=${outcome.sid}`
         );
-        // Stryker restore StringLiteral
+        // Stryker restore StringLiteral,CallExpression
       }
       return dispatch.success;
     }
@@ -504,7 +504,7 @@ export async function sendCampaignSMS(
       });
       return dispatch.success;
     case 'flag_unresolved_tz':
-      // Stryker disable next-line StringLiteral: log-only message (no control flow)
+      // Stryker disable next-line StringLiteral,CallExpression: log-only (no control flow)
       console.error(
         `ALERT: quiet-hours unresolved for enrollment ${enrollmentId}; needs_review`
       );
@@ -526,7 +526,7 @@ export async function sendCampaignSMS(
         nextSendAt: dispatch.nextSendAt,
       });
       if (outcome.kind === 'ambiguous') {
-        // Stryker disable next-line StringLiteral: log-only message (no control flow)
+        // Stryker disable next-line StringLiteral,CallExpression: log-only (no control flow)
         console.warn(
           `Campaign SMS ambiguous for ${enrollmentId} (${outcome.reason}); parked`
         );
@@ -536,13 +536,13 @@ export async function sendCampaignSMS(
       await pauseCampaignForLead(lead.id);
       return dispatch.success;
     case 'needs_review_terminal':
-      // Stryker disable StringLiteral: log-only (no control flow)
+      // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
       console.error(
         `ALERT: campaign SMS needs_review ${enrollmentId} sid=${
           outcome.kind === 'needs_review' ? outcome.sid : ''
         } (${dispatch.reason})`
       );
-      // Stryker restore StringLiteral
+      // Stryker restore StringLiteral,CallExpression
       // Terminal status — do not re-park every 30 min (QC r6 P1 #7).
       await markEnrollmentNeedsReview(
         supabase,
@@ -590,20 +590,20 @@ export async function advanceEnrollment(
       .select(ENROLLMENT_CLAIM_SELECT);
 
     if (error || !data?.length) {
-      // Stryker disable StringLiteral: log-only (no control flow)
+      // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
       console.warn(
         `advanceEnrollment ownership miss for ${enrollmentId}:`,
         error?.message
       );
-      // Stryker restore StringLiteral
+      // Stryker restore StringLiteral,CallExpression
       return false;
     }
 
-    // Stryker disable StringLiteral: log-only (no control flow)
+    // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
     console.log(
       `Campaign advanced to step ${nextStepNumber}, scheduled for ${nextSendAt}`
     );
-    // Stryker restore StringLiteral
+    // Stryker restore StringLiteral,CallExpression
     return true;
   }
 
@@ -621,18 +621,18 @@ export async function advanceEnrollment(
     .select(ENROLLMENT_CLAIM_SELECT);
 
   if (error || !data?.length) {
-    // Stryker disable StringLiteral: log-only (no control flow)
+    // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
     console.warn(
       `completeEnrollment ownership miss for ${enrollmentId}:`,
       error?.message
     );
-    // Stryker restore StringLiteral
+    // Stryker restore StringLiteral,CallExpression
     return false;
   }
 
-  // Stryker disable StringLiteral: log-only (no control flow)
+  // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
   console.log(`Campaign completed for enrollment ${enrollmentId}`);
-  // Stryker restore StringLiteral
+  // Stryker restore StringLiteral,CallExpression
   return true;
 }
 
@@ -690,11 +690,11 @@ async function markEnrollmentNeedsReview(
     .eq(COL.id, enrollmentId)
     .eq(COL.status, ENROLLMENT_STATUS.active)
     .eq(COL.claimToken, claimToken);
-  // Stryker disable StringLiteral: log-only (no control flow)
+  // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
   console.error(
     `Enrollment ${enrollmentId} terminal needs_review (${reason})`
   );
-  // Stryker restore StringLiteral
+  // Stryker restore StringLiteral,CallExpression
 }
 
 /**
@@ -716,15 +716,15 @@ export async function pauseCampaignForLead(leadId: string): Promise<void> {
     .eq(COL.status, ENROLLMENT_STATUS.active);
 
   if (error) {
-    // Stryker disable StringLiteral: log-only (no control flow)
+    // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
     console.error('Failed to pause campaign:', error);
-    // Stryker restore StringLiteral
+    // Stryker restore StringLiteral,CallExpression
     return;
   }
 
-  // Stryker disable StringLiteral: log-only (no control flow)
+  // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
   console.log(`Campaign paused for lead ${leadId}`);
-  // Stryker restore StringLiteral
+  // Stryker restore StringLiteral,CallExpression
 }
 
 export async function leadHasActiveEnrollment(
@@ -770,9 +770,9 @@ export async function claimDueEnrollment(
     .select(ENROLLMENT_CLAIM_SELECT);
 
   if (stale.error) {
-    // Stryker disable StringLiteral: log-only (no control flow)
+    // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
     console.error('Failed to reclaim stale enrollment:', stale.error);
-    // Stryker restore StringLiteral
+    // Stryker restore StringLiteral,CallExpression
     return null;
   }
   return (stale.data?.length ?? 0) > 0 ? token : null;
@@ -928,12 +928,12 @@ async function resendRecoveryIdempotent(
   try {
     await sendRecoverySMS(leadId, business, lead.caller_phone);
   } catch (err) {
-    // Stryker disable StringLiteral: log-only (no control flow)
+    // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
     console.error(
       `Recovery resend failed for ${leadId}:`,
       err instanceof Error ? err.message : 'unknown'
     );
-    // Stryker restore StringLiteral
+    // Stryker restore StringLiteral,CallExpression
   }
 }
 
@@ -1045,12 +1045,12 @@ async function requeueExactCampaignStep(
     .select(ENROLLMENT_CLAIM_SELECT);
 
   if (error || !data?.length) {
-    // Stryker disable StringLiteral: log-only (no control flow)
+    // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
     console.warn(
       `requeueExactCampaignStep failed for ${enrollmentId} step ${stepNumber}:`,
       error?.message
     );
-    // Stryker restore StringLiteral
+    // Stryker restore StringLiteral,CallExpression
     return false;
   }
   return true;
@@ -1087,9 +1087,9 @@ export async function processDueCampaigns(): Promise<{
   const ids = await listClaimableEnrollmentIds(100);
 
   if (ids.length === 0) {
-    // Stryker disable StringLiteral: log-only (no control flow)
+    // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
     console.log('No due campaigns to process');
-    // Stryker restore StringLiteral
+    // Stryker restore StringLiteral,CallExpression
     return {
       processed: 0,
       errors: 0,
@@ -1121,12 +1121,12 @@ export async function processDueCampaigns(): Promise<{
     } catch (err) {
       // Isolate per-enrollment failures (e.g. invalid timezone) so one bad
       // lead cannot 500 the whole cron run.
-      // Stryker disable StringLiteral: log-only (no control flow)
+      // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
       console.error(
         `Campaign send failed for ${id}:`,
         err instanceof Error ? err.message : 'unknown'
       );
-      // Stryker restore StringLiteral
+      // Stryker restore StringLiteral,CallExpression
       errors++;
       try {
         const supabase = createServerClient();
@@ -1148,12 +1148,12 @@ export async function processDueCampaigns(): Promise<{
     await new Promise((resolve) => setTimeout(resolve, 200));
   }
 
-  // Stryker disable StringLiteral: log-only (no control flow)
+  // Stryker disable StringLiteral,CallExpression: log-only (no control flow)
   console.log(
     `Processed ${processed} campaigns, ${errors} errors, ${skipped} skipped ` +
       `out of ${ids.length} candidates (provider=${adapter.name})`
   );
-  // Stryker restore StringLiteral
+  // Stryker restore StringLiteral,CallExpression
 
   return {
     processed,

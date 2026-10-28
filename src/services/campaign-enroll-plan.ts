@@ -64,9 +64,7 @@ export function planEnroll(input: {
   if (!gate.ok) {
     return { type: 'reject', reason: gate.reason };
   }
-  if (!input.leadFound) {
-    return { type: 'reject', reason: 'lead_not_found' };
-  }
+  // gate.ok ⇒ leadFound (decideEnrollmentGates); no second lead check.
   if (
     input.campaignError ||
     !input.campaigns ||
@@ -95,13 +93,14 @@ export function planEnroll(input: {
   if (!plan.ok) {
     return { type: 'reject', reason: plan.reason };
   }
+  const status = input.statusActive ?? 'active';
   return {
     type: 'insert',
     payload: enrollmentInsertPayload({
       leadId: input.leadId,
       campaignId: selected.id,
       currentStep: plan.currentStep,
-      status: input.statusActive ?? 'active',
+      status,
       nextSendAt: plan.nextSendAt,
     }),
     result: {
@@ -140,6 +139,7 @@ export function planSwitch(input: {
   targetCampaignId: string;
   smsOutboundSid: string | null;
   nowIso: string;
+  statusActive?: string;
 }): SwitchPlan {
   const switchGate = decideSwitchClaimGate({
     hasEnrollment: input.hasEnrollment,
@@ -160,17 +160,19 @@ export function planSwitch(input: {
   if (steps.length === 0) {
     return { type: 'reject', reason: 'no_steps' };
   }
+  // Staging (c): never treat recovery as Emergency/High initial.
   const plan = planEnrollmentStart(steps, {
     recoveryAlreadySent: Boolean(input.smsOutboundSid),
     treatRecoveryAsInitial: false,
   });
   const nextSendAt = plan.nextSendAt.toISOString();
+  const status = input.statusActive ?? 'active';
   return {
     type: 'update',
     payload: switchUpdatePayload({
       targetCampaignId: input.targetCampaignId,
       currentStep: plan.currentStep,
-      status: 'active',
+      status,
       nextSendAt,
       nowIso: input.nowIso,
     }),

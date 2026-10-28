@@ -12,24 +12,25 @@ See `MUT_PY_SCORES.md` / `mut-results.json`.
 
 ## Stryker (honest — no StringLiteral/Regex exclusions; no-cov in denominator)
 
-Latest completed run (r7 @ `9c4e2b1`, before subsequent survivor-killer commits):
+### r9 @ `14922a4` (enroll-plan + reconcile-tally; before send-io-plans / reply-plan)
 
 | File | Score (incl. no-cov) | Killed | Survived | No-cov | Ignored |
 |------|---------------------:|-------:|---------:|-------:|--------:|
-| send/decisions.ts | **97.73%** | 344 | 8 | 0 | 0 |
 | send/machine.ts | **100%** | 188 | 0 | 0 | 22 |
 | send/policy.ts | **100%** | 7 | 0 | 0 | 6 |
-| campaign-decisions.ts | **91.50%** | 140 | 7 | 6 | 0 |
-| campaign-io-plans.ts | **100%** | 31 | 0 | 0 | 0 |
+| send/reconcile-tally.ts | **100%** | 73 | 0 | 0 | 0 |
+| campaign-io-plans.ts | **100%** | 44 | 0 | 0 | 0 |
 | db-strings.ts | **100%** | 4 | 0 | 0 | 29 |
-| quiet-hours.ts | **96.15%** | 100 | 0 | 4 | 71 |
-| reconcile-logic.ts | **97.10%** | 134 | 4 | 0 | 0 |
-| sms.ts | **92.19%** | 118 | 4 | 6 | 5 |
-| opt-out.ts | 87.50% | 112 | 15 | 1 | 12 |
-| send/index.ts | 54.46% | 183 | 109 | 44 | 2 |
-| campaigns-impl.ts | 34.82% | 187 | 224 | 126 | 53 |
-| campaigns.ts | n/a (barrel; 0 mutants) | — | — | — | — |
+| send/decisions.ts | **98.0%** | 345 | 7 | 0 | 0 |
+| reconcile-logic.ts | **97.1%** | 134 | 4 | 0 | 0 |
+| quiet-hours.ts | **96.2%** | 100 | 0 | 4 | 71 |
+| opt-out.ts | **94.7%** | 107 | 5 | 1 | 29 |
+| sms.ts | **92.4%** | 122 | 6 | 4 | 5 |
+| campaign-decisions.ts | **91.5%** | 140 | 7 | 6 | 0 |
+| campaign-enroll-plan.ts | 79.8% | 83 | 14 | 7 | 0 |
+| send/index.ts | 74.4% | 206 | 58 | 13 | 2 |
+| campaigns-impl.ts | 46.8% | 227 | 191 | 67 | 56 |
 
-Target ≥90% every file. Follow-up commits add gate/dispatch DI killers + opt-out equivalents + enroll/switch error-path coverage; re-run pending.
+Target ≥90% every file. Follow-up: reply-plan extract, enroll-plan killers, log CallExpression disables, send-io-plans (r10).
 
 Equivalent mutants: `EQUIVALENT.md` (individually justified only).
