@@ -362,20 +362,23 @@ describe('QC r6 mut.py killers', () => {
     const src = readSrc('src/services/campaigns-impl.ts');
     const campDec = readSrc('src/services/campaign-decisions.ts');
     const decisions = readSrc('src/services/send/decisions.ts');
-    if (!src || !campDec || !decisions) return;
+    const sendPlan = readSrc('src/services/campaign-send-plan.ts');
+    if (!src || !campDec || !decisions || !sendPlan) return;
     expect(campDec).toContain(
       "input.recoveryState === 'pending' && !input.recoveryConfirmed"
     );
     expect(src).toContain('await resendRecoveryIdempotent');
-    expect(src).toContain('skipRecoveryGate: decideSkipRecoveryGate(');
+    // skipRecoveryGate computed in pure send-plan, applied via pre.skipRecoveryGate
+    expect(sendPlan).toContain('decideSkipRecoveryGate(');
+    expect(src).toContain('skipRecoveryGate: pre.skipRecoveryGate');
     expect(src).not.toContain('skipRecoveryGate: true || !(');
-    expect(src).toContain('leadTimezone: leadTz,');
+    expect(src).toContain('leadTimezone: pre.leadTimezone');
     expect(src).not.toContain('leadTimezone: null,');
     expect(decisions).toContain("outcome.reason === 'quiet_hours_unresolved'");
     expect(decisions).toContain("outcome.kind === 'needs_review'");
     expect(decisions).toContain("outcome.kind === 'ambiguous'");
     expect(decisions).toContain("outcome.reason === 'recovery_pending'");
-    expect(src).toContain('decideCampaignSendDispatch');
+    expect(src).toContain('planCampaignSendPost');
     // needs_review / park must NOT call advanceEnrollment in their case bodies
     const reviewCase = src.slice(
       src.indexOf("case 'needs_review_terminal':"),
