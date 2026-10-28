@@ -139,6 +139,15 @@ describe('QC r7 opt-out whole-message vs keyword-in-sentence', () => {
     expect(optOutBackfillCompactList()).toEqual([
       ...OPT_OUT_WHOLE_MESSAGE_COMPACT,
     ]);
+    expect(OPT_OUT_WHOLE_MESSAGE.length).toBeGreaterThan(20);
+    expect(OPT_OUT_WHOLE_MESSAGE_COMPACT).toContain('STOP');
+  });
+
+  it('sqlQuotedList escapes apostrophes for SQL IN lists', () => {
+    expect(sqlQuotedList(["DON'T TEXT ME", 'STOP'])).toBe(
+      "'DON''T TEXT ME', 'STOP'"
+    );
+    expect(sqlQuotedList(OPT_OUT_WHOLE_MESSAGE.slice(0, 3))).toContain("'STOP'");
   });
 });
 
